@@ -43,7 +43,7 @@
             <span class="scope whole">整体</span>
           </button>
           <button class="btn warn has-scope" data-action="retry">
-            <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
+            <span class="ico">⛏</span><span><b>批量重跑失败</b><small>最近失败批次全部</small></span>
             <span class="scope ops">运维</span>
           </button>
         </div>
@@ -298,6 +298,7 @@
       <button class="btn tiny" id="monFilterBtn">筛选</button>
       <button class="btn tiny" id="monResetBtn">重置</button>
       <span class="hint" id="monFilterHint"></span>
+      <span class="hint" id="monRetryHint" hidden>提示：失败明细每行「重跑此条」仅重跑该条失败任务</span>
     </div>
     <div class="table-wrap" id="monitorTable"><div class="empty">加载中…</div></div>
     <div class="pager" id="monitorPager"></div>

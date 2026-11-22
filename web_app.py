@@ -215,6 +215,23 @@ def _do_retry() -> str:
     return "重跑完成" if code == 0 else "重跑后仍有失败接口"
 
 
+def _do_retry_task(task_id: str) -> str:
+    """按任务ID重跑单条失败任务（来自监控失败明细）。"""
+    from main import _retry_failed
+    config = _cfg()
+    db_path = _db_path(config)
+    monitor = Monitor(MAIN_BASE, run_type="retry", history_path=_history_path(config),
+                      db_path=db_path)
+    history = Monitor.load(_history_path(config), db_path)
+    task = monitor.find_failed_task(task_id, history)
+    if not task:
+        return f"未找到任务ID={task_id} 的失败记录，可能已被清理或已重跑成功"
+    logger.info("Web 触发单条失败重跑：%s / %s（%s）",
+                task_id, task["interface_name"], task["failed_date"])
+    code = _retry_failed(config, config.get("monitor", {}), tasks=[task])
+    return "单条重跑完成" if code == 0 else "单条重跑后仍有失败接口"
+
+
 def _do_collect_interface(category: str, codes: list[str],
                           start: str | None, end: str | None) -> str:
     config = _cfg()
@@ -1025,6 +1042,16 @@ def api_monitor_clean(payload: dict | None = None):
 @app.post("/api/retry")
 def api_retry():
     job_id = _submit("retry", _do_retry)
+    return {"job_id": job_id}
+
+
+@app.post("/api/retry/task")
+def api_retry_task(payload: dict):
+    """监控失败明细：按任务ID重跑单条失败任务。"""
+    task_id = str(payload.get("task_id") or "").strip()
+    if not task_id:
+        raise HTTPException(status_code=400, detail="缺少 task_id")
+    job_id = _submit("retry", lambda: _do_retry_task(task_id))
     return {"job_id": job_id}
 
 

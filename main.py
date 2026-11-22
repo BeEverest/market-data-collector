@@ -303,13 +303,19 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
     return files
 
 
-def _retry_failed(config: dict, monitor_cfg: dict) -> int:
-    """重跑最近批次的失败接口，合并到最新数据并导出。"""
+def _retry_failed(config: dict, monitor_cfg: dict,
+                  tasks: list[dict] | None = None) -> int:
+    """重跑失败接口，合并到最新数据并导出。
+
+    tasks 为 None 时重跑最近批次的全部失败接口；传入任务列表时只重跑这些任务，
+    供监控看板「失败明细」按条重跑使用。
+    """
     history_path = BASE_DIR / monitor_cfg.get("history_file", "output/monitor/interface_runs.jsonl")
     db_path = _db_path(config)
-    history = Monitor.load(history_path, db_path)
-    probe = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
-    tasks = probe.failed_tasks(history)
+    if tasks is None:
+        history = Monitor.load(history_path, db_path)
+        probe = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
+        tasks = probe.failed_tasks(history)
     if not tasks:
         logger.info("最近批次无失败接口，无需重跑。")
         logger.info("可运行 python main.py --monitor-report 查看历史监控报告。")
@@ -351,8 +357,9 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
         if key == "etf.trade_calendar":
             full_etf_retry = True
         elif key == "etf.sse_shares":
-            if params.get("trade_date"):
-                sse_dates.add(str(params["trade_date"]))
+            trade_date = params.get("trade_date") or params.get("date")
+            if trade_date:
+                sse_dates.add(str(trade_date))
         elif key == "etf.szse_shares":
             if params.get("start") and params.get("end"):
                 szse_range = (str(params["start"]), str(params["end"]))

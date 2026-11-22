@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime
@@ -30,6 +31,28 @@ RUN_FIELDS = [
     "category", "interface_key", "interface_name",
     "params", "status", "attempts", "rows", "error", "duration_sec",
 ]
+
+
+def _normalize_params(params) -> dict:
+    """把 params（dict 或 JSON 字符串）规范为 dict，供任务标识与重跑使用。"""
+    if isinstance(params, dict):
+        return params
+    try:
+        value = json.loads(params or "{}")
+        return value if isinstance(value, dict) else {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def failure_task_id(interface_key: str, params) -> str:
+    """单条失败任务的稳定标识：由接口键 + 规范化参数生成。
+
+    同一任务（接口 + 参数）在不同批次失败时标识一致，便于按条重跑与去重；
+    参数顺序不影响标识（JSON 键排序后计算）。
+    """
+    canonical = json.dumps(_normalize_params(params), sort_keys=True, ensure_ascii=False)
+    raw = f"{interface_key}|{canonical}"
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 
 class Monitor:
@@ -155,6 +178,33 @@ class Monitor:
             })
         return tasks
 
+    def find_failed_task(self, task_id: str,
+                         history: pd.DataFrame | None = None) -> dict | None:
+        """按 failure_task_id 定位最近一条失败记录，返回可重跑的单任务 dict。
+
+        找不到时返回 None。单条重跑只重采该任务对应的接口 + 参数。
+        """
+        hist = self.load(self.history_path, self.db_path) if history is None else history
+        if hist.empty or "status" not in hist.columns:
+            return None
+        fails = hist[hist["status"] == "failed"]
+        if fails.empty:
+            return None
+        for _, r in fails.sort_values("run_time", ascending=False).iterrows():
+            if failure_task_id(r["interface_key"], r["params"]) != task_id:
+                continue
+            return {
+                "task_id": task_id,
+                "interface_key": r["interface_key"],
+                "interface_name": r["interface_name"],
+                "category": r["category"],
+                "params": _normalize_params(r["params"]),
+                "last_error": r["error"],
+                "failed_date": r["run_date"],
+                "failed_run": r["run_id"],
+            }
+        return None
+
     # ---------- 报告 ----------
     def build_report(self, history: pd.DataFrame | None = None,
                      stats_df: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
@@ -216,13 +266,16 @@ class Monitor:
                     outcome = f"已重跑成功（{first['run_date']} / {first['run_id']}）"
                 outcomes.append(outcome)
             fails["重跑结果"] = outcomes
+            fails["任务ID"] = fails.apply(
+                lambda r: failure_task_id(r["interface_key"], r["params"]), axis=1
+            )
             fails = fails.sort_values("run_time", ascending=False)
             fail_df = fails[[
-                "run_date", "run_id", "category", "interface_name",
+                "任务ID", "run_date", "run_id", "category", "interface_name",
                 "params", "attempts", "error", "重跑结果",
             ]].rename(columns={
-                "run_date": "失败日期", "run_id": "运行ID", "category": "类别",
-                "interface_name": "接口名称", "params": "调用参数",
+                "任务ID": "任务ID", "run_date": "失败日期", "run_id": "运行ID",
+                "category": "类别", "interface_name": "接口名称", "params": "调用参数",
                 "attempts": "尝试次数", "error": "失败原因",
             }).reset_index(drop=True)
 

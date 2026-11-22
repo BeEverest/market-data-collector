@@ -5,7 +5,7 @@ import json
 
 import pandas as pd
 
-from monitor import RUN_FIELDS, Monitor, describe_failure
+from monitor import RUN_FIELDS, Monitor, describe_failure, failure_task_id
 
 
 def _frame(records: list[dict]) -> pd.DataFrame:
@@ -80,6 +80,38 @@ class TestFailedTasks:
         assert tasks[0]["params"] == {}
 
 
+class TestFailureTaskId:
+    def test_stable_across_param_order_and_json_string(self):
+        a = failure_task_id("etf.sse_shares", {"trade_date": "2026-11-01", "market": "SH"})
+        b = failure_task_id("etf.sse_shares", '{"market": "SH", "trade_date": "2026-11-01"}')
+        assert a == b
+        assert len(a) == 12
+        other = failure_task_id("etf.sse_shares", {"trade_date": "2026-11-02", "market": "SH"})
+        assert other != a
+        assert failure_task_id("macro.cpi", {"code": "CPI"}) != a
+
+    def test_find_failed_task_by_id(self, base, run_records):
+        mon = Monitor(base)
+        hist = _frame(run_records)
+        tid = failure_task_id("etf.sse_shares", '{"date": "2026-11-01"}')
+        task = mon.find_failed_task(tid, history=hist)
+        assert task is not None
+        assert task["task_id"] == tid
+        assert task["interface_key"] == "etf.sse_shares"
+        assert task["params"] == {"date": "2026-11-01"}
+        assert task["category"] == "ETF"
+        assert task["failed_run"] == "20261102_090000_full"
+
+    def test_find_failed_task_picks_latest_and_returns_none(self, base, run_records):
+        mon = Monitor(base)
+        hist = _frame(run_records)
+        tid = failure_task_id("etf.sse_shares", '{"date": "2026-11-01"}')
+        assert mon.find_failed_task("not-exist", history=hist) is None
+        assert mon.find_failed_task(tid, history=pd.DataFrame(columns=RUN_FIELDS)) is None
+        ok_only = [r for r in run_records if r["status"] == "success"]
+        assert mon.find_failed_task(tid, history=_frame(ok_only)) is None
+
+
 class TestReport:
     def test_empty_report(self, base):
         report = Monitor(base).build_report(history=pd.DataFrame(columns=RUN_FIELDS))
@@ -102,6 +134,8 @@ class TestReport:
         fails = report["失败明细"].set_index("运行ID")
         assert "已重跑成功" in fails.loc["20261102_090000_full", "重跑结果"]
         assert fails.loc["20261101_090000_full", "重跑结果"] == "未重跑成功"
+        assert "任务ID" in report["失败明细"].columns
+        assert len(fails.loc["20261102_090000_full", "任务ID"]) == 12
 
         health = report["接口健康度"].set_index("接口键")
         assert health.loc["etf.sse_shares", "成功率(%)"] == 50.0

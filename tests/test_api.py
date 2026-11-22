@@ -85,6 +85,13 @@ class TestReadOnlyApis:
         assert len(tasks) == 1
         assert tasks[0]["interface_key"] == "etf.sse_shares"
 
+    def test_monitor_failure_detail_has_task_id(self, client):
+        fails = client.get("/api/monitor/report").json()["失败明细"]
+        assert all("任务ID" in row for row in fails)
+        tid = next(row["任务ID"] for row in fails
+                   if row["运行ID"] == "20261102_090000_full")
+        assert len(tid) == 12
+
     def test_catalog_and_etf_config(self, client):
         catalog = client.get("/api/catalog").json()
         assert len(catalog["macro"]) == 25
@@ -126,3 +133,48 @@ class TestExportApis:
 
     def test_download_rejects_unknown_file(self, client):
         assert client.get("/api/download", params={"name": "missing.zip"}).status_code == 404
+
+
+class TestRetryTaskApi:
+    def test_missing_task_id_rejected(self, client):
+        resp = client.post("/api/retry/task", json={})
+        assert resp.status_code == 400
+        assert "task_id" in resp.json()["detail"]
+
+    def test_retry_task_looks_up_single_failure_and_runs(self, client, monkeypatch):
+        import main as main_mod
+        from monitor import failure_task_id
+
+        captured = {}
+
+        def fake_retry(config, monitor_cfg, tasks=None):
+            captured["tasks"] = tasks
+            return 0
+
+        monkeypatch.setattr(main_mod, "_retry_failed", fake_retry)
+        tid = failure_task_id("etf.sse_shares", '{"date": "2026-11-01"}')
+
+        result = web_app._do_retry_task(tid)
+        assert result == "单条重跑完成"
+        assert len(captured["tasks"]) == 1
+        assert captured["tasks"][0]["interface_key"] == "etf.sse_shares"
+        assert captured["tasks"][0]["task_id"] == tid
+
+    def test_retry_task_unknown_id(self, client):
+        result = web_app._do_retry_task("not-exist")
+        assert "未找到" in result
+
+    def test_retry_task_endpoint_submits_job(self, client, monkeypatch):
+        called = {}
+
+        def fake_submit(kind, func):
+            called["kind"] = kind
+            called["func"] = func
+            return "fake-job-id"
+
+        monkeypatch.setattr(web_app, "_submit", fake_submit)
+        resp = client.post("/api/retry/task", json={"task_id": "abc123"})
+        assert resp.status_code == 200
+        assert resp.json()["job_id"] == "fake-job-id"
+        assert called["kind"] == "retry"
+        assert callable(called["func"])

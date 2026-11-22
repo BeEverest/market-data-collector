@@ -673,6 +673,8 @@ document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
     tab.classList.add('active');
     monitorTab = tab.dataset.tab;
     monitorPage = 1;  // 切换 Tab 重置到第一页
+    const hint = $('monRetryHint');
+    if (hint) hint.hidden = monitorTab !== 'failures';
     renderMonitor();
   });
 });
@@ -814,12 +816,15 @@ function renderMonitor() {
     renderMonitorPager();
     return;
   }
+  // 失败明细：额外加「操作」列，每条失败可单独重跑自己的任务
+  const showRetry = sheetIsFailureView() && !hasNotice;
   const cols = Object.keys(pageRows[0]);
-  const head = '<thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
+  const headCols = showRetry ? [...cols, '操作'] : cols;
+  const head = '<thead><tr>' + headCols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
   const body = '<tbody>' + pageRows.map(r => {
     const isFail = (r['状态'] === 'failed') || (r['失败原因'] && !r['重跑结果']);
     const cls = isFail ? 'row-fail' : '';
-    return `<tr class="${cls}">` + cols.map(c => {
+    let cells = cols.map(c => {
       let v = r[c] == null ? '' : String(r[c]);
       let cell = `<div class="cell-clip" title="${esc(v)}">${esc(v)}</div>`;
       if (c === '状态') {
@@ -830,10 +835,42 @@ function renderMonitor() {
         cell = `<span class="tag ${v.startsWith('已') ? 'success' : 'failed'}">${esc(v)}</span>`;
       }
       return `<td>${cell}</td>`;
-    }).join('') + '</tr>';
+    }).join('');
+    if (showRetry) {
+      const tid = esc(r['任务ID'] || '');
+      const done = String(r['重跑结果'] || '').startsWith('已重跑成功');
+      const label = done ? '再次重跑' : '重跑此条';
+      cells += `<td><button class="btn tiny retry-task" data-task-id="${tid}" title="仅重跑这一条失败任务">${label}</button></td>`;
+    }
+    return `<tr class="${cls}">` + cells + '</tr>';
   }).join('') + '</tbody>';
   el.innerHTML = '<table>' + head + body + '</table>';
+  if (showRetry) {
+    el.querySelectorAll('button.retry-task').forEach(btn => {
+      btn.addEventListener('click', () => retryFailureTask(btn.dataset.taskId, btn));
+    });
+  }
   renderMonitorPager();
+}
+
+// 监控失败明细：按任务ID重跑单条失败任务
+async function retryFailureTask(taskId, btn) {
+  if (!taskId) { alert('该记录缺少任务ID，无法单独重跑'); return; }
+  if (!window.confirm('确认只重跑这一条失败任务？')) return;
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    const res = await api('/api/retry/task', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId }),
+    });
+    startJob(res.job_id);
+  } catch (e) {
+    alert('单条重跑启动失败：' + e.message);
+    btn.disabled = false;
+    btn.textContent = old;
+  }
 }
 
 function renderMonitorPager() {

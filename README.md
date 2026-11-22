@@ -1,6 +1,6 @@
 # 投研大盘数据采集系统
 
-采集投研分析所需的大盘数据，提供 **Web 可视化看板**（一键采集、失败重跑、接口监控、定时调度），同时保留命令行入口。统一导出 CSV / Excel。**ETF 口径为每个交易日（日频）**，宏观数据为月度与季度混合。
+采集投研分析所需的大盘数据，提供 **Web 可视化看板**（一键采集、失败重跑、接口监控、定时调度、分类导出），同时保留命令行入口。**SQLite 为唯一实时主存储**，CSV / Excel 为按需导出快照。**ETF 口径为每个交易日（日频）**，宏观数据为月度与季度混合。
 
 ## 一、采集范围与数据源
 
@@ -36,6 +36,8 @@ market_data_collector/
 ├── config.json              # 配置文件（ETF 代码、日期区间、重试参数等）
 ├── main.py                  # 命令行入口
 ├── web_app.py               # Web 看板服务（FastAPI）
+├── storage.py               # SQLite 主存储层：业务主键、upsert、查询、ETF 配置
+├── migrate_to_sqlite.py     # 一次性迁移 CSV/JSONL/config 到 SQLite（幂等）
 ├── static/                  # 前端页面（原生 HTML/CSS/JS，无构建）
 │   ├── index.html
 │   ├── style.css
@@ -43,14 +45,16 @@ market_data_collector/
 ├── collectors/
 │   ├── macro.py             # 宏观数据采集
 │   └── etf.py               # ETF 日频份额/规模采集
-├── exporter.py              # CSV / Excel 导出（含口径说明、接口监控 sheet）
+├── exporter.py              # 宏观/ETF/接口监控分类导出 + 全量 ZIP（均含口径说明）
 ├── monitor.py               # 接口运维监控：状态记录、失败追踪、重跑任务、报告
 ├── requirements.txt
 └── output/                  # 运行结果
-    ├── market_data_*.xlsx / *.csv
+    ├── market_data.db                # SQLite 主库（业务数据/监控/ETF配置）
+    ├── exports/                      # 按需导出：宏观/ETF/接口监控 + 全量 ZIP
+    ├── market_data_*.xlsx / *.csv    # 旧版自动快照（回滚基线）
     └── monitor/
-        ├── interface_runs.jsonl      # 每次接口调用的追加式历史记录
-        └── 运维监控报告_*.xlsx        # 运行总览/失败明细/接口健康度/调用明细
+        ├── interface_runs.jsonl      # 旧版监控历史（迁移基线，只读保留）
+        └── 运维监控报告_*.xlsx        # 旧版监控报告
 ```
 
 ## 三、安装与运行
@@ -58,7 +62,10 @@ market_data_collector/
 ```bash
 pip3 install -r requirements.txt
 
-# 采集全部数据（ETF 按配置区间逐交易日 + 宏观）
+# 首次从旧版 CSV/JSONL 迁移到 SQLite（幂等，可重复执行）
+python3 migrate_to_sqlite.py
+
+# 采集全部数据（ETF 按配置区间逐交易日 + 宏观），写入 SQLite
 python3 main.py
 
 # 只采集 ETF 日频数据 / 只采集宏观数据
@@ -69,8 +76,11 @@ python3 main.py --macro-only
 python3 main.py --config config.json --output-format excel
 
 # 接口运维监控
-python3 main.py --monitor-report    # 仅生成历史监控报告（不采集）
-python3 main.py --retry-failed      # 重跑最近一个「有失败」批次的失败接口
+python3 main.py --monitor-report    # 从 SQLite 生成历史监控报告（不采集）
+python3 main.py --retry-failed      # 重跑最近一个「有失败」批次的失败接口，结果 upsert 回 SQLite
+
+# 导出数据：Web 看板点击「导出宏观 / 导出 ETF / 导出监控 / 导出全量」
+# 对应 API：POST /api/export/macro|etf|monitor|full
 ```
 
 ## 四、配置说明
@@ -86,22 +96,41 @@ python3 main.py --retry-failed      # 重跑最近一个「有失败」批次的
     "default_trade_days": 20
   },
   "macro": { "start_date": "2024-01" },
-  "output": { "formats": ["csv", "excel"] },
+  "storage": {
+    "backend": "sqlite",
+    "db_path": "output/market_data.db",
+    "auto_export_on_collect": false
+  },
+  "output": { "formats": ["csv", "excel"], "keep_snapshots": 3 },
   "fetch": { "retry": 3, "retry_interval_sec": 2, "timeout_sec": 15 },
   "monitor": { "history_file": "output/monitor/interface_runs.jsonl" }
 }
 ```
 
-- **etf.codes**：要采集的 ETF 代码（6 位数字）。当前为主流宽基示例，**请替换为你的标的清单**。填 `[]` 则跳过 ETF 采集。
+- **storage.backend**：`sqlite` 为实时主存储；`file` 仅用于旧版回滚。
+- **storage.auto_export_on_collect**：默认 `false`，采集只写 SQLite；文件导出按需触发。
+- **etf.codes**：要采集的 ETF 代码（6 位数字）。**注意：ETF 配置与上市日期已迁入 SQLite，config.json 仅作镜像**；以后以 Web「ETF 标的配置」或 `/api/etf/config` 为准。填 `[]` 则跳过 ETF 采集。
 - **etf.start_date / end_date**：日频数据区间，格式 `YYYY-MM-DD`。两者留空时，`end_date` 取今天，`start_date` 取往前 `default_trade_days` 个交易日。
 - **etf.default_trade_days**：留空日期时默认采集最近 N 个交易日，默认 20。N 越大，上交所逐交易日查询耗时越长。
 - **macro.start_date**：宏观数据起始月份 `YYYY-MM`，留空取全部历史。
 - **fetch**：网络重试次数、间隔与超时。单只 ETF / 单个交易日失败不会影响其余数据。
-- **monitor.history_file**：接口调用历史（JSONL 追加写），记录每次调用的日期、状态、失败原因与重试次数；`--retry-failed` 依赖此文件定位失败接口。
+- **monitor.history_file**：旧版接口调用历史（JSONL），迁移后保留只读基线；实时监控已写入 SQLite 的 `interface_run` 表。
+
+### SQLite 主存储与业务主键
+
+| 表 | 业务主键 | 示例 |
+| --- | --- | --- |
+| `macro_observation` | `{指标代码}_{YYYYMM}` | `M2_202610` |
+| `etf_observation` | `{6位基金代码}_{YYYYMMDD}` | `510050_20261020` |
+| `interface_run` | `{run_id}_{接口键}_{运行时间}_{序号}` | `20261122_201814_interface_macro.fred_DFEDTARU_20261122_201814_001` |
+| `etf_config` | `main` | 代码清单、上市日期、日期区间、默认交易日数 |
+| `meta` / `export_log` | key / id | 迁移标记与导出记录 |
+
+所有业务写入均使用 `ON CONFLICT(biz_key) DO UPDATE`，因此全量采集、精确采集、失败重跑都不会产生重复行。
 
 ## 五、接口运维监控与失败重跑
 
-每次运行会为**每个采集接口**记录一条状态，追加写入 `output/monitor/interface_runs.jsonl`，并生成 `运维监控报告_*.xlsx`。主结果 Excel 也附 `接口监控` sheet（本次运行状态）。
+每次运行会为**每个采集接口**记录一条状态，写入 SQLite 的 `interface_run` 表；Web 看板直接查询该表。**不再自动生成** `运维监控报告_*.xlsx`，可在「接口监控看板」点击「导出监控」按需生成（含口径说明）。
 
 **监控什么（逐接口）**
 
@@ -169,11 +198,12 @@ Excel 文件附 `口径说明` sheet，逐字段说明含义与单位。
 
 在 2026-11-22 环境实测通过：
 
-- **宏观数据：771 行、25 个指标**（月度/季度混合，起点 2024-01），零空值。新增指标：中国 GDP 最新 2026Q3 绝对值 1,071,071.2 亿元（同比 4.6%）；美国 GDP 环比折年率 3.4%、CPI 337.476、核心 CPI 339.900、PPI 293.921、非农新增 165 千人（均截至 2026-10，GDP 截至 2026Q3）；美国联邦基金目标利率上限 4.00%、下限 3.75%（截至 2026-11）。原 17 项指标最新值与官方一致：M2 359.06 万亿、社融存量 469.16 万亿、出口 4123.3 亿美元、进口 3070.5 亿美元、社零 46462.5 亿、CPI 100.7、PPI 105.7、制造业 PMI 49.3、A 股总市值 99.32 万亿、央行黄金 7830 万盎司。
-- ETF 日频：**119 行**（5 只 ETF，按配置区间采集），份额、净值、规模三列**均无空值**。
-- 接口监控：**19 次宏观调用全部记录**（新增 FRED 7 个接口与中国 GDP 接口），本次零失败；监控报告四个 sheet 与主 Excel「接口监控」sheet 均正常生成。
-- 已验证：全量/单项采集、历史区间回补、交易日过滤、CSV/Excel 导出均正常；**失败重跑全链路通过**（注入 CPI 超时 + 净值 502 两条失败记录 → `--retry-failed` 重跑成功 → 报告标注「已重跑成功」、数据合并零空值）。
-- 已知数据特性：深交所份额更新略滞后于上交所（本次深市标的止于 11-19，沪市止于 11-20）；深交所接口偶发瞬时断连，已被监控捕获并可重跑。
+- **SQLite 迁移验证**：宏观 771 行 / 25 指标、ETF 119 行 / 6 标的、接口监控 1383 条历史全部导入，重复执行迁移不产生重复行；业务主键示例 `M2_202610`、`510050_20261120`。
+- **宏观数据：771 行、25 个指标**（月度/季度混合，起点 2024-01），零空值。新增指标：中国 GDP 最新 2026Q3 绝对值 1,071,071.2 亿元（同比 4.6%）；美国 GDP 环比折年率 3.4%、CPI 337.476、核心 CPI 339.900、PPI 293.921、非农新增 165 千人（均截至 2026-10，GDP 截至 2026Q3）；美国联邦基金目标利率上限 4.00%、下限 3.75%（截至 2026-11）。
+- ETF 日频：**119 行**（6 只 ETF，按配置区间采集），份额、净值、规模三列**均无空值**。
+- 接口监控：SQLite 中 **1403 条调用记录**（迁移 1383 条 + 后续采集验证），Web 四个 Tab 正常展示；按需导出的接口监控 Excel 含运行总览/失败明细/接口健康度/调用明细/口径说明五个 Sheet。
+- 已验证：全量/单项采集、精确采集、交易日过滤、分类导出与全量 ZIP 均正常；精确采集只写 SQLite，**不自动生成文件快照**；失败重跑与 ETF 配置读写均以 SQLite 为准。
+- 已知数据特性：深交所份额更新略滞后于上交所；深交所接口偶发瞬时断连，已被监控捕获并可重跑。
 
 ## 八、注意事项与扩展
 
@@ -203,8 +233,8 @@ python3 web_app.py --port 9000     # 覆盖端口
 | 顶部状态栏 | 服务器时间、定时调度状态、采集任务是否运行中 |
 | 概览卡片 | 最近采集时间、宏观行数/指标数、ETF 行数/标的数、今日接口调用、历史失败累计（失败数红色高亮） |
 | 采集控制台 | 「全量 / 仅宏观 / 仅 ETF / 重跑失败接口」紧凑排列，按钮标注**整体 / 部分 / 运维**；精确采集标注「部分」，定时调度标注「整体」；单行滚动实时日志（可展开、自动滚动/暂停/回到底部） |
-| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab；默认日期 **2024-01-01 ~ 当天**，支持关键词（可选可输入）、运行类型、类别、状态、日期组合筛选；四表统一分页默认 25 行/页、单页上限 100 行 |
-| 采集数据 | 宏观 / ETF 日频 / 输出文件三个 Tab，支持代码与日期筛选（下拉可选或输入、完整日期控件、默认 **2024-01-01 ~ 当天**）、文件下载；分页默认 25 行/页、单页上限 100 行 |
+| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab；默认日期 **2024-01-01 ~ 当天**，支持组合筛选与分页（25/50/100）；提供「导出监控」按钮（含口径说明） |
+| 采集数据 | 宏观 / ETF 日频 / 输出文件三个 Tab，支持代码与日期筛选（默认 **2024-01-01 ~ 当天**）、分页（25/50/100）；提供「导出宏观 / 导出 ETF / 导出全量 ZIP」按钮，均含口径说明 |
 | 定时调度 | 界面勾选启用、设置每日时刻与采集范围，保存到 config.json |
 
 各模块通过左侧彩色边框与标题标签区分：**采集控制台（蓝）/ ETF 配置（绿）/ 接口监控（橙）/ 采集数据（灰）**；精确采集与数据筛选日期统一默认 **2024-01-01 至当天**，宏观指标在后端自动按月归并。
@@ -213,12 +243,14 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 - **异步任务**：采集/重跑在后台线程执行，同一时刻只允许一个任务（避免并发写同一批文件），前端轮询 `/api/jobs/{id}` 实时显示日志与状态。日志只在 root 挂一次 handler，不重复。
 - **实时日志**：默认在采集控制台右侧以单行滚动条显示最新日志；点击可展开完整日志，轮询只追加新增行，保持自动滚动，可暂停或一键回到底部。
-- **单项采集保护**：仅采集宏观或仅采集 ETF 时，另一项沿用上次结果，避免空数据覆盖已有文件。
+- **单项采集保护**：SQLite 按业务主键 upsert；仅采集宏观或仅采集 ETF 时，另一类数据保持库中原样，不会被空 DataFrame 覆盖。
 - **日期区间兼容**：所有日期控件默认 2024-01-01 至当天；前端统一传 YYYY-MM-DD，宏观采集与查询自动按月截取为 YYYY-MM。
 - **定时调度**：服务运行时按 `config.json` 的 `scheduler` 段每日指定时刻自动采集一次（同一天只触发一次），可在看板实时开关/改时间。任务与失败会在看板突出显示。
-- **沿用文件存储**：不引入数据库，数据仍在 `output/`（CSV/Excel），监控历史在 `output/monitor/interface_runs.jsonl`。
+- **SQLite 主存储**：业务数据、接口监控、ETF 配置与上市日期均在 `output/market_data.db`；旧 CSV/JSONL 保留只读作为迁移与回滚基线。
+- **分类导出**：采集只写库不生成文件；按需导出宏观 / ETF / 接口监控，每个 Excel 都含「口径说明」Sheet，CSV 同步生成独立口径说明文件；全量导出打包 ZIP。
 
 ### API 一览
 
 `GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/etf/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
-`POST /api/collect`、`/api/collect/interface`、`/api/retry`、`/api/scheduler`、`/api/etf/config`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。
+`POST /api/collect`、`/api/collect/interface`、`/api/retry`、`/api/scheduler`、`/api/etf/config`；
+`POST /api/export/macro`、`/api/export/etf`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。

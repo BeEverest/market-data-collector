@@ -1,8 +1,9 @@
-"""结果导出：CSV 与 Excel（含字段口径说明），及历史快照保留策略。"""
+"""结果导出：宏观 / ETF / 接口监控分类导出（均含口径说明），及历史快照保留策略。"""
 from __future__ import annotations
 
 import logging
 import re
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -22,6 +23,9 @@ _NOTES = [
     ["宏观-景气市场", "制造业PMI / 非制造业PMI", "采购经理指数，50 为荣枯线，单位：指数点"],
     ["宏观-景气市场", "A股总市值(沪深)", "沪市 + 深市市价总值，单位：亿元"],
     ["宏观-景气市场", "央行黄金储备", "国家外汇管理局月末黄金储备，单位：万盎司"],
+    ["宏观-增长", "中国GDP(季度绝对值)", "国家统计局季度累计绝对值，日期映射为季末月，单位：亿元；同比来自统计局"],
+    ["宏观-美国", "美国GDP/CPI/核心CPI/PPI/非农", "FRED（BEA/BLS）；指数类按上年同月/上月计算同比环比；非农为月度新增千人"],
+    ["宏观-美国", "美国联邦基金目标利率上限/下限", "FRED DFEDTARU / DFEDTARL 实际值；原始日频按月取最新，单位 %"],
     ["ETF", "交易日期", "交易日（日频口径），非季末；交易所数据通常于次一交易日早晨更新上一交易日"],
     ["ETF", "份额(亿份)", "交易所披露的当日基金总份额，单位：亿份（上交所/SH、深交所/SZ）"],
     ["ETF", "单位净值(元)", "天天基金披露的当日单位净值，单位：元/份"],
@@ -35,6 +39,107 @@ _NOTES = [
     ["监控", "运行日期/失败原因", "接口监控 sheet 记录每次调用的运行日期、状态、失败原因、重试次数"],
     ["监控", "重跑机制", "python main.py --retry-failed 重跑最近批次失败接口；--monitor-report 生成历史监控报告"],
 ]
+
+
+def _notes_for(categories: set[str]) -> pd.DataFrame:
+    rows = [r for r in _NOTES if r[0] in categories]
+    return pd.DataFrame(rows[1:], columns=rows[0])
+
+
+def _stamp() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _export_dir(base_dir: Path, config: dict) -> Path:
+    out_dir = base_dir / config.get("output", {}).get("dir", "output") / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _write_excel(path: Path, sheets: list[tuple[str, pd.DataFrame]]) -> None:
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        for name, df in sheets:
+            df.to_excel(writer, sheet_name=name, index=False)
+            ws = writer.sheets[name]
+            for column in ws.columns:
+                max_len = max(
+                    (len(str(cell.value)) for cell in column if cell.value is not None),
+                    default=8,
+                )
+                ws.column_dimensions[column[0].column_letter].width = min(max_len + 2, 46)
+            ws.freeze_panes = "A2"
+
+
+def export_macro(macro_df: pd.DataFrame, base_dir: Path, config: dict,
+                 stamp: str | None = None) -> list[str]:
+    """导出宏观数据：CSV + 口径说明 CSV + Excel（含口径说明 Sheet）。"""
+    stamp = stamp or _stamp()
+    out_dir = _export_dir(base_dir, config)
+    notes = _notes_for({"宏观-货币信贷", "宏观-外贸", "宏观-消费物价",
+                        "宏观-景气市场", "宏观-增长", "宏观-美国", "数据源", "注意"})
+    csv_path = out_dir / f"宏观数据_{stamp}.csv"
+    note_path = out_dir / f"宏观数据口径说明_{stamp}.csv"
+    xlsx_path = out_dir / f"宏观数据_{stamp}.xlsx"
+    macro_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    notes.to_csv(note_path, index=False, encoding="utf-8-sig")
+    _write_excel(xlsx_path, [("宏观数据", macro_df), ("口径说明", notes)])
+    logger.info("宏观数据导出完成：%d 行", len(macro_df))
+    return [str(csv_path), str(note_path), str(xlsx_path)]
+
+
+def export_etf(etf_df: pd.DataFrame, base_dir: Path, config: dict,
+               stamp: str | None = None) -> list[str]:
+    """导出 ETF 数据：CSV + 口径说明 CSV + Excel（含口径说明 Sheet）。"""
+    stamp = stamp or _stamp()
+    out_dir = _export_dir(base_dir, config)
+    notes = _notes_for({"ETF", "数据源", "注意"})
+    csv_path = out_dir / f"ETF数据_{stamp}.csv"
+    note_path = out_dir / f"ETF数据口径说明_{stamp}.csv"
+    xlsx_path = out_dir / f"ETF数据_{stamp}.xlsx"
+    etf_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    notes.to_csv(note_path, index=False, encoding="utf-8-sig")
+    _write_excel(xlsx_path, [("ETF规模", etf_df), ("口径说明", notes)])
+    logger.info("ETF 数据导出完成：%d 行", len(etf_df))
+    return [str(csv_path), str(note_path), str(xlsx_path)]
+
+
+def export_monitor(history_df: pd.DataFrame, base_dir: Path, config: dict,
+                   stamp: str | None = None) -> list[str]:
+    """导出接口监控：CSV + 口径说明 CSV + Excel（四张报告 + 口径说明）。"""
+    from monitor import Monitor
+
+    stamp = stamp or _stamp()
+    out_dir = _export_dir(base_dir, config)
+    notes = _notes_for({"监控", "注意"})
+    report = Monitor(base_dir).build_report(history=history_df)
+    csv_path = out_dir / f"接口监控_{stamp}.csv"
+    note_path = out_dir / f"接口监控口径说明_{stamp}.csv"
+    xlsx_path = out_dir / f"接口监控_{stamp}.xlsx"
+    detail = report.get("调用明细", pd.DataFrame())
+    detail.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    notes.to_csv(note_path, index=False, encoding="utf-8-sig")
+    sheets = list(report.items()) + [("口径说明", notes)]
+    _write_excel(xlsx_path, sheets)
+    logger.info("接口监控导出完成：%d 行调用明细", len(detail))
+    return [str(csv_path), str(note_path), str(xlsx_path)]
+
+
+def export_full(macro_df: pd.DataFrame, etf_df: pd.DataFrame,
+                history_df: pd.DataFrame, base_dir: Path, config: dict) -> list[str]:
+    """分类导出后打包为 ZIP，返回所有生成文件路径（ZIP 在最后）。"""
+    stamp = _stamp()
+    files = export_macro(macro_df, base_dir, config, stamp)
+    files += export_etf(etf_df, base_dir, config, stamp)
+    files += export_monitor(history_df, base_dir, config, stamp)
+    out_dir = _export_dir(base_dir, config)
+    zip_path = out_dir / f"全量导出_{stamp}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in files:
+            zf.write(file, arcname=Path(file).name)
+    files.append(str(zip_path))
+    logger.info("全量导出完成：%s", zip_path)
+    return files
 
 
 def export_results(
@@ -117,10 +222,15 @@ def prune_snapshots(base_dir: Path, config: dict) -> list[str]:
     batches: dict[str, list[Path]] = {}
     patterns = [
         f"{prefix}_宏观数据_*.csv", f"{prefix}_ETF规模_*.csv", f"{prefix}_*.xlsx",
+        "宏观数据_*.csv", "宏观数据口径说明_*.csv", "宏观数据_*.xlsx",
+        "ETF数据_*.csv", "ETF数据口径说明_*.csv", "ETF数据_*.xlsx",
+        "接口监控_*.csv", "接口监控口径说明_*.csv", "接口监控_*.xlsx",
+        "全量导出_*.zip",
     ]
     candidates: list[Path] = []
     for pattern in patterns:
         candidates.extend(out_dir.glob(pattern))
+    candidates.extend((out_dir / "exports").glob("*"))
     candidates.extend((out_dir / "monitor").glob("运维监控报告_*.xlsx"))
 
     for path in candidates:

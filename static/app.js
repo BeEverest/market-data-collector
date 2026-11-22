@@ -653,6 +653,23 @@ function esc(s) {
   })[m]);
 }
 
+/* ---------- SQLite 分类导出 ---------- */
+async function runExport(url, label) {
+  try {
+    const res = await api(url, { method: 'POST' });
+    const files = res.files || [];
+    flashLog(`${label}完成，生成 ${files.length} 个文件：${files.join('、')}`, 'INFO');
+    if (dataTab === 'files') loadData();
+  } catch (e) {
+    alert(`${label}失败：${e.message}`);
+  }
+}
+
+$('exportMacroBtn').addEventListener('click', () => runExport('/api/export/macro', '宏观数据导出'));
+$('exportEtfBtn').addEventListener('click', () => runExport('/api/export/etf', 'ETF 数据导出'));
+$('exportFullBtn').addEventListener('click', () => runExport('/api/export/full', '全量导出'));
+$('exportMonitorBtn').addEventListener('click', () => runExport('/api/export/monitor', '接口监控导出'));
+
 /* ---------- 定时刷新 ---------- */
 async function refresh() {
   await Promise.all([loadStatus(), loadMonitor()]);

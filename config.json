@@ -29,6 +29,14 @@
     "start_date": "2024-01",
     "_start_date_help": "宏观数据起始月份 YYYY-MM；置为空字符串表示取全部历史。"
   },
+  "storage": {
+    "backend": "sqlite",
+    "db_path": "output/market_data.db",
+    "auto_export_on_collect": false,
+    "_backend_help": "sqlite=SQLite 为唯一实时主存储；file=旧 CSV/JSONL 模式（仅回滚用）",
+    "_db_path_help": "SQLite 数据库文件路径",
+    "_auto_export_help": "采集后是否自动生成 CSV/Excel 快照；默认关闭，改用按需导出全量数据"
+  },
   "output": {
     "dir": "output",
     "formats": [

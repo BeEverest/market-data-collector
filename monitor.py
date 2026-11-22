@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from storage import append_interface_runs, read_interface_runs
+
 logger = logging.getLogger(__name__)
 
 RUN_FIELDS = [
@@ -38,6 +40,7 @@ class Monitor:
         base_dir: Path,
         run_type: str = "full",
         history_path: str | Path | None = None,
+        db_path: str | Path | None = None,
     ):
         now = datetime.now()
         self.run_id = now.strftime("%Y%m%d_%H%M%S") + "_" + run_type
@@ -50,6 +53,7 @@ class Monitor:
             if history_path
             else Path(base_dir) / "output" / "monitor" / "interface_runs.jsonl"
         )
+        self.db_path = db_path
 
     # ---------- 记录 ----------
     def record(
@@ -89,7 +93,11 @@ class Monitor:
         return rec
 
     def save(self) -> Path:
-        """把本次记录追加到历史文件，返回文件路径。"""
+        """把本次记录写入 SQLite（优先）或旧 JSONL，返回存储路径。"""
+        if self.db_path:
+            append_interface_runs(self.db_path, self.records)
+            logger.info("监控记录已保存：%d 条 -> SQLite %s", len(self.records), self.db_path)
+            return Path(self.db_path)
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.history_path, "a", encoding="utf-8") as handle:
             for rec in self.records:
@@ -99,7 +107,9 @@ class Monitor:
 
     # ---------- 历史读取 ----------
     @staticmethod
-    def load(history_path: str | Path) -> pd.DataFrame:
+    def load(history_path: str | Path, db_path: str | Path | None = None) -> pd.DataFrame:
+        if db_path:
+            return read_interface_runs(db_path)
         path = Path(history_path)
         if not path.exists():
             return pd.DataFrame(columns=RUN_FIELDS)
@@ -120,7 +130,7 @@ class Monitor:
 
         即使之后又成功跑过一次，仍可重跑上一批次的失败接口（运维常见诉求）。
         """
-        hist = self.load(self.history_path) if history is None else history
+        hist = self.load(self.history_path, self.db_path) if history is None else history
         if hist.empty:
             return []
         failed_runs = hist[hist["status"] == "failed"]
@@ -148,7 +158,7 @@ class Monitor:
     # ---------- 报告 ----------
     def build_report(self, history: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
         """生成监控报告：运行总览 / 失败明细 / 接口健康度 / 调用明细。"""
-        hist = self.load(self.history_path) if history is None else history
+        hist = self.load(self.history_path, self.db_path) if history is None else history
         if hist.empty:
             msg = pd.DataFrame([["暂无监控记录，请先运行一次采集。"]], columns=["提示"])
             return {"运行总览": msg, "失败明细": msg, "接口健康度": msg, "调用明细": msg}

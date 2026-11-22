@@ -6,7 +6,7 @@
     python web_app.py --port 9000    # 覆盖端口
 
 浏览器访问 http://127.0.0.1:8000 。所有采集/重跑在后台线程执行，前端轮询任务状态。
-历史数据仍沿用 CSV/Excel/JSONL 文件，不引入数据库。
+业务数据、接口监控与 ETF 配置以 SQLite 为主存储；CSV/Excel 为按需导出快照。
 """
 from __future__ import annotations
 
@@ -31,9 +31,11 @@ import sys
 sys.path.insert(0, str(BASE_DIR))
 
 from main import (
-    BASE_DIR as MAIN_BASE, _collect, _finish, _latest_csv, _merge_patch,
+    BASE_DIR as MAIN_BASE, _collect, _finish, _merge_patch,
     collect_interface, load_config,
 )
+import storage
+from exporter import export_etf, export_full, export_macro, export_monitor
 from monitor import Monitor
 from collectors.macro import catalog as macro_catalog
 from collectors.etf import get_fund_name_map
@@ -61,13 +63,20 @@ def _history_path(config: dict) -> Path:
     )
 
 
+def _db_path(config: dict) -> Path | None:
+    if config.get("storage", {}).get("backend", "sqlite") != "sqlite":
+        return None
+    return storage.db_path(config, BASE_DIR)
+
+
 def _save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _etf_config_view() -> dict:
     cfg = _cfg()
-    etf = cfg.get("etf", {})
+    db_path = _db_path(cfg)
+    etf = storage.get_etf_config(db_path, cfg.get("etf", {})) if db_path else cfg.get("etf", {})
     codes = [str(c).strip().zfill(6) for c in etf.get("codes", []) if str(c).strip()]
     name_map = get_fund_name_map()
     listing = {str(k).zfill(6): v for k, v in (etf.get("listing_dates") or {}).items()}
@@ -152,25 +161,22 @@ def _submit(kind: str, func) -> str:
 
 def _do_collect(macro_only: bool = False, etf_only: bool = False) -> str:
     config = _cfg()
-    monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config))
+    db_path = _db_path(config)
+    monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config),
+                      db_path=db_path)
     logger.info("Web 触发采集：%s", "仅宏观" if macro_only else ("仅 ETF" if etf_only else "全量"))
     macro_df, etf_df = _collect(config, monitor, macro_only=macro_only, etf_only=etf_only)
-    # 单项采集时，另一项沿用上次结果，避免空 DataFrame 覆盖掉已有数据文件
-    if macro_only and etf_df.empty:
-        prev = _latest_csv("etf", config)
-        if prev:
-            etf_df = pd.read_csv(prev, dtype={"基金代码": str})
-            logger.info("仅宏观采集：ETF 沿用上次结果 %d 行", len(etf_df))
-    if etf_only and macro_df.empty:
-        prev = _latest_csv("macro", config)
-        if prev:
-            macro_df = pd.read_csv(prev)
-            logger.info("仅 ETF 采集：宏观沿用上次结果 %d 行", len(macro_df))
+    # SQLite 按业务键 upsert；空 DataFrame 不会覆盖库中已有数据
     _finish(monitor, macro_df, etf_df, config, monitor.run_id)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
-    logger.info("采集完成：宏观 %d 行 / ETF %d 行，接口失败 %d 次",
-                len(macro_df), len(etf_df), failed)
-    return f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行，接口失败 {failed} 次"
+    if db_path:
+        counts = storage.status_counts(db_path)
+        summary = (f"SQLite 已更新：宏观 {counts['macro_rows']} 行 / ETF {counts['etf_rows']} 行，"
+                   f"接口失败 {failed} 次")
+    else:
+        summary = f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行，接口失败 {failed} 次"
+    logger.info("采集完成：%s", summary)
+    return summary
 
 
 def _do_retry() -> str:
@@ -189,14 +195,24 @@ def _do_collect_interface(category: str, codes: list[str],
 
 # ---------------- 数据读取 ----------------
 def _read_csv(kind: str) -> pd.DataFrame:
-    path = _latest_csv(kind, _cfg())
-    if not path:
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(path, dtype={"基金代码": str})
-    except Exception as exc:
-        logger.warning("读取 CSV 失败 %s: %s", path, exc)
-        return pd.DataFrame()
+    """兼容旧调用名：从 SQLite 主存储读取当前全量业务数据。"""
+    config = _cfg()
+    db_path = _db_path(config)
+    if not db_path:
+        from main import _latest_csv
+        path = _latest_csv(kind, config)
+        if not path:
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(path, dtype={"基金代码": str})
+        except OSError as exc:
+            logger.warning("读取 CSV 失败 %s: %s", path, exc)
+            return pd.DataFrame()
+    if kind == "macro":
+        return storage.read_macro(db_path)[1]
+    if kind == "etf":
+        return storage.read_etf(db_path)[1]
+    return pd.DataFrame()
 
 
 def _frame_to_records(df: pd.DataFrame, limit: int = 5000) -> list[dict]:
@@ -282,30 +298,41 @@ def index():
 
 @app.get("/api/status")
 def api_status():
-    history = Monitor.load(_history_path(_cfg()))
     cfg = _cfg()
+    db_path = _db_path(cfg)
     last_run = {}
     failed_count = 0
-    today = datetime.now().strftime("%Y-%m-%d")
     today_calls = 0
-    if not history.empty:
-        last = history.sort_values("run_time").iloc[-1]
-        last_run = {
-            "id": last["run_id"], "date": last["run_date"], "time": last["run_time"],
-            "type": last["run_type"],
-        }
-        failed_count = int((history["status"] == "failed").sum())
-        today_calls = int((history["run_date"] == today).sum())
-    macro = _read_csv("macro")
-    etf = _read_csv("etf")
+    if db_path:
+        counts = storage.status_counts(db_path)
+        last_run = counts.get("last_run") or {}
+        failed_count = counts["failed_total"]
+        today_calls = counts["today_calls"]
+        macro_rows, macro_indicators = counts["macro_rows"], counts["macro_indicators"]
+        etf_rows, etf_codes = counts["etf_rows"], counts["etf_codes"]
+    else:
+        history = Monitor.load(_history_path(cfg))
+        if not history.empty:
+            last = history.sort_values("run_time").iloc[-1]
+            last_run = {
+                "id": last["run_id"], "date": last["run_date"], "time": last["run_time"],
+                "type": last["run_type"],
+            }
+            failed_count = int((history["status"] == "failed").sum())
+            today_calls = int((history["run_date"] == datetime.now().strftime("%Y-%m-%d")).sum())
+        macro, etf = _read_csv("macro"), _read_csv("etf")
+        macro_rows = len(macro)
+        macro_indicators = int(macro["指标代码"].nunique()) if not macro.empty else 0
+        etf_rows = len(etf)
+        etf_codes = int(etf["基金代码"].nunique()) if not etf.empty else 0
     return {
         "last_run": last_run,
         "failed_total": failed_count,
         "today_calls": today_calls,
-        "macro_rows": len(macro),
-        "macro_indicators": int(macro["指标代码"].nunique()) if not macro.empty else 0,
-        "etf_rows": len(etf),
-        "etf_codes": int(etf["基金代码"].nunique()) if not etf.empty else 0,
+        "macro_rows": macro_rows,
+        "macro_indicators": macro_indicators,
+        "etf_rows": etf_rows,
+        "etf_codes": etf_codes,
         "scheduler": {
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
             "time": cfg.get("scheduler", {}).get("time", "08:30"),
@@ -319,14 +346,16 @@ def api_status():
 
 @app.get("/api/monitor/report")
 def api_monitor_report():
-    monitor = Monitor(MAIN_BASE, history_path=_history_path(_cfg()))
+    cfg = _cfg()
+    monitor = Monitor(MAIN_BASE, history_path=_history_path(cfg), db_path=_db_path(cfg))
     report = monitor.build_report()
     return {sheet: _frame_to_records(df) for sheet, df in report.items()}
 
 
 @app.get("/api/monitor/failed")
 def api_monitor_failed():
-    monitor = Monitor(MAIN_BASE, history_path=_history_path(_cfg()))
+    cfg = _cfg()
+    monitor = Monitor(MAIN_BASE, history_path=_history_path(cfg), db_path=_db_path(cfg))
     return {"tasks": monitor.failed_tasks()}
 
 
@@ -351,6 +380,20 @@ def api_data_macro(code: str | None = None, start: str | None = None,
     # 宏观数据按月存储，兼容前端传入的 YYYY-MM-DD
     start = start[:7] if start else None
     end = end[:7] if end else None
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+    db_path = _db_path(_cfg())
+    if db_path:
+        total, df = storage.read_macro(db_path, code, start, end, limit=page_size, offset=0)
+        pages = max(1, (total + page_size - 1) // page_size)
+        if page > pages:
+            page = pages
+        _, df = storage.read_macro(
+            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+        return {
+            "total": total, "pages": pages, "page": page, "page_size": page_size,
+            "rows": _frame_to_records(df, page_size),
+        }
     df = _read_csv("macro")
     if code and not df.empty:
         df = df[df["指标代码"] == code]
@@ -364,6 +407,20 @@ def api_data_macro(code: str | None = None, start: str | None = None,
 @app.get("/api/data/etf")
 def api_data_etf(code: str | None = None, start: str | None = None,
                  end: str | None = None, page: int = 1, page_size: int = 25):
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+    db_path = _db_path(_cfg())
+    if db_path:
+        total, _ = storage.read_etf(db_path, code, start, end, limit=1)
+        pages = max(1, (total + page_size - 1) // page_size)
+        if page > pages:
+            page = pages
+        _, df = storage.read_etf(
+            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+        return {
+            "total": total, "pages": pages, "page": page, "page_size": page_size,
+            "rows": _frame_to_records(df, page_size),
+        }
     df = _read_csv("etf")
     if code and not df.empty:
         df = df[df["基金代码"] == code]
@@ -395,6 +452,62 @@ def api_download(name: str):
     if not str(target).startswith(str(out_dir)) or not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(target, filename=target.name)
+
+
+def _export_names(files: list[str], config: dict) -> list[str]:
+    out_dir = (BASE_DIR / config.get("output", {}).get("dir", "output")).resolve()
+    return [str(Path(f).resolve().relative_to(out_dir)) for f in files]
+
+
+def _require_db(config: dict) -> Path:
+    db_path = _db_path(config)
+    if not db_path:
+        raise HTTPException(status_code=400, detail="当前存储模式为 file，导出请先切换到 sqlite")
+    return db_path
+
+
+@app.post("/api/export/macro")
+def api_export_macro():
+    config = _cfg()
+    db_path = _require_db(config)
+    _, df = storage.read_macro(db_path)
+    files = export_macro(df, BASE_DIR, config)
+    storage.log_export(db_path, "macro", files[-1], {"rows": len(df)})
+    return {"files": _export_names(files, config)}
+
+
+@app.post("/api/export/etf")
+def api_export_etf():
+    config = _cfg()
+    db_path = _require_db(config)
+    _, df = storage.read_etf(db_path)
+    files = export_etf(df, BASE_DIR, config)
+    storage.log_export(db_path, "etf", files[-1], {"rows": len(df)})
+    return {"files": _export_names(files, config)}
+
+
+@app.post("/api/export/monitor")
+def api_export_monitor():
+    config = _cfg()
+    db_path = _require_db(config)
+    history = storage.read_interface_runs(db_path)
+    files = export_monitor(history, BASE_DIR, config)
+    storage.log_export(db_path, "monitor", files[-1], {"rows": len(history)})
+    return {"files": _export_names(files, config)}
+
+
+@app.post("/api/export/full")
+def api_export_full():
+    config = _cfg()
+    db_path = _require_db(config)
+    _, macro_df = storage.read_macro(db_path)
+    _, etf_df = storage.read_etf(db_path)
+    history = storage.read_interface_runs(db_path)
+    files = export_full(macro_df, etf_df, history, BASE_DIR, config)
+    storage.log_export(db_path, "full", files[-1], {
+        "macro": len(macro_df), "etf": len(etf_df), "monitor": len(history),
+    })
+    return {"files": _export_names(files, config)}
 
 
 @app.get("/api/jobs/{job_id}")
@@ -445,9 +558,10 @@ def api_catalog():
         item.setdefault("last_date", "")
         item.setdefault("first_date", "")
 
-    etf_codes = [str(c).strip().zfill(6) for c in cfg.get("etf", {}).get("codes", [])]
-    name_map = get_fund_name_map()
-    listing = {str(k).zfill(6): v for k, v in (cfg.get("etf", {}).get("listing_dates") or {}).items()}
+    etf_view = _etf_config_view()
+    etf_codes = etf_view["codes"]
+    name_map = {it["code"]: it["name"] for it in etf_view["items"]}
+    listing = {it["code"]: it["listing_date"] for it in etf_view["items"]}
     etf_df = _read_csv("etf")
     etf_items = []
     for code in etf_codes:
@@ -488,9 +602,10 @@ def api_etf_config_get():
 
 @app.post("/api/etf/config")
 def api_etf_config_set(payload: dict):
-    """灵活配置 ETF：增删改代码清单、日期区间、默认交易日数。"""
+    """灵活配置 ETF：增删改代码清单、日期区间、默认交易日数；SQLite 为权威源。"""
     cfg = _cfg()
-    etf = cfg.setdefault("etf", {})
+    db_path = _db_path(cfg)
+    etf = storage.get_etf_config(db_path, cfg.get("etf", {})) if db_path else cfg.setdefault("etf", {})
 
     updated = False
     if "codes" in payload:
@@ -512,7 +627,6 @@ def api_etf_config_set(payload: dict):
         if len(codes) > 50:
             raise HTTPException(status_code=400, detail="ETF 标的数量上限 50 只")
         etf["codes"] = codes
-        # 清理已移除代码的上市日期缓存
         listing = etf.get("listing_dates") or {}
         etf["listing_dates"] = {k: v for k, v in listing.items() if k in codes}
         updated = True
@@ -541,7 +655,10 @@ def api_etf_config_set(payload: dict):
     if not updated:
         raise HTTPException(status_code=400, detail="无有效配置项")
 
-    _save_config(cfg)
+    if db_path:
+        storage.save_etf_config(db_path, etf)
+        cfg["etf"] = etf
+    _save_config(cfg)  # config.json 仅作镜像，便于回滚
     logger.info("ETF 配置已更新：%d 只标的", len(etf.get("codes", [])))
     return {"ok": True, "config": _etf_config_view()}
 

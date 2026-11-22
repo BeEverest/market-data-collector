@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+import storage
+
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
@@ -43,7 +45,19 @@ def load_config(path: str) -> dict:
     if not config_path.is_absolute():
         config_path = BASE_DIR / config_path
     with open(config_path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+        config = json.load(handle)
+    if config.get("storage", {}).get("backend", "sqlite") == "sqlite":
+        db_path = storage.db_path(config, BASE_DIR)
+        storage.init_schema(db_path)
+        # SQLite 为 ETF 配置权威源；config.json 保留为镜像与回滚基线
+        config["etf"] = storage.get_etf_config(db_path, config.get("etf", {}))
+    return config
+
+
+def _db_path(config: dict) -> Path | None:
+    if config.get("storage", {}).get("backend", "sqlite") != "sqlite":
+        return None
+    return storage.db_path(config, BASE_DIR)
 
 
 def _latest_csv(kind: str, config: dict) -> Path | None:
@@ -54,6 +68,24 @@ def _latest_csv(kind: str, config: dict) -> Path | None:
     label = "宏观数据" if kind == "macro" else "ETF规模"
     candidates = sorted(out_dir.glob(f"{prefix}_{label}_*.csv"))
     return candidates[-1] if candidates else None
+
+
+def _read_base(kind: str, config: dict) -> pd.DataFrame:
+    """读取当前主数据：SQLite 优先，旧模式回退到最新 CSV。"""
+    db_path = _db_path(config)
+    if db_path:
+        if kind == "macro":
+            return storage.read_macro(db_path)[1]
+        if kind == "etf":
+            return storage.read_etf(db_path)[1]
+    path = _latest_csv(kind, config)
+    if not path:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, dtype={"基金代码": str})
+    except OSError as exc:
+        logger.warning("读取基准 CSV 失败 %s: %s", path, exc)
+        return pd.DataFrame()
 
 
 def _save_listing_dates(config: dict, config_path: str = "config.json") -> None:
@@ -67,6 +99,16 @@ def _save_listing_dates(config: dict, config_path: str = "config.json") -> None:
     except (OSError, json.JSONDecodeError):
         disk = config
     disk.setdefault("etf", {})["listing_dates"] = config.get("etf", {}).get("listing_dates", {})
+    db_path = _db_path(config)
+    if db_path:
+        etf_cfg = config.get("etf", {}) or {}
+        storage.save_etf_config(db_path, {
+            "codes": etf_cfg.get("codes", []),
+            "listing_dates": etf_cfg.get("listing_dates", {}),
+            "start_date": etf_cfg.get("start_date", ""),
+            "end_date": etf_cfg.get("end_date", ""),
+            "default_trade_days": etf_cfg.get("default_trade_days", 20),
+        })
     try:
         cfg_path.write_text(json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
     except OSError as exc:
@@ -150,28 +192,48 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
 
 def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
             config: dict, run_ts: str) -> list[str]:
-    """导出数据、保存监控记录、生成监控报告。"""
+    """写入 SQLite 主存储；按配置决定是否自动生成文件快照。"""
+    db_path = _db_path(config)
+    if db_path:
+        monitor.db_path = db_path
+        monitor.save()
+        storage.upsert_macro(db_path, macro_df, run_ts)
+        storage.upsert_etf(db_path, etf_df, run_ts)
+        macro_rows, _ = storage.read_macro(db_path)
+        etf_rows, _ = storage.read_etf(db_path)
+        failed = sum(1 for r in monitor.records if r["status"] == "failed")
+        logger.info("SQLite 主存储已更新：宏观 %d 行 / ETF %d 行；接口调用 %d 次，失败 %d 次",
+                    macro_rows, etf_rows, len(monitor.records), failed)
+        files: list[str] = []
+        if config.get("storage", {}).get("auto_export_on_collect", False):
+            files = export_results(macro_df, etf_df, BASE_DIR, config, run_ts,
+                                   monitor_records=monitor.records)
+            out_root = BASE_DIR / config.get("output", {}).get("dir", "output")
+            files.append(str(monitor.export_report(BASE_DIR, run_ts, output_dir=out_root)))
+            prune_snapshots(BASE_DIR, config)
+        for file_path in files:
+            logger.info("  - %s", file_path)
+        return files
+
+    # 旧文件模式（仅回滚用）
     monitor.save()
     files = export_results(macro_df, etf_df, BASE_DIR, config, run_ts,
                            monitor_records=monitor.records)
     out_root = BASE_DIR / config.get("output", {}).get("dir", "output")
     report = monitor.export_report(BASE_DIR, run_ts, output_dir=out_root)
     files.append(str(report))
-    # 只保留最近 N 份数据快照（CSV/Excel/监控报告），监控历史 JSONL 不清
     prune_snapshots(BASE_DIR, config)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     logger.info("接口监控：%d 次调用，%d 次失败，报告=%s", len(monitor.records), failed, report)
-    logger.info("全部完成，生成文件：")
-    for file_path in files:
-        logger.info("  - %s", file_path)
     return files
 
 
 def _retry_failed(config: dict, monitor_cfg: dict) -> int:
     """重跑最近批次的失败接口，合并到最新数据并导出。"""
     history_path = BASE_DIR / monitor_cfg.get("history_file", "output/monitor/interface_runs.jsonl")
-    history = Monitor.load(history_path)
-    probe = Monitor(BASE_DIR, run_type="retry", history_path=history_path)
+    db_path = _db_path(config)
+    history = Monitor.load(history_path, db_path)
+    probe = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
     tasks = probe.failed_tasks(history)
     if not tasks:
         logger.info("最近批次无失败接口，无需重跑。")
@@ -183,7 +245,7 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
         logger.info("  - %s（%s，原因：%s）", task["interface_name"],
                     task["failed_date"], task["last_error"] or "未知")
 
-    retry_monitor = Monitor(BASE_DIR, run_type="retry", history_path=history_path)
+    retry_monitor = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
     fetch_cfg = config.get("fetch", {})
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
@@ -258,9 +320,9 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
             columns=["基金代码", "交易日期", "单位净值(元)"]
         )
         # 只补采主数据中已存在的「基金×交易日」，避免引入无份额的空行
-        base_path = _latest_csv("etf", config)
-        if not nav_patch.empty and base_path:
-            base_keys = pd.read_csv(base_path, usecols=["基金代码", "交易日期"], dtype={"基金代码": str})
+        base_keys = _read_base("etf", config)
+        if not nav_patch.empty and not base_keys.empty:
+            base_keys = base_keys[["基金代码", "交易日期"]].copy()
             nav_patch["基金代码"] = nav_patch["基金代码"].astype(str)
             base_keys["基金代码"] = base_keys["基金代码"].astype(str).str.zfill(6)
             nav_patch = nav_patch.merge(base_keys.drop_duplicates(),
@@ -268,14 +330,8 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
         etf_patch = nav_patch[["基金代码", "交易日期", "单位净值(元)"]]
 
     # ---- 合并到最新数据 ----
-    macro_base = pd.DataFrame()
-    etf_base = pd.DataFrame()
-    base_path = _latest_csv("macro", config)
-    if base_path:
-        macro_base = pd.read_csv(base_path)
-    base_path = _latest_csv("etf", config)
-    if base_path:
-        etf_base = pd.read_csv(base_path)
+    macro_base = _read_base("macro", config)
+    etf_base = _read_base("etf", config)
     macro_final = _merge_patch(macro_base, macro_patch, ["指标代码", "日期"])
     etf_final = _merge_patch(etf_base, etf_patch, ["基金代码", "交易日期"])
     if not etf_final.empty and {"份额(亿份)", "单位净值(元)"}.issubset(etf_final.columns):
@@ -306,7 +362,8 @@ def collect_interface(
     """
     monitor_cfg = config.get("monitor", {})
     history_path = BASE_DIR / monitor_cfg.get("history_file", "output/monitor/interface_runs.jsonl")
-    monitor = Monitor(BASE_DIR, run_type="interface", history_path=history_path)
+    db_path = _db_path(config)
+    monitor = Monitor(BASE_DIR, run_type="interface", history_path=history_path, db_path=db_path)
     fetch_cfg = config.get("fetch", {})
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
@@ -316,14 +373,8 @@ def collect_interface(
     logger.info("精确采集开始：%s", scope)
 
     # 读取最新主数据作为合并基底，避免单项采集覆盖其它数据
-    macro_base = pd.DataFrame()
-    etf_base = pd.DataFrame()
-    base_path = _latest_csv("macro", config)
-    if base_path:
-        macro_base = pd.read_csv(base_path)
-    base_path = _latest_csv("etf", config)
-    if base_path:
-        etf_base = pd.read_csv(base_path, dtype={"基金代码": str})
+    macro_base = _read_base("macro", config)
+    etf_base = _read_base("etf", config)
 
     added_macro = added_etf = 0
     if category == "macro":
@@ -407,12 +458,13 @@ def main(argv: list[str] | None = None) -> int:
 
     monitor_cfg = config.get("monitor", {})
     history_path = BASE_DIR / monitor_cfg.get("history_file", "output/monitor/interface_runs.jsonl")
+    db_path = _db_path(config)
 
     if args.monitor_report:
         out_root = BASE_DIR / config.get("output", {}).get("dir", "output")
-        report_path = Monitor(BASE_DIR, run_type="report", history_path=history_path).export_report(
-            BASE_DIR, output_dir=out_root
-        )
+        report_path = Monitor(
+            BASE_DIR, run_type="report", history_path=history_path, db_path=db_path
+        ).export_report(BASE_DIR, output_dir=out_root)
         logger.info("监控报告：%s", report_path)
         return 0
 
@@ -427,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
         collect_interface(config, args.category, codes, args.start, args.end)
         return 0
 
-    monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path)
+    monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path, db_path=db_path)
     macro_df, etf_df = _collect(config, monitor, macro_only=args.macro_only, etf_only=args.etf_only)
     _finish(monitor, macro_df, etf_df, config, monitor.run_id)
     return 0

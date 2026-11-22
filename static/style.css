@@ -213,6 +213,8 @@ body {
 .log-line.INFO { color: #b9c5df; }
 .log-empty { color: #6f7fa6; font-style: italic; }
 
+.head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.export-actions { display: flex; gap: 5px; flex-wrap: wrap; }
 .tabs { display: flex; gap: 4px; flex-wrap: wrap; }
 .tab {
   border: none; background: transparent; padding: 6px 12px; border-radius: 7px;

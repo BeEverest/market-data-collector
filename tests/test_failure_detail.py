@@ -70,6 +70,26 @@ class TestSzseFailureDetail:
 
 
 class TestSseFailureDetail:
+    def test_empty_data_reports_targets_and_response(self):
+        mon = Mock()
+        sess = Mock()
+        resp = Mock()
+        resp.raise_for_status.return_value = None
+        resp.text = '{"result": []}'
+        resp.json.return_value = {"result": []}
+        sess.get.return_value = resp
+        result = etf.fetch_sse_shares(
+            "2026-11-23", retries=1, session=sess,
+            monitor=mon, target_codes=["510050", "510300"],
+        )
+        assert result.empty
+        rec = mon.record.call_args.kwargs
+        assert rec["status"] == "failed"
+        assert "接口返回空数据" in rec["error"]
+        assert "受影响标的=510050, 510300" in rec["error"]
+        assert '响应片段={"result": []}' in rec["error"]
+        assert rec["params"]["受影响标的"] == "510050, 510300"
+
     def test_failure_reports_targets(self):
         mon = Mock()
         err = _http_error("timeout", 504, "upstream timeout")

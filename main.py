@@ -32,7 +32,7 @@ from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
 from collectors.rate_limit import configure as configure_rate_limit
 from exporter import export_results, prune_snapshots
-from monitor import Monitor
+from monitor import Monitor, format_failure_detail
 
 logging.basicConfig(
     level=logging.INFO,
@@ -323,8 +323,8 @@ def _retry_failed(config: dict, monitor_cfg: dict,
 
     logger.info("检测到 %d 个失败接口，开始重跑：", len(tasks))
     for task in tasks:
-        logger.info("  - %s（%s，原因：%s）", task["interface_name"],
-                    task["failed_date"], task["last_error"] or "未知")
+        logger.info("  - %s（%s，%s）", task["interface_name"],
+                    task["failed_date"], format_failure_detail(task))
 
     retry_monitor = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
     fetch_cfg = config.get("fetch", {})

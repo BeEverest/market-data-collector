@@ -38,7 +38,7 @@ from main import (
 )
 import storage
 from exporter import export_etf, export_full, export_index, export_macro, export_monitor
-from monitor import Monitor
+from monitor import Monitor, format_failure_detail
 from collectors.macro import catalog as macro_catalog
 from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
@@ -226,8 +226,9 @@ def _do_retry_task(task_id: str) -> str:
     task = monitor.find_failed_task(task_id, history)
     if not task:
         return f"未找到任务ID={task_id} 的失败记录，可能已被清理或已重跑成功"
-    logger.info("Web 触发单条失败重跑：%s / %s（%s）",
-                task_id, task["interface_name"], task["failed_date"])
+    logger.info("Web 触发单条失败重跑：%s / %s（%s，%s）",
+                task_id, task["interface_name"], task["failed_date"],
+                format_failure_detail(task))
     code = _retry_failed(config, config.get("monitor", {}), tasks=[task])
     return "单条重跑完成" if code == 0 else "单条重跑后仍有失败接口"
 

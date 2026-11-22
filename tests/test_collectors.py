@@ -79,9 +79,10 @@ class TestFetch:
         kwargs = mon.record.call_args.kwargs
         assert kwargs["status"] == "success"
         assert kwargs["rows"] == 2
-        # 监控参数补全：原始参数 + 接口标识 + 数据源
+        # 监控参数补全：原始参数 + 接口标识 + 数据源 + 受影响标的
         assert kwargs["params"] == {
             "code": "M2", "interface": "my_fn", "source": "akshare",
+            "受影响标的": "my_fn",
         }
 
     def test_retry_then_failure_is_recorded(self):

@@ -5,7 +5,9 @@ import json
 
 import pandas as pd
 
-from monitor import RUN_FIELDS, Monitor, describe_failure, failure_task_id
+from monitor import (
+    RUN_FIELDS, Monitor, describe_failure, failure_task_id, format_failure_detail,
+)
 
 
 def _frame(records: list[dict]) -> pd.DataFrame:
@@ -112,6 +114,43 @@ class TestFailureTaskId:
         assert mon.find_failed_task(tid, history=_frame(ok_only)) is None
 
 
+class TestFailureDetailFormat:
+    def test_extracts_targets_reason_params_and_response(self):
+        detail = format_failure_detail({
+            "last_error": "ConnectionError: 断连 | HTTP 502 | URL=https://x | "
+                          "响应片段=Bad Gateway | 受影响标的=510050, 510300",
+            "params": {"trade_date": "2026-11-23", "market": "SH"},
+        })
+        assert "标的=510050, 510300" in detail
+        assert "失败原因=ConnectionError: 断连 | HTTP 502 | URL=https://x" in detail
+        assert "响应=Bad Gateway" in detail
+        assert '"trade_date": "2026-11-23"' in detail
+        assert "响应片段=" not in detail  # 已拆到「响应」段，不重复
+        assert "受影响标的=" not in detail
+
+    def test_targets_from_params_when_error_has_no_extra(self):
+        detail = format_failure_detail({
+            "error": "接口返回空数据（无有效记录）",
+            "params": {"受影响标的": "159915"},
+        })
+        assert "标的=159915" in detail
+        assert "失败原因=接口返回空数据（无有效记录）" in detail
+        assert "响应=" not in detail
+
+    def test_missing_fields_fall_back(self):
+        detail = format_failure_detail({})
+        assert "标的=未指定" in detail
+        assert "失败原因=未知原因" in detail
+        assert "参数={}" in detail
+
+    def test_response_truncated(self):
+        detail = format_failure_detail({
+            "error": "X | 响应片段=" + "a" * 500, "params": {},
+        }, max_text=10)
+        assert "响应=" + "a" * 10 in detail
+        assert "a" * 11 not in detail
+
+
 class TestReport:
     def test_empty_report(self, base):
         report = Monitor(base).build_report(history=pd.DataFrame(columns=RUN_FIELDS))
@@ -136,6 +175,9 @@ class TestReport:
         assert fails.loc["20261101_090000_full", "重跑结果"] == "未重跑成功"
         assert "任务ID" in report["失败明细"].columns
         assert len(fails.loc["20261102_090000_full", "任务ID"]) == 12
+        assert "失败详情" in report["失败明细"].columns
+        row = fails.loc["20261102_090000_full", "失败详情"]
+        assert "失败原因=" in row and "标的=" in row and "参数=" in row
 
         health = report["接口健康度"].set_index("接口键")
         assert health.loc["etf.sse_shares", "成功率(%)"] == 50.0

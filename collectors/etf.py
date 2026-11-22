@@ -226,11 +226,20 @@ def fetch_sse_shares(
             sse_params = {
                 "trade_date": trade_date, "market": "SH", "url": SSE_URL,
                 "sqlId": params["sqlId"], "pageSize": params["pageHelp.pageSize"],
+                "受影响标的": targets_label,
             }
             if not records:
+                snippet = " ".join(str(getattr(response, "text", "") or "").split())[:200]
                 _report(monitor, key="etf.sse_shares", name=f"上交所ETF日份额({trade_date})",
                         status="failed", params=sse_params, started=started,
-                        attempts=attempt, error="接口返回空数据（无有效记录）")
+                        attempts=attempt,
+                        error=describe_failure(
+                            None, empty=True,
+                            extra=" | ".join(p for p in (
+                                f"响应片段={snippet}" if snippet else "",
+                                f"受影响标的={targets_label}",
+                            ) if p),
+                        ))
                 return _empty_shares()
             df = pd.DataFrame(records)
             out = df[["SEC_CODE", "SEC_NAME", "TOT_VOL"]].copy()
@@ -314,11 +323,16 @@ def fetch_szse_shares(
                 "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
                 "jjlb": params["jjlb"], "受影响标的": targets_label,
             }
-            _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
-                    status="success" if not out.empty else "failed",
-                    params=szse_params, started=started,
-                    attempts=attempt, rows=len(out),
-                    error="" if not out.empty else f"接口返回空数据（无有效记录） | 受影响标的={targets_label}")
+            if out.empty:
+                resp_hint = f"响应=xlsx 空表（0 行有效记录，{len(response.content)} 字节）"
+                _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
+                        status="failed", params=szse_params, started=started,
+                        attempts=attempt, rows=0,
+                        error=f"接口返回空数据（无有效记录） | 受影响标的={targets_label} | {resp_hint}")
+            else:
+                _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
+                        status="success", params=szse_params, started=started,
+                        attempts=attempt, rows=len(out))
             return out
         except Exception as exc:
             last_exc = exc
@@ -383,11 +397,20 @@ def fetch_nav(
             nav_params = {
                 "code": code, "start": start, "end": end, "url": NAV_URL,
                 "source": "天天基金", "page_size": params["pageSize"],
+                "受影响标的": str(code).zfill(6),
             }
             if not records:
+                snippet = " ".join(str(getattr(query, "text", "") or "").split())[:200]
                 _report(monitor, key=f"etf.nav.{code}", name=f"天天基金日净值({code})",
                         status="failed", params=nav_params,
-                        started=started, attempts=attempt, error="接口返回空数据（无有效记录）")
+                        started=started, attempts=attempt,
+                        error=describe_failure(
+                            None, empty=True,
+                            extra=" | ".join(p for p in (
+                                f"响应片段={snippet}" if snippet else "",
+                                f"受影响标的={str(code).zfill(6)}",
+                            ) if p),
+                        ))
                 return _empty_nav()
             df = pd.DataFrame(records)[["FSRQ", "DWJZ"]].copy()
             df.columns = ["交易日期", "单位净值(元)"]

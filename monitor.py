@@ -55,6 +55,55 @@ def failure_task_id(interface_key: str, params) -> str:
     return hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
 
 
+def format_failure_detail(task_or_record: dict, *, max_text: int = 300) -> str:
+    """把一条失败记录展开为「标的 / 失败原因 / 参数 / 响应」结构化详情。
+
+    兼容 failed_tasks()/find_failed_task() 的任务 dict（last_error）与
+    interface_run 记录（error）。结构化失败原因中的「响应片段=」「受影响标的=」
+    段会被拆出单列展示，不重复计入失败原因。
+    """
+    error = str(task_or_record.get("last_error") or task_or_record.get("error") or "")
+    params = _normalize_params(task_or_record.get("params"))
+    segments = [seg.strip() for seg in error.split(" | ") if seg.strip()]
+    targets = str(params.get("受影响标的") or "").strip()
+    response = ""
+    reason_parts: list[str] = []
+    for seg in segments:
+        if seg.startswith("响应片段="):
+            response = response or seg.split("=", 1)[1].strip()
+        elif seg.startswith("受影响标的="):
+            targets = targets or seg.split("=", 1)[1].strip()
+        else:
+            reason_parts.append(seg)
+    reason = " | ".join(reason_parts) or error or "未知原因"
+    # 旧记录未写入「受影响标的」时，按接口/参数推断一个可读标的，避免显示「未指定」
+    if not targets:
+        code = params.get("code") or params.get("基金代码") or params.get("series_id")
+        symbol = params.get("symbol")
+        interface = params.get("interface")
+        key = str(task_or_record.get("interface_key") or "")
+        if code:
+            targets = str(code)
+        elif symbol:
+            targets = str(symbol)
+        elif interface:
+            targets = str(interface)
+        elif key == "etf.sse_shares":
+            day = params.get("trade_date") or params.get("date") or ""
+            targets = f"上交所全部ETF({day})" if day else "上交所全部ETF"
+        elif key == "etf.szse_shares":
+            targets = f"深交所全部ETF({params.get('start', '')}~{params.get('end', '')})"
+    param_text = json.dumps(params, ensure_ascii=False, sort_keys=True) if params else "{}"
+    parts = [
+        f"标的={targets or '未指定'}",
+        f"失败原因={reason}",
+        f"参数={param_text}",
+    ]
+    if response:
+        parts.append(f"响应={response[:max_text]}")
+    return " | ".join(parts)
+
+
 class Monitor:
     """一次采集运行的接口状态记录器。"""
 
@@ -269,10 +318,11 @@ class Monitor:
             fails["任务ID"] = fails.apply(
                 lambda r: failure_task_id(r["interface_key"], r["params"]), axis=1
             )
+            fails["失败详情"] = fails.apply(lambda r: format_failure_detail(r), axis=1)
             fails = fails.sort_values("run_time", ascending=False)
             fail_df = fails[[
                 "任务ID", "run_date", "run_id", "category", "interface_name",
-                "params", "attempts", "error", "重跑结果",
+                "params", "attempts", "error", "重跑结果", "失败详情",
             ]].rename(columns={
                 "任务ID": "任务ID", "run_date": "失败日期", "run_id": "运行ID",
                 "category": "类别", "interface_name": "接口名称", "params": "调用参数",

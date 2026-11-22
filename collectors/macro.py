@@ -189,6 +189,10 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
         call_params.setdefault("series_id", FRED_SERIES[fn_name])
     if is_fred:
         call_params.setdefault("url", FRED_CSV_URL)
+    # 受影响标的：宏观接口对应指标名 + FRED 序列 ID，便于失败明细定位
+    target_label = IFACE_NAMES.get(fn_name, fn_name)
+    series_id = call_params.get("series_id", "")
+    call_params["受影响标的"] = f"{target_label}({series_id})" if series_id else target_label
 
     started = time.time()
     last_exc: Exception | None = None
@@ -225,9 +229,12 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
                 snippet = ""
         reason = describe_http_failure(
             last_exc, url=FRED_CSV_URL if is_fred else "", response_text=snippet,
+            extra=f"受影响标的={call_params['受影响标的']}",
         )
     else:
-        reason = describe_failure(None, empty=True)
+        reason = describe_failure(
+            None, empty=True, extra=f"受影响标的={call_params['受影响标的']}"
+        )
     if monitor:
         monitor.record(
             category="宏观", interface_key=f"macro.{fn_name}",

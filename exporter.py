@@ -31,6 +31,10 @@ _NOTES = [
     ["ETF", "单位净值(元)", "天天基金披露的当日单位净值，单位：元/份"],
     ["ETF", "规模(亿元)", "规模 = 份额(亿份) × 单位净值(元)，单位：亿元"],
     ["ETF", "交易市场", "SH=上海证券交易所，SZ=深圳证券交易所"],
+    ["指数", "交易日期", "交易日（日频口径）；采集范围为近一年（默认 365 天，可配置）"],
+    ["指数", "开盘价/最高价/最低价/收盘价", "指数当日 OHLC，单位：点；数据源为新浪财经日线（akshare 封装）"],
+    ["指数", "成交量", "指数当日成交量，单位：手（新浪财经口径）"],
+    ["指数", "涨跌幅(%)", "由相邻交易日收盘价环比计算，(今收/昨收-1)×100；每只指数区间首日为空，单位 %"],
     ["数据源", "宏观数据", "央行 / 统计局 / 海关总署 / 外汇局，经 akshare 封装；社融锚点来自央行报告"],
     ["数据源", "ETF 份额 / 净值", "份额：上交所、深交所；净值：天天基金（东方财富）"],
     ["注意", "单位", "每条记录的单位见「单位」列，不同指标单位不同，勿直接横向比较绝对值"],
@@ -115,6 +119,25 @@ def export_etf(etf_df: pd.DataFrame, base_dir: Path, config: dict,
     files = [str(csv_path), str(note_path), str(xlsx_path)]
     files.append(_zip_files(files, zip_path))
     logger.info("ETF 数据导出完成：%d 行", len(etf_df))
+    return files
+
+
+def export_index(index_df: pd.DataFrame, base_dir: Path, config: dict,
+                 stamp: str | None = None) -> list[str]:
+    """导出指数数据：CSV + 口径说明 CSV + Excel（含口径说明 Sheet）+ ZIP。"""
+    stamp = stamp or _stamp()
+    out_dir = _export_dir(base_dir, config)
+    notes = _notes_for({"指数", "数据源", "注意"})
+    csv_path = out_dir / f"指数数据_{stamp}.csv"
+    note_path = out_dir / f"指数数据口径说明_{stamp}.csv"
+    xlsx_path = out_dir / f"指数数据_{stamp}.xlsx"
+    index_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    notes.to_csv(note_path, index=False, encoding="utf-8-sig")
+    _write_excel(xlsx_path, [("指数数据", index_df), ("口径说明", notes)])
+    zip_path = out_dir / f"指数数据_{stamp}.zip"
+    files = [str(csv_path), str(note_path), str(xlsx_path)]
+    files.append(_zip_files(files, zip_path))
+    logger.info("指数数据导出完成：%d 行", len(index_df))
     return files
 
 
@@ -239,6 +262,7 @@ def prune_snapshots(base_dir: Path, config: dict) -> list[str]:
         f"{prefix}_宏观数据_*.csv", f"{prefix}_ETF规模_*.csv", f"{prefix}_*.xlsx",
         "宏观数据_*.csv", "宏观数据口径说明_*.csv", "宏观数据_*.xlsx", "宏观数据_*.zip",
         "ETF数据_*.csv", "ETF数据口径说明_*.csv", "ETF数据_*.xlsx", "ETF数据_*.zip",
+        "指数数据_*.csv", "指数数据口径说明_*.csv", "指数数据_*.xlsx", "指数数据_*.zip",
         "接口监控_*.csv", "接口监控口径说明_*.csv", "接口监控_*.xlsx", "接口监控_*.zip",
         "全量导出_*.zip",
     ]

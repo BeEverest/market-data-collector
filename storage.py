@@ -29,6 +29,11 @@ ETF_COLUMNS = [
     "基金代码", "基金简称", "交易市场", "交易日期",
     "份额(亿份)", "单位净值(元)", "规模(亿元)", "数据源", "采集时间",
 ]
+INDEX_COLUMNS = [
+    "指数代码", "指数名称", "交易日期",
+    "开盘价", "最高价", "最低价", "收盘价", "成交量", "涨跌幅(%)",
+    "数据源", "采集时间",
+]
 RUN_FIELDS = [
     "run_id", "run_type", "run_date", "run_time",
     "category", "interface_key", "interface_name",
@@ -89,6 +94,24 @@ def init_schema(path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_etf_code_date
                 ON etf_observation(code, trade_date DESC);
 
+            CREATE TABLE IF NOT EXISTS index_observation (
+                biz_key TEXT PRIMARY KEY,
+                code TEXT NOT NULL,
+                name TEXT,
+                trade_date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume REAL,
+                pct_change REAL,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_index_code_date
+                ON index_observation(code, trade_date DESC);
+
             CREATE TABLE IF NOT EXISTS interface_run (
                 biz_key TEXT PRIMARY KEY,
                 run_id TEXT NOT NULL,
@@ -110,6 +133,12 @@ def init_schema(path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_run_status ON interface_run(status);
 
             CREATE TABLE IF NOT EXISTS etf_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS index_config (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -156,6 +185,10 @@ def macro_biz_key(code: str, date: str) -> str:
 
 
 def etf_biz_key(code: str, trade_date: str) -> str:
+    return f"{str(code).zfill(6)}_{str(trade_date).replace('-', '')}"
+
+
+def index_biz_key(code: str, trade_date: str) -> str:
     return f"{str(code).zfill(6)}_{str(trade_date).replace('-', '')}"
 
 
@@ -238,6 +271,40 @@ def upsert_etf(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
                 shares=excluded.shares, nav=excluded.nav, market_cap=excluded.market_cap,
                 source=excluded.source, collected_at=excluded.collected_at,
                 run_id=excluded.run_id
+            """,
+            records,
+        )
+    return len(records)
+
+
+def upsert_index(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        code = str(r.get("指数代码", "")).strip().zfill(6)
+        date = str(r.get("交易日期", ""))[:10]
+        if not code or not date:
+            continue
+        records.append((
+            index_biz_key(code, date), code, str(r.get("指数名称", "") or ""), date,
+            _clean(r.get("开盘价")), _clean(r.get("最高价")), _clean(r.get("最低价")),
+            _clean(r.get("收盘价")), _clean(r.get("成交量")), _clean(r.get("涨跌幅(%)")),
+            str(r.get("数据源", "") or ""), str(r.get("采集时间", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO index_observation(
+                biz_key, code, name, trade_date, open, high, low, close, volume,
+                pct_change, source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                name=excluded.name, open=excluded.open, high=excluded.high,
+                low=excluded.low, close=excluded.close, volume=excluded.volume,
+                pct_change=excluded.pct_change, source=excluded.source,
+                collected_at=excluded.collected_at, run_id=excluded.run_id
             """,
             records,
         )
@@ -363,6 +430,45 @@ def read_etf(path: str | Path, code: str | None = None,
     return int(total), df[ETF_COLUMNS]
 
 
+def read_index(path: str | Path, code: str | None = None,
+               start: str | None = None, end: str | None = None,
+               limit: int | None = None, offset: int = 0) -> tuple[int, pd.DataFrame]:
+    init_schema(path)
+    clauses, args = [], []
+    if code:
+        clauses.append("code=?")
+        args.append(str(code).strip().zfill(6))
+    if start:
+        clauses.append("trade_date>=?")
+        args.append(str(start)[:10])
+    if end:
+        clauses.append("trade_date<=?")
+        args.append(str(end)[:10])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with connect(path) as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM index_observation{where}", args).fetchone()["n"]
+        sql = f"""
+            SELECT code, name, trade_date, open, high, low, close, volume, pct_change,
+                   source, collected_at
+            FROM index_observation{where}
+            ORDER BY code ASC, trade_date DESC
+        """
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            args = args + [int(limit), int(offset)]
+        rows = conn.execute(sql, args).fetchall()
+    df = pd.DataFrame([dict(r) for r in rows])
+    if df.empty:
+        return int(total), pd.DataFrame(columns=INDEX_COLUMNS)
+    df = df.rename(columns={
+        "code": "指数代码", "name": "指数名称", "trade_date": "交易日期",
+        "open": "开盘价", "high": "最高价", "low": "最低价", "close": "收盘价",
+        "volume": "成交量", "pct_change": "涨跌幅(%)",
+        "source": "数据源", "collected_at": "采集时间",
+    })
+    return int(total), df[INDEX_COLUMNS]
+
+
 def read_interface_runs(path: str | Path) -> pd.DataFrame:
     init_schema(path)
     with connect(path) as conn:
@@ -398,6 +504,18 @@ def etf_stats(path: str | Path) -> dict[str, dict]:
     } for r in rows}
 
 
+def index_stats(path: str | Path) -> dict[str, dict]:
+    init_schema(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT code, COUNT(*) AS n, MIN(trade_date) AS first_date, "
+            "MAX(trade_date) AS last_date FROM index_observation GROUP BY code"
+        ).fetchall()
+    return {r["code"]: {
+        "rows": int(r["n"]), "first_date": r["first_date"], "last_date": r["last_date"]
+    } for r in rows}
+
+
 def status_counts(path: str | Path) -> dict:
     init_schema(path)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -407,6 +525,9 @@ def status_counts(path: str | Path) -> dict:
         ).fetchone()
         etf = conn.execute(
             "SELECT COUNT(*) AS rows, COUNT(DISTINCT code) AS codes FROM etf_observation"
+        ).fetchone()
+        index = conn.execute(
+            "SELECT COUNT(*) AS rows, COUNT(DISTINCT code) AS codes FROM index_observation"
         ).fetchone()
         failed = conn.execute(
             "SELECT COUNT(*) AS n FROM interface_run WHERE status='failed'"
@@ -421,6 +542,7 @@ def status_counts(path: str | Path) -> dict:
     return {
         "macro_rows": int(macro["rows"]), "macro_indicators": int(macro["codes"]),
         "etf_rows": int(etf["rows"]), "etf_codes": int(etf["codes"]),
+        "index_rows": int(index["rows"]), "index_codes": int(index["codes"]),
         "failed_total": int(failed), "today_calls": int(today_calls),
         "last_run": dict(last) if last else {},
     }
@@ -455,6 +577,40 @@ def save_etf_config(path: str | Path, cfg: dict) -> dict:
     with connect(path) as conn:
         conn.execute(
             "INSERT INTO etf_config(key, value, updated_at) VALUES('main', ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (value, now),
+        )
+    return cfg
+
+
+# ---------- 指数配置 ----------
+DEFAULT_INDEX_CONFIG = {
+    "codes": [], "start_date": "", "end_date": "", "lookback_days": 365,
+}
+
+
+def get_index_config(path: str | Path, default: dict | None = None) -> dict:
+    init_schema(path)
+    with connect(path) as conn:
+        row = conn.execute("SELECT value FROM index_config WHERE key='main'").fetchone()
+    if not row:
+        return json.loads(json.dumps(default or DEFAULT_INDEX_CONFIG))
+    try:
+        stored = json.loads(row["value"])
+    except json.JSONDecodeError:
+        stored = {}
+    result = json.loads(json.dumps(default or DEFAULT_INDEX_CONFIG))
+    result.update(stored)
+    return result
+
+
+def save_index_config(path: str | Path, cfg: dict) -> dict:
+    init_schema(path)
+    value = json.dumps(cfg, ensure_ascii=False)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with connect(path) as conn:
+        conn.execute(
+            "INSERT INTO index_config(key, value, updated_at) VALUES('main', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
             (value, now),
         )

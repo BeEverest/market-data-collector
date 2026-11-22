@@ -26,8 +26,9 @@ import storage
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-from collectors import collect_etf, collect_macro
+from collectors import collect_etf, collect_index, collect_macro
 from collectors.etf import fetch_nav, get_trade_dates
+from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
 from exporter import export_results, prune_snapshots
 from monitor import Monitor
@@ -49,8 +50,9 @@ def load_config(path: str) -> dict:
     if config.get("storage", {}).get("backend", "sqlite") == "sqlite":
         db_path = storage.db_path(config, BASE_DIR)
         storage.init_schema(db_path)
-        # SQLite 为 ETF 配置权威源；config.json 保留为镜像与回滚基线
+        # SQLite 为 ETF/指数配置权威源；config.json 保留为镜像与回滚基线
         config["etf"] = storage.get_etf_config(db_path, config.get("etf", {}))
+        config["index"] = storage.get_index_config(db_path, config.get("index", {}))
     return config
 
 
@@ -78,6 +80,8 @@ def _read_base(kind: str, config: dict) -> pd.DataFrame:
             return storage.read_macro(db_path)[1]
         if kind == "etf":
             return storage.read_etf(db_path)[1]
+        if kind == "index":
+            return storage.read_index(db_path)[1]
     path = _latest_csv(kind, config)
     if not path:
         return pd.DataFrame()
@@ -145,16 +149,18 @@ def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str])
     return out.reset_index(drop=True)
 
 
-def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """执行一次完整采集，返回 (宏观_df, ETF_df)。"""
+def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False,
+             index_only=False) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """执行一次完整采集，返回 (宏观_df, ETF_df, 指数_df)。"""
     macro_df = pd.DataFrame()
     etf_df = pd.DataFrame()
+    index_df = pd.DataFrame()
     fetch_cfg = config.get("fetch", {})
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
     timeout = fetch_cfg.get("timeout_sec", 15)
 
-    if not etf_only:
+    if not etf_only and not index_only:
         logger.info("开始采集宏观数据（25 项指标：17 项原指标 + 中国GDP + 7 项美国指标）...")
         macro_df = collect_macro(
             start_date=config.get("macro", {}).get("start_date"),
@@ -164,7 +170,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
         )
         logger.info("宏观数据采集完成：%d 行", len(macro_df))
 
-    if not macro_only:
+    if not macro_only and not index_only:
         etf_cfg = config.get("etf", {})
         codes = etf_cfg.get("codes", [])
         if not codes:
@@ -187,23 +193,45 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             etf_cfg["listing_dates"] = listing_dates
             _save_listing_dates(config)
             logger.info("ETF 日频数据采集完成：%d 行", len(etf_df))
-    return macro_df, etf_df
+
+    if not macro_only and not etf_only:
+        index_cfg = config.get("index", {})
+        index_codes = index_cfg.get("codes", [])
+        if not index_codes:
+            logger.warning("配置中未填写指数代码（index.codes），将不采集指数数据")
+        else:
+            logger.info("开始采集 %d 个主要指数的日频行情（近一年）...", len(index_codes))
+            index_df = collect_index(
+                codes=index_codes,
+                start_date=index_cfg.get("start_date") or None,
+                end_date=index_cfg.get("end_date") or None,
+                lookback_days=index_cfg.get("lookback_days", 365),
+                retries=retries,
+                retry_interval=retry_interval,
+                monitor=monitor,
+            )
+            logger.info("指数日频数据采集完成：%d 行", len(index_df))
+    return macro_df, etf_df, index_df
 
 
 def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
-            config: dict, run_ts: str) -> list[str]:
+            config: dict, run_ts: str, index_df: pd.DataFrame | None = None) -> list[str]:
     """写入 SQLite 主存储；按配置决定是否自动生成文件快照。"""
+    if index_df is None:
+        index_df = pd.DataFrame()
     db_path = _db_path(config)
     if db_path:
         monitor.db_path = db_path
         monitor.save()
         storage.upsert_macro(db_path, macro_df, run_ts)
         storage.upsert_etf(db_path, etf_df, run_ts)
+        storage.upsert_index(db_path, index_df, run_ts)
         macro_rows, _ = storage.read_macro(db_path)
         etf_rows, _ = storage.read_etf(db_path)
+        index_rows, _ = storage.read_index(db_path)
         failed = sum(1 for r in monitor.records if r["status"] == "failed")
-        logger.info("SQLite 主存储已更新：宏观 %d 行 / ETF %d 行；接口调用 %d 次，失败 %d 次",
-                    macro_rows, etf_rows, len(monitor.records), failed)
+        logger.info("SQLite 主存储已更新：宏观 %d 行 / ETF %d 行 / 指数 %d 行；接口调用 %d 次，失败 %d 次",
+                    macro_rows, etf_rows, index_rows, len(monitor.records), failed)
         files: list[str] = []
         if config.get("storage", {}).get("auto_export_on_collect", False):
             files = export_results(macro_df, etf_df, BASE_DIR, config, run_ts,
@@ -329,17 +357,47 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
                                          on=["基金代码", "交易日期"], how="inner")
         etf_patch = nav_patch[["基金代码", "交易日期", "单位净值(元)"]]
 
+    # ---- 指数失败接口 ----
+    symbol_to_code = {meta["symbol"]: code for code, meta in INDEX_CATALOG.items()}
+    index_codes: set[str] = set()
+    for task in tasks:
+        key = task["interface_key"]
+        if key.startswith("index."):
+            symbol = key.split(".", 1)[1]
+            if symbol in symbol_to_code:
+                index_codes.add(symbol_to_code[symbol])
+            elif symbol.isdigit():
+                index_codes.add(str(symbol).zfill(6))
+    index_patch = pd.DataFrame()
+    if index_codes:
+        logger.info("重跑指数接口：%s", sorted(index_codes))
+        index_cfg = config.get("index", {})
+        index_patch = collect_index(
+            codes=sorted(index_codes),
+            start_date=index_cfg.get("start_date") or None,
+            end_date=index_cfg.get("end_date") or None,
+            lookback_days=index_cfg.get("lookback_days", 365),
+            retries=retries, retry_interval=retry_interval, monitor=retry_monitor,
+        )
+
     # ---- 合并到最新数据 ----
     macro_base = _read_base("macro", config)
     etf_base = _read_base("etf", config)
+    index_base = _read_base("index", config)
     macro_final = _merge_patch(macro_base, macro_patch, ["指标代码", "日期"])
     etf_final = _merge_patch(etf_base, etf_patch, ["基金代码", "交易日期"])
     if not etf_final.empty and {"份额(亿份)", "单位净值(元)"}.issubset(etf_final.columns):
         # 净值/份额补丁合并后，统一重算规模，保证三列一致
         etf_final["规模(亿元)"] = etf_final["份额(亿份)"] * etf_final["单位净值(元)"]
-    logger.info("重跑合并完成：宏观 %d 行，ETF %d 行", len(macro_final), len(etf_final))
+    if not index_patch.empty:
+        index_patch["指数代码"] = index_patch["指数代码"].astype(str).str.zfill(6)
+    if not index_base.empty:
+        index_base["指数代码"] = index_base["指数代码"].astype(str).str.zfill(6)
+    index_final = _merge_patch(index_base, index_patch, ["指数代码", "交易日期"])
+    logger.info("重跑合并完成：宏观 %d 行，ETF %d 行，指数 %d 行",
+                len(macro_final), len(etf_final), len(index_final))
 
-    _finish(retry_monitor, macro_final, etf_final, config, retry_monitor.run_id)
+    _finish(retry_monitor, macro_final, etf_final, config, retry_monitor.run_id, index_final)
     succeeded = sum(1 for r in retry_monitor.records if r["status"] == "success")
     failed = sum(1 for r in retry_monitor.records if r["status"] == "failed")
     logger.info("重跑结果：%d 次成功，%d 次仍失败", succeeded, failed)
@@ -355,9 +413,9 @@ def collect_interface(
 ) -> str:
     """精确采集：按类别 + 指标/基金代码 + 时间范围采集，合并进最新数据。
 
-    category : 'macro'（宏观指标代码）/ 'etf'（基金代码）
-    codes    : 指标代码或基金代码列表；为空时该类别全部目标
-    start/end: 宏观为 YYYY-MM，ETF 为 YYYY-MM-DD；留空表示按配置默认区间
+    category : 'macro'（宏观指标代码）/ 'etf'（基金代码）/ 'index'（指数代码）
+    codes    : 指标代码 / 基金代码 / 指数代码列表；为空时该类别全部目标
+    start/end: 宏观为 YYYY-MM，ETF/指数为 YYYY-MM-DD；留空表示按配置默认区间
     返回执行摘要文本，供 Web 任务展示。
     """
     monitor_cfg = config.get("monitor", {})
@@ -375,8 +433,9 @@ def collect_interface(
     # 读取最新主数据作为合并基底，避免单项采集覆盖其它数据
     macro_base = _read_base("macro", config)
     etf_base = _read_base("etf", config)
+    index_base = _read_base("index", config)
 
-    added_macro = added_etf = 0
+    added_macro = added_etf = added_index = 0
     if category == "macro":
         code_set = set(codes) if codes else None
         # 由指标代码推导需要调用的底层接口，避免无谓调用
@@ -391,6 +450,7 @@ def collect_interface(
         macro_final = _merge_patch(macro_base, patch, ["指标代码", "日期"])
         added_macro = len(patch)
         etf_final = etf_base
+        index_final = index_base
         logger.info("精确采集宏观：补丁 %d 行，合并后 %d 行", added_macro, len(macro_final))
     elif category == "etf":
         etf_cfg = config.get("etf", {})
@@ -416,14 +476,34 @@ def collect_interface(
             etf_final["规模(亿元)"] = etf_final["份额(亿份)"] * etf_final["单位净值(元)"]
         added_etf = len(patch)
         macro_final = macro_base
+        index_final = index_base
         logger.info("精确采集 ETF：补丁 %d 行，合并后 %d 行", added_etf, len(etf_final))
+    elif category == "index":
+        index_cfg = config.get("index", {})
+        target_codes = [str(c).strip().zfill(6) for c in codes] if codes else list(index_cfg.get("codes", []))
+        s_date = start or index_cfg.get("start_date") or None
+        e_date = end or index_cfg.get("end_date") or None
+        patch = collect_index(
+            codes=target_codes, start_date=s_date, end_date=e_date,
+            lookback_days=index_cfg.get("lookback_days", 365),
+            retries=retries, retry_interval=retry_interval, monitor=monitor,
+        )
+        if not patch.empty:
+            patch["指数代码"] = patch["指数代码"].astype(str).str.zfill(6)
+        if not index_base.empty:
+            index_base["指数代码"] = index_base["指数代码"].astype(str).str.zfill(6)
+        index_final = _merge_patch(index_base, patch, ["指数代码", "交易日期"])
+        added_index = len(patch)
+        macro_final = macro_base
+        etf_final = etf_base
+        logger.info("精确采集指数：补丁 %d 行，合并后 %d 行", added_index, len(index_final))
     else:
         raise ValueError(f"未知采集类别：{category}")
 
-    _finish(monitor, macro_final, etf_final, config, monitor.run_id)
+    _finish(monitor, macro_final, etf_final, config, monitor.run_id, index_final)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
-    summary = (f"精确采集完成（{scope}）：新增/更新宏观 {added_macro} 行、ETF {added_etf} 行，"
-               f"接口失败 {failed} 次")
+    summary = (f"精确采集完成（{scope}）：新增/更新宏观 {added_macro} 行、ETF {added_etf} 行、"
+               f"指数 {added_index} 行，接口失败 {failed} 次")
     logger.info(summary)
     return summary
 
@@ -433,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.json", help="配置文件路径")
     parser.add_argument("--macro-only", action="store_true", help="仅采集宏观数据")
     parser.add_argument("--etf-only", action="store_true", help="仅采集 ETF 数据")
+    parser.add_argument("--index-only", action="store_true", help="仅采集指数数据（近一年）")
     parser.add_argument(
         "--output-format",
         choices=["csv", "excel", "both"],
@@ -442,7 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--monitor-report", action="store_true", help="仅生成运维监控报告，不采集数据")
     parser.add_argument("--retry-failed", action="store_true", help="重跑最近批次的失败接口并合并结果")
     parser.add_argument("--collect-interface", action="store_true", help="按接口/指标+时间范围精确采集")
-    parser.add_argument("--category", choices=["macro", "etf"], help="精确采集类别")
+    parser.add_argument("--category", choices=["macro", "etf", "index"], help="精确采集类别")
     parser.add_argument("--codes", help="指标代码/基金代码，逗号分隔；留空为该类别全部")
     parser.add_argument("--start", help="起始时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
     parser.add_argument("--end", help="结束时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
@@ -473,15 +554,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.collect_interface:
         if not args.category:
-            logger.error("精确采集需指定 --category macro|etf")
+            logger.error("精确采集需指定 --category macro|etf|index")
             return 2
         codes = [c.strip() for c in (args.codes or "").split(",") if c.strip()]
         collect_interface(config, args.category, codes, args.start, args.end)
         return 0
 
     monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path, db_path=db_path)
-    macro_df, etf_df = _collect(config, monitor, macro_only=args.macro_only, etf_only=args.etf_only)
-    _finish(monitor, macro_df, etf_df, config, monitor.run_id)
+    macro_df, etf_df, index_df = _collect(
+        config, monitor, macro_only=args.macro_only,
+        etf_only=args.etf_only, index_only=args.index_only,
+    )
+    _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
     return 0
 
 

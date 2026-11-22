@@ -2,5 +2,6 @@
 
 from .macro import collect_macro
 from .etf import collect_etf
+from .index import collect_index
 
-__all__ = ["collect_macro", "collect_etf"]
+__all__ = ["collect_macro", "collect_etf", "collect_index"]

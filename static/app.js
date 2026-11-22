@@ -63,6 +63,7 @@ async function loadStatus() {
       { label: '最近采集', value: last.date || '—', sub: last.id ? `${last.time.slice(11)} · ${last.type}` : '尚无运行记录', alert: false },
       { label: '宏观数据', value: s.macro_rows, sub: `${s.macro_indicators} 个指标 · 月度`, alert: false },
       { label: 'ETF 日频', value: s.etf_rows, sub: `${s.etf_codes} 只 ETF · 逐交易日`, alert: false },
+      { label: '指数日线', value: s.index_rows || 0, sub: `${s.index_codes || 0} 个指数 · 近一年`, alert: false },
       { label: '今日接口调用', value: s.today_calls, sub: '按接口逐次记录', alert: false },
       { label: '历史失败累计', value: s.failed_total, sub: s.failed_total ? '存在失败，请查看监控看板' : '全部成功', alert: s.failed_total > 0 },
     ];
@@ -105,7 +106,7 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
     if (action === 'collect') {
       url = '/api/collect';
       const kind = btn.dataset.kind;
-      payload = { macro_only: kind === 'macro', etf_only: kind === 'etf' };
+      payload = { macro_only: kind === 'macro', etf_only: kind === 'etf', index_only: kind === 'index' };
     } else {
       url = '/api/retry';
       payload = {};
@@ -388,6 +389,93 @@ async function removeEtfCode(code) {
 $('etfAddBtn').addEventListener('click', addEtfCode);
 $('etfNewCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEtfCode(); });
 $('etfSaveBtn').addEventListener('click', () => saveEtfConfig(false));
+
+/* ---------- 指数标的配置 ---------- */
+let indexCfg = null;
+let indexCatalog = [];
+
+async function loadIndexConfig() {
+  try {
+    const [cfg, cat] = await Promise.all([
+      api('/api/index/config'),
+      Promise.resolve(catalogData ? null : api('/api/catalog')),
+    ]);
+    indexCfg = cfg;
+    if (!catalogData && cat) catalogData = cat;
+    indexCatalog = (catalogData && catalogData.index) ? catalogData.index : (cat ? cat.index || [] : []);
+    // 下拉列出全部支持的指数，已添加的排除
+    const selected = new Set(indexCfg.items.map(x => x.code));
+    const available = indexCatalog.filter(it => !selected.has(it.code));
+    $('indexNewCode').innerHTML = available.length
+      ? available.map(it => `<option value="${esc(it.code)}">${esc(it.name || it.code)}（${esc(it.code)}）</option>`).join('')
+      : '<option value="">已添加全部指数</option>';
+    renderIndexChips();
+    $('indexStart').value = indexCfg.start_date || '';
+    $('indexEnd').value = indexCfg.end_date || '';
+    $('indexDays').value = indexCfg.lookback_days || 365;
+  } catch (e) {
+    $('indexChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
+    console.error(e);
+  }
+}
+
+function renderIndexChips() {
+  const wrap = $('indexChips');
+  if (!indexCfg || !indexCfg.items.length) {
+    wrap.innerHTML = '<div class="empty">尚未配置指数标的，请在上方选择并添加。</div>';
+    return;
+  }
+  wrap.innerHTML = indexCfg.items.map(it => `<div class="etf-chip">
+    <div class="chip-top">
+      <span class="chip-code">${esc(it.code)}</span>
+      <button class="chip-remove" data-code="${esc(it.code)}" title="移除该指数">×</button>
+    </div>
+    <span class="chip-name">${esc(it.name || '—')}</span>
+  </div>`).join('');
+  wrap.querySelectorAll('.chip-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeIndexCode(btn.dataset.code));
+  });
+}
+
+async function saveIndexConfig() {
+  const payload = {
+    codes: indexCfg ? indexCfg.items.map(x => x.code) : [],
+    start_date: $('indexStart').value.trim(),
+    end_date: $('indexEnd').value.trim(),
+    lookback_days: $('indexDays').value.trim() ? parseInt($('indexDays').value.trim(), 10) : 365,
+  };
+  try {
+    const res = await api('/api/index/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    indexCfg = res.config;
+    renderIndexChips();
+    await loadCatalog();
+    flashLog('指数配置已保存', 'INFO');
+  } catch (e) { alert('保存失败：' + e.message); }
+}
+
+async function addIndexCode() {
+  const code = $('indexNewCode').value.trim();
+  if (!code) { alert('请先选择一个指数'); return; }
+  if (!indexCfg) indexCfg = { items: [] };
+  if (indexCfg.items.some(x => x.code === code)) { alert('该指数已在列表中'); return; }
+  const meta = indexCatalog.find(x => x.code === code);
+  indexCfg.items.push({ code, name: meta ? meta.name : '' });
+  renderIndexChips();
+  await saveIndexConfig();
+}
+
+async function removeIndexCode(code) {
+  if (!indexCfg) return;
+  indexCfg.items = indexCfg.items.filter(x => x.code !== code);
+  renderIndexChips();
+  await saveIndexConfig();
+  flashLog(`已移除指数 ${code}`, 'INFO');
+}
+
+$('indexAddBtn').addEventListener('click', addIndexCode);
+$('indexSaveBtn').addEventListener('click', () => saveIndexConfig());
 
 /* ---------- 监控看板 ---------- */
 async function loadMonitor() {
@@ -679,6 +767,7 @@ async function runExport(url, label) {
 
 $('exportMacroBtn').addEventListener('click', () => runExport('/api/export/macro', '宏观数据导出'));
 $('exportEtfBtn').addEventListener('click', () => runExport('/api/export/etf', 'ETF 数据导出'));
+$('exportIndexBtn').addEventListener('click', () => runExport('/api/export/index', '指数数据导出'));
 $('exportFullBtn').addEventListener('click', () => runExport('/api/export/full', '全量导出'));
 $('exportMonitorBtn').addEventListener('click', () => runExport('/api/export/monitor', '接口监控导出'));
 
@@ -690,7 +779,7 @@ async function refresh() {
 async function init() {
   applyDateControl();
   // 并行加载目录/配置，再填充下拉并套用默认日期区间
-  await Promise.all([loadCatalog(), loadEtfConfig()]);
+  await Promise.all([loadCatalog(), loadEtfConfig(), loadIndexConfig()]);
   fillCodeOptions();
   applyDefaultRange('precStart', 'precEnd');
   resetToDefaultRange();

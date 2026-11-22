@@ -35,10 +35,11 @@ from main import (
     collect_interface, load_config,
 )
 import storage
-from exporter import export_etf, export_full, export_macro, export_monitor
+from exporter import export_etf, export_full, export_index, export_macro, export_monitor
 from monitor import Monitor
 from collectors.macro import catalog as macro_catalog
 from collectors.etf import get_fund_name_map
+from collectors.index import catalog as index_catalog
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
@@ -91,6 +92,22 @@ def _etf_config_view() -> dict:
         "start_date": etf.get("start_date", ""),
         "end_date": etf.get("end_date", ""),
         "default_trade_days": etf.get("default_trade_days", 20),
+    }
+
+
+def _index_config_view() -> dict:
+    cfg = _cfg()
+    db_path = _db_path(cfg)
+    idx = storage.get_index_config(db_path, cfg.get("index", {})) if db_path else cfg.get("index", {})
+    codes = [str(c).strip().zfill(6) for c in idx.get("codes", []) if str(c).strip()]
+    name_map = {it["code"]: it["name"] for it in index_catalog()}
+    items = [{"code": c, "name": name_map.get(c, "")} for c in codes]
+    return {
+        "codes": codes,
+        "items": items,
+        "start_date": idx.get("start_date", ""),
+        "end_date": idx.get("end_date", ""),
+        "lookback_days": idx.get("lookback_days", 365),
     }
 
 
@@ -159,22 +176,27 @@ def _submit(kind: str, func) -> str:
     return job_id
 
 
-def _do_collect(macro_only: bool = False, etf_only: bool = False) -> str:
+def _do_collect(macro_only: bool = False, etf_only: bool = False,
+                index_only: bool = False) -> str:
     config = _cfg()
     db_path = _db_path(config)
     monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config),
                       db_path=db_path)
-    logger.info("Web 触发采集：%s", "仅宏观" if macro_only else ("仅 ETF" if etf_only else "全量"))
-    macro_df, etf_df = _collect(config, monitor, macro_only=macro_only, etf_only=etf_only)
+    label = "仅宏观" if macro_only else ("仅 ETF" if etf_only else ("仅指数" if index_only else "全量"))
+    logger.info("Web 触发采集：%s", label)
+    macro_df, etf_df, index_df = _collect(
+        config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only
+    )
     # SQLite 按业务键 upsert；空 DataFrame 不会覆盖库中已有数据
-    _finish(monitor, macro_df, etf_df, config, monitor.run_id)
+    _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     if db_path:
         counts = storage.status_counts(db_path)
-        summary = (f"SQLite 已更新：宏观 {counts['macro_rows']} 行 / ETF {counts['etf_rows']} 行，"
-                   f"接口失败 {failed} 次")
+        summary = (f"SQLite 已更新：宏观 {counts['macro_rows']} 行 / ETF {counts['etf_rows']} 行 / "
+                   f"指数 {counts['index_rows']} 行，接口失败 {failed} 次")
     else:
-        summary = f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行，接口失败 {failed} 次"
+        summary = (f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行 / "
+                   f"指数 {len(index_df)} 行，接口失败 {failed} 次")
     logger.info("采集完成：%s", summary)
     return summary
 
@@ -212,6 +234,8 @@ def _read_csv(kind: str) -> pd.DataFrame:
         return storage.read_macro(db_path)[1]
     if kind == "etf":
         return storage.read_etf(db_path)[1]
+    if kind == "index":
+        return storage.read_index(db_path)[1]
     return pd.DataFrame()
 
 
@@ -271,7 +295,8 @@ class Scheduler:
                 run_type = cfg.get("run_type", "full")
                 logger.info("定时调度触发：%s %s", today, run_type)
                 _submit("scheduled", lambda rt=run_type: _do_collect(
-                    macro_only=(rt == "macro"), etf_only=(rt == "etf")
+                    macro_only=(rt == "macro"), etf_only=(rt == "etf"),
+                    index_only=(rt == "index"),
                 ))
             except Exception as exc:
                 logger.warning("调度器异常：%s", exc)
@@ -310,6 +335,7 @@ def api_status():
         today_calls = counts["today_calls"]
         macro_rows, macro_indicators = counts["macro_rows"], counts["macro_indicators"]
         etf_rows, etf_codes = counts["etf_rows"], counts["etf_codes"]
+        index_rows, index_codes = counts["index_rows"], counts["index_codes"]
     else:
         history = Monitor.load(_history_path(cfg))
         if not history.empty:
@@ -320,11 +346,13 @@ def api_status():
             }
             failed_count = int((history["status"] == "failed").sum())
             today_calls = int((history["run_date"] == datetime.now().strftime("%Y-%m-%d")).sum())
-        macro, etf = _read_csv("macro"), _read_csv("etf")
+        macro, etf, index = _read_csv("macro"), _read_csv("etf"), _read_csv("index")
         macro_rows = len(macro)
         macro_indicators = int(macro["指标代码"].nunique()) if not macro.empty else 0
         etf_rows = len(etf)
         etf_codes = int(etf["基金代码"].nunique()) if not etf.empty else 0
+        index_rows = len(index)
+        index_codes = int(index["指数代码"].nunique()) if not index.empty else 0
     return {
         "last_run": last_run,
         "failed_total": failed_count,
@@ -333,6 +361,8 @@ def api_status():
         "macro_indicators": macro_indicators,
         "etf_rows": etf_rows,
         "etf_codes": etf_codes,
+        "index_rows": index_rows,
+        "index_codes": index_codes,
         "scheduler": {
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
             "time": cfg.get("scheduler", {}).get("time", "08:30"),
@@ -431,6 +461,33 @@ def api_data_etf(code: str | None = None, start: str | None = None,
     return _paged(df, page, page_size)
 
 
+@app.get("/api/data/index")
+def api_data_index(code: str | None = None, start: str | None = None,
+                   end: str | None = None, page: int = 1, page_size: int = 25):
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+    db_path = _db_path(_cfg())
+    if db_path:
+        total, _ = storage.read_index(db_path, code, start, end, limit=1)
+        pages = max(1, (total + page_size - 1) // page_size)
+        if page > pages:
+            page = pages
+        _, df = storage.read_index(
+            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+        return {
+            "total": total, "pages": pages, "page": page, "page_size": page_size,
+            "rows": _frame_to_records(df, page_size),
+        }
+    df = _read_csv("index")
+    if code and not df.empty:
+        df = df[df["指数代码"] == code]
+    if start and not df.empty:
+        df = df[df["交易日期"] >= start]
+    if end and not df.empty:
+        df = df[df["交易日期"] <= end]
+    return _paged(df, page, page_size)
+
+
 @app.get("/api/files")
 def api_files():
     out_dir = BASE_DIR / _cfg().get("output", {}).get("dir", "output")
@@ -486,6 +543,16 @@ def api_export_etf():
     return {"files": _export_names(files, config)}
 
 
+@app.post("/api/export/index")
+def api_export_index():
+    config = _cfg()
+    db_path = _require_db(config)
+    _, df = storage.read_index(db_path)
+    files = export_index(df, BASE_DIR, config)
+    storage.log_export(db_path, "index", files[-1], {"rows": len(df)})
+    return {"files": _export_names(files, config)}
+
+
 @app.post("/api/export/monitor")
 def api_export_monitor():
     config = _cfg()
@@ -534,7 +601,8 @@ def api_collect(payload: dict | None = None):
     payload = payload or {}
     macro_only = bool(payload.get("macro_only", False))
     etf_only = bool(payload.get("etf_only", False))
-    job_id = _submit("collect", lambda: _do_collect(macro_only, etf_only))
+    index_only = bool(payload.get("index_only", False))
+    job_id = _submit("collect", lambda: _do_collect(macro_only, etf_only, index_only))
     return {"job_id": job_id}
 
 
@@ -582,13 +650,37 @@ def api_catalog():
         item.setdefault("first_date", "")
         etf_items.append(item)
 
+    index_view = _index_config_view()
+    index_df = _read_csv("index")
+    index_items = []
+    for it in index_view["items"]:
+        code = it["code"]
+        item = {
+            "code": code, "name": it.get("name", ""), "iface": f"index.{code}",
+            "unit": "点", "granularity": "交易日", "source": "新浪财经（akshare）",
+        }
+        if not index_df.empty and "指数代码" in index_df.columns:
+            sub = index_df[index_df["指数代码"].astype(str).str.zfill(6) == code]
+            if not sub.empty:
+                item["rows"] = int(len(sub))
+                item["last_date"] = str(sub["交易日期"].max())
+                item["first_date"] = str(sub["交易日期"].min())
+        item.setdefault("rows", 0)
+        item.setdefault("last_date", "")
+        item.setdefault("first_date", "")
+        index_items.append(item)
+
     return {
         "macro": macro_items,
         "etf": etf_items,
+        "index": index_items,
         "defaults": {
             "macro_start": cfg.get("macro", {}).get("start_date", ""),
             "etf_start": cfg.get("etf", {}).get("start_date", ""),
             "etf_end": cfg.get("etf", {}).get("end_date", ""),
+            "index_start": cfg.get("index", {}).get("start_date", ""),
+            "index_end": cfg.get("index", {}).get("end_date", ""),
+            "index_lookback": cfg.get("index", {}).get("lookback_days", 365),
         },
         "keep_snapshots": cfg.get("output", {}).get("keep_snapshots", 3),
     }
@@ -663,12 +755,80 @@ def api_etf_config_set(payload: dict):
     return {"ok": True, "config": _etf_config_view()}
 
 
+@app.get("/api/index/config")
+def api_index_config_get():
+    """返回当前指数标的配置（代码、名称、区间、回看天数）。"""
+    return _index_config_view()
+
+
+@app.post("/api/index/config")
+def api_index_config_set(payload: dict):
+    """灵活配置指数标的：增删改代码清单、日期区间、回看天数；SQLite 为权威源。"""
+    cfg = _cfg()
+    db_path = _db_path(cfg)
+    idx = storage.get_index_config(db_path, cfg.get("index", {})) if db_path else cfg.setdefault("index", {})
+
+    known = {it["code"] for it in index_catalog()}
+    updated = False
+    if "codes" in payload:
+        raw = payload["codes"]
+        if isinstance(raw, str):
+            raw = [c.strip() for c in raw.split(",") if c.strip()]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="codes 应为数组或逗号分隔字符串")
+        codes: list[str] = []
+        for c in raw:
+            s = str(c).strip()
+            if not s.isdigit() or len(s) > 6:
+                raise HTTPException(status_code=400, detail=f"无效的指数代码：{c}")
+            s = s.zfill(6)
+            if s not in known:
+                raise HTTPException(status_code=400, detail=f"不支持的指数代码：{s}")
+            if s not in codes:
+                codes.append(s)
+        if len(codes) > 20:
+            raise HTTPException(status_code=400, detail="指数标的数量上限 20 个")
+        idx["codes"] = codes
+        updated = True
+
+    for key in ("start_date", "end_date"):
+        if key in payload:
+            val = str(payload[key] or "").strip()
+            if val:
+                try:
+                    datetime.strptime(val, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"{key} 格式应为 YYYY-MM-DD")
+            idx[key] = val
+            updated = True
+
+    if "lookback_days" in payload:
+        try:
+            n = int(payload["lookback_days"])
+            if not (1 <= n <= 3650):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="lookback_days 应为 1~3650 的整数")
+        idx["lookback_days"] = n
+        updated = True
+
+    if not updated:
+        raise HTTPException(status_code=400, detail="无有效配置项")
+
+    if db_path:
+        storage.save_index_config(db_path, idx)
+        cfg["index"] = idx
+    _save_config(cfg)  # config.json 仅作镜像，便于回滚
+    logger.info("指数配置已更新：%d 个标的", len(idx.get("codes", [])))
+    return {"ok": True, "config": _index_config_view()}
+
+
 @app.post("/api/collect/interface")
 def api_collect_interface(payload: dict):
-    """按类别 + 指标/基金代码 + 时间范围精确采集。"""
+    """按类别 + 指标/基金/指数代码 + 时间范围精确采集。"""
     category = payload.get("category")
-    if category not in ("macro", "etf"):
-        raise HTTPException(status_code=400, detail="category 应为 macro 或 etf")
+    if category not in ("macro", "etf", "index"):
+        raise HTTPException(status_code=400, detail="category 应为 macro、etf 或 index")
     raw_codes = payload.get("codes") or []
     if isinstance(raw_codes, str):
         raw_codes = [c.strip() for c in raw_codes.split(",") if c.strip()]

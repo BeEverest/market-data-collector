@@ -29,6 +29,20 @@
     "start_date": "2024-01",
     "_start_date_help": "宏观数据起始月份 YYYY-MM；置为空字符串表示取全部历史。"
   },
+  "index": {
+    "codes": [
+      "000001",
+      "000300",
+      "000688",
+      "399006"
+    ],
+    "_codes_help": "指数代码清单：上证指数000001/沪深300 000300/科创50 000688/创业板指399006；前端可灵活配置，SQLite 为权威源",
+    "lookback_days": 365,
+    "_lookback_days_help": "采集范围：滚动近 N 天（默认 365=近一年）；也可由 start_date/end_date 覆盖",
+    "start_date": "",
+    "end_date": "",
+    "_date_help": "日频区间 YYYY-MM-DD；两者留空时按 lookback_days 取近一年"
+  },
   "storage": {
     "backend": "sqlite",
     "db_path": "output/market_data.db",

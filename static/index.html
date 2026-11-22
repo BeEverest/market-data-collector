@@ -39,7 +39,7 @@
       <div class="actions">
         <div class="action-grid">
           <button class="btn primary has-scope" data-action="collect" data-kind="full">
-            <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF 日频</small></span>
+            <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF + 指数</small></span>
             <span class="scope whole">整体</span>
           </button>
           <button class="btn has-scope" data-action="collect" data-kind="macro">
@@ -48,6 +48,10 @@
           </button>
           <button class="btn has-scope" data-action="collect" data-kind="etf">
             <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
+            <span class="scope part">部分</span>
+          </button>
+          <button class="btn has-scope" data-action="collect" data-kind="index">
+            <span class="ico">◈</span><span><b>仅指数采集</b><small>四大指数 · 近一年日线</small></span>
             <span class="scope part">部分</span>
           </button>
           <button class="btn warn has-scope" data-action="retry">
@@ -64,6 +68,7 @@
               <div class="seg" id="precCategory">
                 <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
                 <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
+                <button type="button" class="seg-btn" data-cat="index">指数</button>
               </div>
             </div>
             <div class="prec-field">
@@ -97,6 +102,7 @@
               <option value="full">全量</option>
               <option value="macro">仅宏观</option>
               <option value="etf">仅ETF</option>
+              <option value="index">仅指数</option>
             </select>
             <button class="btn tiny" id="schedSave">保存</button>
           </div>
@@ -153,6 +159,36 @@
           <input id="etfDays" type="number" min="1" max="500" class="prec-input etf-days" title="留空日期时默认采集最近 N 个交易日">
           <label>个交易日</label>
           <button class="btn tiny primary" id="etfSaveBtn">保存配置</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 指数标的配置 -->
+  <section class="card module-index" id="indexConfigCard">
+    <div class="card-head">
+      <div class="title-group">
+        <h2>指数标的配置</h2>
+        <span class="module-chip idx">部分 · 指数</span>
+      </div>
+      <span class="hint">灵活增删指数标的 · 默认近一年日线 · 可自定义回看天数或日期区间</span>
+    </div>
+    <div class="etf-config">
+      <div class="etf-left">
+        <div class="etf-add">
+          <select id="indexNewCode" class="prec-input"></select>
+          <button class="btn tiny" id="indexAddBtn">＋ 添加</button>
+        </div>
+        <div class="etf-chips" id="indexChips"><div class="empty">加载中…</div></div>
+        <div class="etf-range">
+          <label>采集区间</label>
+          <input id="indexStart" type="date" class="prec-input" title="留空=按回看天数">
+          <span class="date-sep">~</span>
+          <input id="indexEnd" type="date" class="prec-input" title="留空=今天">
+          <label>近</label>
+          <input id="indexDays" type="number" min="1" max="3650" class="prec-input etf-days" title="留空日期时默认采集近 N 天">
+          <label>天</label>
+          <button class="btn tiny primary" id="indexSaveBtn">保存配置</button>
         </div>
       </div>
     </div>
@@ -224,11 +260,13 @@
         <div class="tabs" id="dataTabs">
           <button class="tab active" data-tab="macro">宏观数据</button>
           <button class="tab" data-tab="etf">ETF 日频</button>
+          <button class="tab" data-tab="index">指数日线</button>
           <button class="tab" data-tab="files">输出文件</button>
         </div>
         <div class="export-actions">
           <button class="btn tiny" id="exportMacroBtn" title="导出宏观数据 CSV/Excel（含口径说明）">导出宏观</button>
           <button class="btn tiny" id="exportEtfBtn" title="导出 ETF 数据 CSV/Excel（含口径说明）">导出 ETF</button>
+          <button class="btn tiny" id="exportIndexBtn" title="导出指数数据 CSV/Excel（含口径说明）">导出指数</button>
           <button class="btn tiny primary" id="exportFullBtn" title="分类导出并打包 ZIP（含口径说明）">导出全量</button>
         </div>
       </div>

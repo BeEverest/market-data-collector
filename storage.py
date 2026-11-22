@@ -625,3 +625,31 @@ def log_export(path: str | Path, scope: str, file_path: str, row_counts: dict) -
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), scope, file_path,
              json.dumps(row_counts, ensure_ascii=False)),
         )
+
+
+# ---------- 全量清空（服务启动时调用） ----------
+CLEAR_TABLES = [
+    "macro_observation", "etf_observation", "index_observation",
+    "interface_run", "etf_config", "index_config", "meta", "export_log",
+]
+
+
+def clear_all(path: str | Path) -> dict[str, int]:
+    """清空全部业务数据，仅保留表结构。返回各表删除行数。
+
+    用于「每次启动服务清空数据」：把 SQLite 恢复到全新的空库状态。
+    config.json 作为配置镜像/回滚基线不在此清除（其 etf/index 段仍作为默认配置来源）。
+    """
+    init_schema(path)
+    removed: dict[str, int] = {}
+    with connect(path) as conn:
+        for table in CLEAR_TABLES:
+            n = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+            conn.execute(f"DELETE FROM {table}")
+            removed[table] = int(n)
+        # 自增计数归零（export_log.id），使库完全回到初始状态
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN ('export_log')"
+        )
+    logger.info("已清空 SQLite 全部数据：%s", removed)
+    return removed

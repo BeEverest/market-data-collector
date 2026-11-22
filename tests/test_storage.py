@@ -167,3 +167,38 @@ class TestEtfConfigAndExportLog:
         assert row[0] == "macro"
         assert row[1] == "/tmp/macro.zip"
         assert "rows" in row[2]
+
+
+class TestClearAll:
+    def test_clear_all_empties_every_table_but_keeps_schema(self, db_path, macro_df, etf_df, run_records):
+        storage.init_schema(db_path)
+        storage.upsert_macro(db_path, macro_df, "run1")
+        storage.upsert_etf(db_path, etf_df, "run1")
+        storage.append_interface_runs(db_path, run_records)
+        storage.save_etf_config(db_path, {"codes": ["510050"]})
+        storage.save_index_config(db_path, {"codes": ["000001"]})
+        storage.log_export(db_path, "macro", "/tmp/x.zip", {"rows": 1})
+        assert storage.read_macro(db_path)[0] == 3
+
+        removed = storage.clear_all(db_path)
+
+        assert removed["macro_observation"] == 3
+        assert removed["etf_observation"] == 3
+        assert removed["interface_run"] == len(run_records)
+        assert removed["etf_config"] == 1
+        assert removed["index_config"] == 1
+        assert removed["export_log"] == 1
+        # 表结构仍在，查询返回空且不报错
+        assert storage.read_macro(db_path)[0] == 0
+        assert storage.read_etf(db_path)[0] == 0
+        assert storage.read_index(db_path)[0] == 0
+        assert storage.read_interface_runs(db_path).empty
+        # 幂等：再次清空不报错
+        storage.clear_all(db_path)
+
+    def test_clear_all_on_fresh_db(self, db_path):
+        removed = storage.clear_all(db_path)
+        assert set(removed) == set(storage.CLEAR_TABLES)
+        # init_schema 会在 meta 写入 schema_version=1 行，其余业务表应为空
+        assert removed["meta"] == 1
+        assert all(v == 0 for k, v in removed.items() if k != "meta")

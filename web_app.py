@@ -897,6 +897,9 @@ def main():
     host = args.host or cfg.get("host", "0.0.0.0")
     env_port = os.environ.get("PORT")
     port = args.port or (int(env_port) if env_port else cfg.get("port", 8000))
+
+    # 服务启动 / 重启为纯只读动作：不清空数据，也不触发任何采集。
+    # 数据仅在看板手动采集或定时调度到点时更新。
     scheduler.start()
     logger.info("投研大盘数据采集系统启动：http://127.0.0.1:%d", port)
     uvicorn.run(app, host=host, port=port, log_level="warning")

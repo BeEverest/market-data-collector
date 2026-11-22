@@ -196,28 +196,34 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
         # 宏观为月度数据，"最近一期"=当前月份；无显式日期且配置留空时动态取当月，
         # 避免 config.json 里写死的月份随时间过期。
         macro_start = start_date or macro_cfg.get("start_date") or datetime.now().strftime("%Y-%m")
-        logger.info("开始采集宏观数据（25 项指标：17 项原指标 + 中国GDP + 7 项美国指标）...")
+        macro_end = end_date or macro_cfg.get("end_date")
+        logger.info("[宏观] 开始采集：区间 %s ~ %s（25 项指标：17 原指标 + 中国GDP + 7 美国指标）",
+                    macro_start, macro_end or "当前")
         macro_df = collect_macro(
             start_date=macro_start,
-            end_date=end_date or macro_cfg.get("end_date"),
+            end_date=macro_end,
             monitor=monitor,
             retries=retries,
             retry_interval=retry_interval,
         )
-        logger.info("宏观数据采集完成：%d 行", len(macro_df))
+        logger.info("[宏观] 采集完成：%d 行", len(macro_df))
 
     if not macro_only and not index_only:
         etf_cfg = config.get("etf", {})
         codes = etf_cfg.get("codes", [])
         if not codes:
-            logger.warning("配置中未填写 ETF 代码（etf.codes），将不采集 ETF 数据")
+            logger.warning("[ETF] 配置中未填写 ETF 代码（etf.codes），将不采集 ETF 数据")
         else:
-            logger.info("开始采集 %d 只 ETF 的日频份额与规模...", len(codes))
+            etf_start = start_date or etf_cfg.get("start_date") or None
+            etf_end = end_date or etf_cfg.get("end_date") or None
+            logger.info("[ETF] 开始采集：%d 只标的 | 日期 %s ~ %s | 默认交易日数=%d | 重试=%d 次",
+                        len(codes), etf_start or "默认（最近1个交易日）", etf_end or "默认（最近已结束交易日）",
+                        etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS), retries)
             listing_dates = etf_cfg.get("listing_dates", {}) or {}
             etf_df = collect_etf(
                 codes=codes,
-                start_date=start_date or etf_cfg.get("start_date") or None,
-                end_date=end_date or etf_cfg.get("end_date") or None,
+                start_date=etf_start,
+                end_date=etf_end,
                 default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
                 retries=retries,
                 retry_interval=retry_interval,
@@ -228,25 +234,32 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             # 回写新解析的上市日期到配置，避免每次重新请求档案页
             etf_cfg["listing_dates"] = listing_dates
             _save_listing_dates(config)
-            logger.info("ETF 日频数据采集完成：%d 行", len(etf_df))
+            logger.info("[ETF] 采集完成：%d 行（覆盖 %d 只标的）",
+                        len(etf_df), etf_df["基金代码"].nunique() if not etf_df.empty else 0)
 
     if not macro_only and not etf_only:
         index_cfg = config.get("index", {})
         index_codes = index_cfg.get("codes", [])
         if not index_codes:
-            logger.warning("配置中未填写指数代码（index.codes），将不采集指数数据")
+            logger.warning("[指数] 配置中未填写指数代码（index.codes），将不采集指数数据")
         else:
-            logger.info("开始采集 %d 个主要指数的日频行情（默认最近一个交易日）...", len(index_codes))
+            idx_start = start_date or index_cfg.get("start_date") or None
+            idx_end = end_date or index_cfg.get("end_date") or None
+            logger.info("[指数] 开始采集：%d 个标的 | 日期 %s ~ %s | 回看天数=%d",
+                        len(index_codes), idx_start or "默认（最近1个交易日）",
+                        idx_end or "默认（最近已结束交易日）",
+                        index_cfg.get("lookback_days", _INDEX_DEFAULT_DAYS))
             index_df = collect_index(
                 codes=index_codes,
-                start_date=start_date or index_cfg.get("start_date") or None,
-                end_date=end_date or index_cfg.get("end_date") or None,
+                start_date=idx_start,
+                end_date=idx_end,
                 lookback_days=index_cfg.get("lookback_days", _INDEX_DEFAULT_DAYS),
                 retries=retries,
                 retry_interval=retry_interval,
                 monitor=monitor,
             )
-            logger.info("指数日频数据采集完成：%d 行", len(index_df))
+            logger.info("[指数] 采集完成：%d 行（覆盖 %d 个标的）",
+                        len(index_df), index_df["指数代码"].nunique() if not index_df.empty else 0)
     return macro_df, etf_df, index_df
 
 
@@ -287,13 +300,16 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
     db_path = _db_path(config)
     if db_path:
         monitor.db_path = db_path
+        logger.info("  [入库] 步骤 a 保存接口监控记录：%d 条", len(monitor.records))
         monitor.save()
+        logger.info("  [入库] 步骤 b 写入业务表：宏观 %d / ETF %d / 指数 %d 行（业务键幂等）",
+                    len(macro_df), len(etf_df), len(index_df))
         storage.upsert_macro(db_path, macro_df, run_ts)
         storage.upsert_etf(db_path, etf_df, run_ts)
         storage.upsert_index(db_path, index_df, run_ts)
         stat_records = _collect_stat_records(monitor, macro_df, etf_df, index_df)
         written = storage.append_collection_stats(db_path, stat_records)
-        logger.info("采集量统计已写入：%d 条（类别/细分口径）", written)
+        logger.info("  [入库] 步骤 c 采集量统计：%d 条（类别/标的细分口径）", written)
         macro_rows, _ = storage.read_macro(db_path)
         etf_rows, _ = storage.read_etf(db_path)
         index_rows, _ = storage.read_index(db_path)

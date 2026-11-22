@@ -218,15 +218,19 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
     db_path = _db_path(config)
     monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config),
                       db_path=db_path)
+    tag = f"【{trigger}】"
     label = "仅宏观" if macro_only else ("仅 ETF" if etf_only else ("仅指数" if index_only else "全量"))
     if start or end:
         label += f"（{start or '起始默认'} ~ {end or '结束默认'}）"
-    logger.info("[%s] 触发采集：%s", trigger, label)
+    logger.info("%s步骤 3/5 开始采集：%s | 本次 run_id=%s | 存储=%s",
+                tag, label, monitor.run_id, db_path or "文件模式（已弃用）")
     macro_df, etf_df, index_df = _collect(
         config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only,
         start_date=start, end_date=end,
     )
     # SQLite 按业务键 upsert；空 DataFrame 不会覆盖库中已有数据
+    logger.info("%s步骤 4/5 写入存储：宏观 %d 行 / ETF %d 行 / 指数 %d 行（按业务键幂等 upsert）",
+                tag, len(macro_df), len(etf_df), len(index_df))
     _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     if db_path:
@@ -236,7 +240,7 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
     else:
         summary = (f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行 / "
                    f"指数 {len(index_df)} 行，接口失败 {failed} 次")
-    logger.info("采集完成：%s", summary)
+    logger.info("%s步骤 5/5 采集完成：%s", tag, summary)
     return summary
 
 
@@ -338,23 +342,48 @@ class Scheduler:
         while not self._stop.wait(15):
             try:
                 cfg = _cfg().get("scheduler", {})
-                if not cfg.get("enabled"):
-                    continue
                 now = datetime.now()
                 today = now.strftime("%Y-%m-%d")
-                if now.strftime("%H:%M") != cfg.get("time", "08:30"):
+                hhmm = now.strftime("%H:%M")
+                target = cfg.get("time", "08:30")
+                run_type = cfg.get("run_type", "full")
+
+                if not cfg.get("enabled"):
+                    # 仅在同一状态首次出现时说明一次，避免 15 秒轮询刷屏
+                    if getattr(self, "_last_decision", None) != "disabled":
+                        logger.info("【定时调度】检查 %s %s：调度未启用，跳过（可在看板开启）", today, hhmm)
+                        self._last_decision = "disabled"
                     continue
+                if hhmm != target:
+                    if getattr(self, "_last_decision", None) not in (None, "waiting"):
+                        logger.info("【定时调度】检查 %s %s：未到触发时刻（配置 %s，下次 %s）",
+                                    today, hhmm, target, self.next_run())
+                        self._last_decision = "waiting"
+                    continue
+                # 已进入触发分钟（HH:MM 匹配），逐步给出判定明细
                 if self._last_triggered == today:
+                    if getattr(self, "_last_decision", None) != "already":
+                        logger.info("【定时调度】%s %s 到达触发时刻：今日已触发过，跳过（每天仅一次）", today, hhmm)
+                        self._last_decision = "already"
                     continue
                 if _run_lock.locked():
+                    if getattr(self, "_last_decision", None) != "busy":
+                        logger.info("【定时调度】%s %s 到达触发时刻：已有任务运行中，跳过本轮", today, hhmm)
+                        self._last_decision = "busy"
                     continue
+
                 self._last_triggered = today
-                run_type = cfg.get("run_type", "full")
-                logger.info("【定时调度】触发：%s 类型=%s", today, run_type)
-                _submit("scheduled", lambda rt=run_type: _do_collect(
-                    macro_only=(rt == "macro"), etf_only=(rt == "etf"),
-                    index_only=(rt == "index"), trigger="定时调度",
-                ))
+                self._last_decision = "triggered"
+                logger.info("【定时调度】步骤 1/5 触发：日期=%s 时刻=%s 类型=%s（今日首次、无任务占用）",
+                            today, hhmm, run_type)
+                try:
+                    job_id = _submit("scheduled", lambda rt=run_type: _do_collect(
+                        macro_only=(rt == "macro"), etf_only=(rt == "etf"),
+                        index_only=(rt == "index"), trigger="定时调度",
+                    ))
+                    logger.info("【定时调度】步骤 2/5 任务已提交：job_id=%s，进入后台采集线程", job_id)
+                except HTTPException as exc:
+                    logger.warning("【定时调度】任务提交被拒：%s", exc.detail)
             except Exception as exc:
                 logger.warning("调度器异常：%s", exc)
 

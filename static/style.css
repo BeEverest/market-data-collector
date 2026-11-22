@@ -166,6 +166,13 @@ body {
 .clean-result { font-size: 11px; line-height: 1.5; margin-top: 7px; color: #5a6480; }
 .clean-result.warn { color: var(--warn); }
 .clean-result.done { color: var(--danger); font-weight: 600; }
+.monitor-clean-box { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px 10px;
+  border: 1px solid #f5b7ae; border-radius: 8px; padding: 9px 12px; margin: 8px 0;
+  background: #fffaf9; }
+.monitor-clean-box[hidden] { display: none; }
+.mc-field { min-width: 0; }
+.mc-field.full { grid-column: 1 / -1; }
+.monitor-clean-box .clean-actions, .monitor-clean-box .clean-result { grid-column: 1 / -1; }
 .prec-title { font-size: 11px; font-weight: 700; margin-bottom: 6px; }
 .prec-title .tag { margin-left: 6px; }
 .prec-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }

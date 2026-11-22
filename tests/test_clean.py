@@ -119,3 +119,55 @@ class TestCleanApi:
         r = client.post("/api/clean", json={"category": "etf", "confirm": True})
         assert r.status_code == 200 and r.json()["deleted"] == 3
         assert client.get("/api/status").json()["etf_rows"] == 0
+
+
+class TestMonitorClean:
+    def test_preview_by_status(self, seeded):
+        r = storage.preview_monitor_clean(seeded, status="failed")
+        assert r["matched"] == 2 and r["total"] == 4
+
+    def test_preview_by_date_range(self, seeded):
+        r = storage.preview_monitor_clean(seeded, start="2026-11-02", end="2026-11-02")
+        assert r["matched"] == 2
+
+    def test_preview_by_keyword(self, seeded):
+        r = storage.preview_monitor_clean(seeded, keyword="sse_shares")
+        assert r["matched"] == 2
+
+    def test_preview_by_run_type_and_category(self, seeded):
+        assert storage.preview_monitor_clean(seeded, run_type="retry")["matched"] == 1
+        assert storage.preview_monitor_clean(seeded, category="ETF")["matched"] == 2
+
+    def test_clean_deletes_only_interface_run(self, seeded):
+        result = storage.clean_monitor_data(seeded, status="failed")
+        assert result["deleted"] == 2 and result["after"] == 2
+        # 业务数据不受影响
+        assert storage.read_macro(seeded)[0] == 3
+        assert storage.read_etf(seeded)[0] == 3
+
+    def test_no_match_deletes_nothing(self, seeded):
+        result = storage.clean_monitor_data(seeded, keyword="不存在")
+        assert result["deleted"] == 0 and result["after"] == result["before"]
+
+
+class TestMonitorCleanApi:
+    @pytest.fixture
+    def client(self, base, config_file, monkeypatch, seeded):
+        monkeypatch.setattr(web_app, "CONFIG_PATH", config_file)
+        monkeypatch.setattr(web_app, "BASE_DIR", base)
+        with TestClient(web_app.app) as c:
+            yield c
+
+    def test_preview_readonly(self, client):
+        r = client.post("/api/monitor/clean/preview", json={"status": "failed"})
+        assert r.status_code == 200 and r.json()["matched"] == 2
+        assert client.get("/api/monitor/report").json()["调用明细"]
+
+    def test_execute_requires_confirm(self, client):
+        r = client.post("/api/monitor/clean", json={"status": "failed"})
+        assert r.status_code == 400 and "confirm" in r.json()["detail"]
+
+    def test_execute_deletes(self, client):
+        r = client.post("/api/monitor/clean", json={"status": "failed", "confirm": True})
+        assert r.status_code == 200 and r.json()["deleted"] == 2
+        assert client.get("/api/status").json()["failed_total"] == 0

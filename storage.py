@@ -707,6 +707,78 @@ def clean_data(path: str | Path, category: str, code: str | None = None,
     return result
 
 
+# ---------- 接口监控记录清理（仅 interface_run） ----------
+def _monitor_scope(start: str | None, end: str | None, status: str | None,
+                   run_type: str | None, category: str | None,
+                   keyword: str | None) -> tuple[str, list]:
+    clauses: list[str] = []
+    args: list = []
+    if start:
+        clauses.append("run_date>=?")
+        args.append(str(start)[:10])
+    if end:
+        clauses.append("run_date<=?")
+        args.append(str(end)[:10])
+    if status:
+        clauses.append("status=?")
+        args.append(str(status).strip())
+    if run_type:
+        clauses.append("run_type=?")
+        args.append(str(run_type).strip())
+    if category:
+        clauses.append("category=?")
+        args.append(str(category).strip())
+    if keyword:
+        kw = str(keyword).strip()
+        if kw:
+            clauses.append(
+                "(interface_key LIKE ? OR interface_name LIKE ? OR error LIKE ?)"
+            )
+            args.extend([f"%{kw}%"] * 3)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return where, args
+
+
+def preview_monitor_clean(path: str | Path, start: str | None = None,
+                          end: str | None = None, status: str | None = None,
+                          run_type: str | None = None, category: str | None = None,
+                          keyword: str | None = None) -> dict:
+    """预览将删除的接口监控记录数，不修改数据。"""
+    init_schema(path)
+    where, args = _monitor_scope(start, end, status, run_type, category, keyword)
+    with connect(path) as conn:
+        matched = conn.execute(
+            f"SELECT COUNT(*) AS n FROM interface_run{where}", args
+        ).fetchone()["n"]
+        total = conn.execute("SELECT COUNT(*) AS n FROM interface_run").fetchone()["n"]
+        sample = conn.execute(
+            "SELECT interface_name, run_date, status FROM interface_run"
+            f"{where} ORDER BY run_time DESC LIMIT 3", args
+        ).fetchall()
+    return {
+        "matched": int(matched), "total": int(total),
+        "sample": [{"name": r["interface_name"], "date": r["run_date"],
+                    "status": r["status"]} for r in sample],
+    }
+
+
+def clean_monitor_data(path: str | Path, start: str | None = None,
+                       end: str | None = None, status: str | None = None,
+                       run_type: str | None = None, category: str | None = None,
+                       keyword: str | None = None) -> dict:
+    """按口径删除接口监控记录，返回删除与剩余行数；不影响业务数据表。"""
+    init_schema(path)
+    where, args = _monitor_scope(start, end, status, run_type, category, keyword)
+    with connect(path) as conn:
+        before = conn.execute("SELECT COUNT(*) AS n FROM interface_run").fetchone()["n"]
+        cur = conn.execute(f"DELETE FROM interface_run{where}", args)
+        deleted = cur.rowcount
+        after = conn.execute("SELECT COUNT(*) AS n FROM interface_run").fetchone()["n"]
+    result = {"deleted": int(deleted), "before": int(before), "after": int(after)}
+    logger.warning("按口径清理接口监控记录：%s", result)
+    return result
+
+
 # ---------- 全量清空（按需调用，服务启动不会触发） ----------
 CLEAR_TABLES = [
     "macro_observation", "etf_observation", "index_observation",

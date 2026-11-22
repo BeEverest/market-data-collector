@@ -209,7 +209,50 @@
           <button class="tab" data-tab="detail">调用明细</button>
         </div>
         <button class="btn tiny" id="exportMonitorBtn" title="导出接口监控 CSV/Excel（含口径说明）">导出监控</button>
+        <button class="btn tiny danger" id="monitorCleanToggle" title="按口径清理接口监控记录">清理监控</button>
       </div>
+    </div>
+    <div class="monitor-clean-box" id="monitorCleanBox" hidden>
+      <div class="mc-field">
+        <label class="field-label">时间范围 <span class="muted-inline">留空 = 全部</span></label>
+        <div class="prec-dates">
+          <input id="mcStart" class="prec-input" type="date">
+          <span class="date-sep">~</span>
+          <input id="mcEnd" class="prec-input" type="date">
+        </div>
+      </div>
+      <div class="mc-field">
+        <label class="field-label">状态</label>
+        <select id="mcStatus" class="prec-input">
+          <option value="">全部状态</option><option value="success">成功</option><option value="failed">失败</option>
+        </select>
+      </div>
+      <div class="mc-field">
+        <label class="field-label">运行类型</label>
+        <select id="mcRunType" class="prec-input">
+          <option value="">全部类型</option>
+          <option value="full">全量</option><option value="macro">仅宏观</option><option value="etf">仅ETF</option>
+          <option value="index">仅指数</option><option value="interface">精确采集</option>
+          <option value="retry">重跑</option><option value="scheduled">定时</option>
+        </select>
+      </div>
+      <div class="mc-field">
+        <label class="field-label">类别</label>
+        <select id="mcCategory" class="prec-input">
+          <option value="">全部类别</option>
+          <option value="宏观">宏观</option><option value="ETF">ETF</option><option value="指数">指数</option>
+        </select>
+      </div>
+      <div class="mc-field full">
+        <label class="field-label">关键词 <span class="muted-inline">接口名 / 接口键 / 失败原因</span></label>
+        <input id="mcKeyword" class="prec-input" type="text" placeholder="留空不限">
+      </div>
+      <div class="clean-actions">
+        <button type="button" class="btn tiny" id="mcPreviewBtn">预览影响</button>
+        <button type="button" class="btn tiny danger" id="mcExecBtn">执行清理</button>
+        <button type="button" class="btn tiny" id="mcResetBtn">重置</button>
+      </div>
+      <div class="clean-result" id="mcResult">—</div>
     </div>
     <div class="filters" id="monitorFilters">
       <input id="monKeyword" list="monKeywordOptions" placeholder="接口名/接口键/失败原因 关键词" title="可直接输入或从下拉选择接口名">

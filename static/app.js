@@ -618,6 +618,67 @@ $('monResetBtn').addEventListener('click', () => {
 });
 $('monPageSize').addEventListener('change', () => { monitorPage = 1; renderMonitor(); });
 
+/* ---------- 接口监控清理（按口径，需确认） ---------- */
+function mcPayload() {
+  return {
+    start: $('mcStart').value.trim(), end: $('mcEnd').value.trim(),
+    status: $('mcStatus').value, run_type: $('mcRunType').value,
+    category: $('mcCategory').value, keyword: $('mcKeyword').value.trim(),
+  };
+}
+function mcScopeText(p) {
+  const label = [p.start || '不限', p.end || '不限'].join('~');
+  return `${label} / ${p.status || '全部状态'} / ${p.run_type || '全部类型'} / ${p.category || '全部类别'}${p.keyword ? ' / ' + p.keyword : ''}`;
+}
+function setMcResult(text, cls = '') {
+  const el = $('mcResult');
+  el.textContent = text;
+  el.className = 'clean-result' + (cls ? ' ' + cls : '');
+}
+$('monitorCleanToggle').addEventListener('click', () => {
+  const box = $('monitorCleanBox');
+  box.hidden = !box.hidden;
+  if (!box.hidden) applyDefaultRange('mcStart', 'mcEnd');
+});
+$('mcPreviewBtn').addEventListener('click', async () => {
+  const p = mcPayload();
+  try {
+    const res = await api('/api/monitor/clean/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+    });
+    setMcResult(res.matched
+      ? `预览 ${mcScopeText(p)}：将删除 ${res.matched} 条（监控记录共 ${res.total} 条）。`
+      : `预览 ${mcScopeText(p)}：匹配 0 条，无可清理记录。`, 'warn');
+  } catch (e) { setMcResult('预览失败：' + e.message, 'warn'); }
+});
+$('mcExecBtn').addEventListener('click', async () => {
+  const p = mcPayload();
+  try {
+    const pre = await api('/api/monitor/clean/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+    });
+    if (!pre.matched) { setMcResult('无匹配记录，无需清理。', 'warn'); return; }
+    const ok = window.confirm(
+      `即将删除 ${pre.matched} 条接口监控记录：\n${mcScopeText(p)}\n\n` +
+      `此操作不可撤销，不影响业务数据、ETF/指数配置与导出文件。确认继续？`
+    );
+    if (!ok) { setMcResult('已取消清理。', 'warn'); return; }
+    const res = await api('/api/monitor/clean', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...p, confirm: true }),
+    });
+    setMcResult(`已清理：删除 ${res.deleted} 条，剩余 ${res.after} 条。`, 'done');
+    flashLog(`接口监控清理完成：删除 ${res.deleted} 条`, 'INFO');
+    await Promise.all([loadMonitor(), loadStatus()]);
+  } catch (e) { setMcResult('清理失败：' + e.message, 'warn'); }
+});
+$('mcResetBtn').addEventListener('click', () => {
+  $('mcStart').value = ''; $('mcEnd').value = '';
+  $('mcStatus').value = ''; $('mcRunType').value = '';
+  $('mcCategory').value = ''; $('mcKeyword').value = '';
+  setMcResult('—');
+});
+
 // 监控看板默认日期：2024-01-01 至当天
 function monitorDefaultRange() {
   applyDefaultRange('monStart', 'monEnd');

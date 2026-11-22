@@ -107,10 +107,11 @@ class TestExportApis:
             assert resp.status_code == 200
             assert resp.content[:2] == b"PK"
 
-    def test_files_listing_includes_exports(self, client):
-        client.post("/api/export/macro")
+    def test_files_listing_excludes_exports(self, client):
+        files = client.post("/api/export/macro").json()["files"]
+        assert files[-1].endswith(".zip")  # 导出实际生成
         names = [f["name"] for f in client.get("/api/files").json()["files"]]
-        assert any(name.startswith("exports/") and name.endswith(".zip") for name in names)
+        assert not any(name.startswith("exports/") for name in names)  # 但不在输出文件展示
 
     def test_download_rejects_unknown_file(self, client):
         assert client.get("/api/download", params={"name": "missing.zip"}).status_code == 404

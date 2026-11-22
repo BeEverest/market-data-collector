@@ -254,8 +254,8 @@ python3 web_app.py --port 9000     # 覆盖端口
 | 采集控制台 | 「全量采集 / 重跑失败接口」并列（标注**整体 / 运维**）；**全量采集支持起止日期选择**，统一作用于宏观、ETF、指数三类，留空则沿用各类别配置，可一键恢复默认 2024-01-01 至当天；单类别/单指标采集改用下方「精确采集」（标注**部分**），定时调度标注「整体」；单行滚动实时日志（可展开、自动滚动/暂停/回到底部） |
 | ETF 标的配置 | 灵活增删 ETF 代码、设置日期区间/默认交易日数，自动解析上市日 |
 | 指数标的配置 | 从支持的四大指数中灵活增删标的、设置近 N 天回看或日期区间；SQLite 为权威源 |
-| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab；默认日期 **2024-01-01 ~ 当天**，支持组合筛选与分页（25/50/100）；提供「导出监控」按钮（含口径说明） |
-| 采集数据 | 宏观 / ETF 日频 / 指数日线 / 输出文件四个 Tab，支持代码与日期筛选（默认 **2024-01-01 ~ 当天**）、分页（25/50/100）；提供「导出宏观 / 导出 ETF / 导出指数 / 导出全量 ZIP」按钮，均含口径说明 |
+| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab；默认日期 **2024-01-01 ~ 当天**，支持组合筛选与分页（25/50/100）；「导出监控」按钮（含口径说明）后接「清理监控」按钮：按时间/状态/运行类型/类别/关键词预览并二次确认删除监控记录 |
+| 采集数据 | 宏观 / ETF 日频 / 指数日线 / 输出文件四个 Tab，支持代码与日期筛选（默认 **2024-01-01 ~ 当天**）、分页（25/50/100）；提供「导出宏观 / 导出 ETF / 导出指数 / 导出全量 ZIP」按钮，均含口径说明；「输出文件」Tab **不展示** `exports/` 下的导出文件（导出文件由导出功能直接下载） |
 | 数据清理 | 危险操作模块（红色）：按**类别**（宏观 / ETF / 指数）+ **细分口径**（具体指标 / 基金 / 指数代码，留空该类整体）+ **时间范围**删除观测数据；先「预览影响」显示匹配行数，再「执行清理」需二次确认（显式 `confirm`），仅删三类观测表，不动配置 / 监控 / 导出记录 |
 | 定时调度 | 界面勾选启用、设置每日时刻与采集范围（含仅指数），保存到 config.json |
 
@@ -272,11 +272,13 @@ python3 web_app.py --port 9000     # 覆盖端口
 - **SQLite 主存储**：业务数据、接口监控、ETF 配置与上市日期、指数配置均在 `output/market_data.db`；旧 CSV/JSONL 保留只读作为迁移与回滚基线。
 - **分类导出**：采集只写库不生成文件；按需导出宏观 / ETF / 指数 / 接口监控，每个 Excel 都含「口径说明」Sheet，CSV 同步生成独立口径说明文件；全量导出打包 ZIP（含宏观/ETF/监控三类，指数可单独导出）。
 - **口径化清理**：`POST /api/clean/preview` 只读预览将删除的行数（含样本）；`POST /api/clean` 必须携带 `confirm=true` 才执行，按类别 / 细分代码 / 时间范围精确删除 `*_observation` 表行（宏观按 YYYY-MM、ETF/指数按 YYYY-MM-DD 比较，代码自动补零至 6 位）。删除不可撤销，但**不触发采集、不影响配置 / 监控 / 导出记录**，服务启动/重启也不会调用。
+- **监控清理**：`POST /api/monitor/clean/preview` 预览、`POST /api/monitor/clean`（需 `confirm=true`）执行，仅删 `interface_run` 表；支持时间 / 状态 / 运行类型 / 类别 / 关键词组合，不影响业务数据与配置。入口在接口监控看板「导出监控」按钮之后，需二次确认。
+- **输出文件视图**：`/api/files` 过滤掉 `exports/` 目录，仅展示采集生成的原始文件；导出产物仍可通过导出按钮自动下载与 `/api/download` 获取。
 
 ### API 一览
 
 `GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/data/index`、`/api/etf/config`、`/api/index/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
-`POST /api/collect`（支持 `index_only` + `start`/`end`）、`/api/collect/interface`（category 支持 `macro|etf|index`）、`/api/clean/preview`（只读预览）、`/api/clean`（需 `confirm=true`）、`/api/retry`、`/api/scheduler`、`/api/etf/config`、`/api/index/config`；
+`POST /api/collect`（支持 `index_only` + `start`/`end`）、`/api/collect/interface`（category 支持 `macro|etf|index`）、`/api/clean/preview`（只读预览）、`/api/clean`（需 `confirm=true`）、`/api/monitor/clean/preview`（只读预览）、`/api/monitor/clean`（需 `confirm=true`）、`/api/retry`、`/api/scheduler`、`/api/etf/config`、`/api/index/config`；
 `POST /api/export/macro`、`/api/export/etf`、`/api/export/index`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。点击看板上的导出按钮后，浏览器会自动下载对应的 ZIP 包（含数据 CSV、口径说明 CSV、Excel）。
 
 ## 十、单元测试
@@ -285,7 +287,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 python3.11 -m pytest          # 或 pytest
 ```
 
-共 **122 个用例**（含全量采集日期范围 7 个、口径化清理 15 个），全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。
+共 **134 个用例**（含全量采集日期范围 7 个、口径化清理 15 个、接口监控清理 10 个、文件列表过滤 1 个），全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。
 
 | 测试文件 | 覆盖范围 |
 | --- | --- |

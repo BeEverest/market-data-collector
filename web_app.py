@@ -497,12 +497,17 @@ def api_files():
     out_dir = BASE_DIR / _cfg().get("output", {}).get("dir", "output")
     files = []
     for path in sorted(out_dir.rglob("*")):
-        if path.is_file():
-            files.append({
-                "name": str(path.relative_to(out_dir)),
-                "size": round(path.stat().st_size / 1024, 1),
-                "mtime": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
-            })
+        # 导出文件由「导出」功能自动生成与下载，不在「输出文件」Tab 展示
+        if not path.is_file():
+            continue
+        rel = path.relative_to(out_dir)
+        if rel.parts and rel.parts[0] == "exports":
+            continue
+        files.append({
+            "name": str(rel),
+            "size": round(path.stat().st_size / 1024, 1),
+            "mtime": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+        })
     return {"files": files}
 
 
@@ -884,6 +889,46 @@ def api_clean(payload: dict | None = None):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     logger.warning("Web 触发数据清理：%s", result)
+    return result
+
+
+@app.post("/api/monitor/clean/preview")
+def api_monitor_clean_preview(payload: dict | None = None):
+    """预览按口径将删除的接口监控记录数（只读）。"""
+    payload = payload or {}
+    db = _db_path(_cfg())
+    if not db:
+        raise HTTPException(status_code=400, detail="未配置 SQLite 主存储，无法清理")
+    return storage.preview_monitor_clean(
+        db,
+        start=(str(payload.get("start") or "").strip() or None),
+        end=(str(payload.get("end") or "").strip() or None),
+        status=(str(payload.get("status") or "").strip() or None),
+        run_type=(str(payload.get("run_type") or "").strip() or None),
+        category=(str(payload.get("category") or "").strip() or None),
+        keyword=(str(payload.get("keyword") or "").strip() or None),
+    )
+
+
+@app.post("/api/monitor/clean")
+def api_monitor_clean(payload: dict | None = None):
+    """执行接口监控清理：必须 confirm=true；仅删 interface_run。"""
+    payload = payload or {}
+    if payload.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="缺少 confirm=true，拒绝清理")
+    db = _db_path(_cfg())
+    if not db:
+        raise HTTPException(status_code=400, detail="未配置 SQLite 主存储，无法清理")
+    result = storage.clean_monitor_data(
+        db,
+        start=(str(payload.get("start") or "").strip() or None),
+        end=(str(payload.get("end") or "").strip() or None),
+        status=(str(payload.get("status") or "").strip() or None),
+        run_type=(str(payload.get("run_type") or "").strip() or None),
+        category=(str(payload.get("category") or "").strip() or None),
+        keyword=(str(payload.get("keyword") or "").strip() or None),
+    )
+    logger.warning("Web 触发接口监控清理：%s", result)
     return result
 
 

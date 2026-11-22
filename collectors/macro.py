@@ -1,11 +1,12 @@
 """
-宏观数据采集：央行 / 统计局 / 交易所口径，月度频率。
+宏观数据采集：央行 / 统计局 / 交易所 / FRED / 美国经济日历口径，月度与季度混合频率。
 
 指标组：
   货币与信贷：M0 / M1 / M2、居民储蓄存款、人民币存款、人民币贷款、社会融资规模存量
   外贸：出口额、进口额、进出口总额
   消费与物价：社会消费品零售总额、CPI、PPI
   景气与市场：制造业PMI、非制造业PMI、A股总市值、央行黄金储备
+  增长与美国：中国GDP、美国GDP、美国CPI/核心CPI/PPI、非农新增就业、利率预测
 
 统一输出：指标代码 / 指标名称 / 日期 / 数值 / 单位 / 同比(%) / 环比(%) / 数据源 / 采集时间
 
@@ -14,12 +15,14 @@
 """
 from __future__ import annotations
 
+import io
 import logging
 import re
 import time
 from datetime import datetime
 
 import pandas as pd
+import requests
 
 from monitor import describe_failure
 
@@ -33,6 +36,8 @@ OUTPUT_COLUMNS = [
 PBC = "中国人民银行（akshare 封装）"
 NBS = "国家统计局（akshare 封装）"
 EXCHANGE = "交易所/第三方（akshare 封装）"
+FRED = "FRED（美联储 / BLS / BEA）"
+US_CALENDAR = "美国经济日历（akshare 封装）"
 
 # 接口键 -> 中文名称，用于监控报告
 IFACE_NAMES = {
@@ -47,6 +52,13 @@ IFACE_NAMES = {
     "macro_china_pmi": "PMI 采购经理指数",
     "macro_china_stock_market_cap": "A股总市值（沪深）",
     "macro_china_foreign_exchange_gold": "央行黄金储备",
+    "macro_china_gdp": "中国GDP（季度绝对值）",
+    "fred_A191RL1Q225SBEA": "美国GDP环比折年率(FRED)",
+    "fred_CPIAUCSL": "美国CPI指数(FRED)",
+    "fred_CPILFESL": "美国核心CPI指数(FRED)",
+    "fred_PPIACO": "美国PPI指数(FRED)",
+    "fred_PAYEMS": "美国非农就业人数(FRED)",
+    "macro_bank_usa_interest_rate": "美联储利率决议（含预测值）",
 }
 
 # 权威指标目录：供 Web 精确采集下拉与代码→接口推导使用。
@@ -69,6 +81,13 @@ CATALOG: list[dict] = [
     {"code": "PMI_NONMFG", "name": "非制造业PMI", "iface": "macro_china_pmi", "unit": "指数", "granularity": "月度", "source": NBS},
     {"code": "A_SHARE_MC", "name": "A股总市值(沪深)", "iface": "macro_china_stock_market_cap", "unit": "亿元", "granularity": "月度", "source": EXCHANGE},
     {"code": "GOLD_RESERVE", "name": "央行黄金储备", "iface": "macro_china_foreign_exchange_gold", "unit": "万盎司", "granularity": "月度", "source": "国家外汇管理局（akshare 封装）"},
+    {"code": "CN_GDP", "name": "中国GDP(季度绝对值)", "iface": "macro_china_gdp", "unit": "亿元", "granularity": "季度", "source": NBS},
+    {"code": "US_GDP", "name": "美国GDP环比折年率", "iface": "fred_A191RL1Q225SBEA", "unit": "%", "granularity": "季度", "source": FRED},
+    {"code": "US_CPI", "name": "美国CPI指数", "iface": "fred_CPIAUCSL", "unit": "1982-84=100", "granularity": "月度", "source": FRED},
+    {"code": "US_CORE_CPI", "name": "美国核心CPI指数", "iface": "fred_CPILFESL", "unit": "1982-84=100", "granularity": "月度", "source": FRED},
+    {"code": "US_PPI", "name": "美国PPI指数", "iface": "fred_PPIACO", "unit": "指数", "granularity": "月度", "source": FRED},
+    {"code": "US_NONFARM", "name": "美国非农新增就业", "iface": "fred_PAYEMS", "unit": "千人", "granularity": "月度", "source": FRED},
+    {"code": "US_RATE_FORECAST", "name": "美国利率预测", "iface": "macro_bank_usa_interest_rate", "unit": "%", "granularity": "会议", "source": US_CALENDAR + "（预测值）"},
 ]
 
 CODE_TO_IFACE: dict[str, str] = {item["code"]: item["iface"] for item in CATALOG}
@@ -77,6 +96,35 @@ CODE_TO_IFACE: dict[str, str] = {item["code"]: item["iface"] for item in CATALOG
 def catalog() -> list[dict]:
     """返回宏观指标目录（含接口名，供监控展示）。"""
     return [dict(item) for item in CATALOG]
+
+
+# FRED 公共 CSV 接口（无需 API Key），用于补齐 akshare 美国宏观数据更新滞后的问题
+FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
+FRED_SERIES = {
+    "fred_A191RL1Q225SBEA": "A191RL1Q225SBEA",  # 美国实际GDP环比折年率
+    "fred_CPIAUCSL": "CPIAUCSL",                # 美国CPI指数（季调）
+    "fred_CPILFESL": "CPILFESL",                # 美国核心CPI指数（季调）
+    "fred_PPIACO": "PPIACO",                    # 美国PPI指数（全部商品）
+    "fred_PAYEMS": "PAYEMS",                    # 美国非农就业人数（千人）
+}
+
+
+def _fred_frame(series_id: str) -> pd.DataFrame:
+    resp = requests.get(FRED_CSV_URL, params={"id": series_id}, timeout=20)
+    resp.raise_for_status()
+    df = pd.read_csv(io.StringIO(resp.text))
+    if df.shape[1] < 2:
+        return pd.DataFrame(columns=["日期", "数值"])
+    df = df.iloc[:, :2].copy()
+    df.columns = ["日期", "数值"]
+    df["数值"] = pd.to_numeric(df["数值"], errors="coerce")
+    return df
+
+
+CUSTOM_FETCHERS = {
+    name: (lambda sid=series_id: _fred_frame(sid))
+    for name, series_id in FRED_SERIES.items()
+}
 
 
 def _normalize_month(value) -> str:
@@ -92,6 +140,18 @@ def _normalize_month(value) -> str:
     if m:
         return f"{m.group(1)}-{m.group(2)}"
     return s
+
+
+def _normalize_quarter(value) -> str:
+    """把 2026年第1-3季度 / 2025年第1-4季度 映射为季末月 YYYY-MM。"""
+    s = "" if value is None else str(value).strip()
+    m = re.search(r"(\d{4})\s*年第\s*1-(\d)\s*季度", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)) * 3:02d}"
+    m = re.search(r"(\d{4})\s*年第\s*(\d)\s*季度", s)
+    if m:
+        return f"{m.group(1)}-{int(m.group(2)) * 3:02d}"
+    return _normalize_month(s)
 
 
 def _to_float(value):
@@ -123,7 +183,8 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
     for attempt in range(1, retries + 1):
         attempts = attempt
         try:
-            df = getattr(ak, fn_name)()
+            fetcher = CUSTOM_FETCHERS.get(fn_name)
+            df = fetcher() if fetcher else getattr(ak, fn_name)()
             if df is not None and not df.empty:
                 if monitor:
                     monitor.record(
@@ -204,6 +265,32 @@ def collect_macro(
             "数据源": source,
             "采集时间": fetch_time,
         })
+
+    def add_fred_level(code, name, fn, unit, source):
+        """FRED 水平序列：同时按 12 期/1 期计算同比、环比（%）。"""
+        d = fetch(fn)
+        if d.empty or not {"日期", "数值"}.issubset(d.columns):
+            return
+        d = d.copy().sort_values("日期").reset_index(drop=True)
+        vals = pd.to_numeric(d["数值"], errors="coerce")
+        keys = d["日期"].astype(str).str[:7].tolist()
+        val_map = {k: v for k, v in zip(keys, vals) if pd.notna(v)}
+
+        def prev_month(key: str) -> str:
+            y, m = key.split("-")[:2]
+            y, m = int(y), int(m)
+            return f"{y - 1:04d}-12" if m == 1 else f"{y:04d}-{m - 1:02d}"
+
+        for i, r in d.iterrows():
+            value = vals.iloc[i]
+            if pd.isna(value):
+                continue
+            key = keys[i]
+            yoy_key = f"{int(key[:4]) - 1:04d}-{key[5:7]}"
+            mom_key = prev_month(key)
+            yoy = (value / val_map[yoy_key] - 1) * 100 if yoy_key in val_map else None
+            mom = (value / val_map[mom_key] - 1) * 100 if mom_key in val_map else None
+            add(code, name, r["日期"], value, unit, yoy, mom, source)
 
     # ============ 央行：货币供应量 M0 / M1 / M2 ============
     ms = fetch("macro_china_money_supply")
@@ -335,6 +422,42 @@ def collect_macro(
         for _, r in gold.iterrows():
             add("GOLD_RESERVE", "央行黄金储备", r["统计时间"], r["黄金储备"], "万盎司",
                 source="国家外汇管理局（akshare 封装）")
+
+    # ============ 中国 GDP（季度绝对值 + 同比增长） ============
+    cn_gdp = fetch("macro_china_gdp")
+    if not cn_gdp.empty and "国内生产总值-绝对值" in cn_gdp.columns:
+        for _, r in cn_gdp.iterrows():
+            add("CN_GDP", "中国GDP(季度绝对值)", _normalize_quarter(r["季度"]),
+                r["国内生产总值-绝对值"], "亿元", r.get("国内生产总值-同比增长"), source=NBS)
+
+    # ============ 美国 GDP（FRED 环比折年率） ============
+    us_gdp = fetch("fred_A191RL1Q225SBEA")
+    if not us_gdp.empty and {"日期", "数值"}.issubset(us_gdp.columns):
+        for _, r in us_gdp.iterrows():
+            add("US_GDP", "美国GDP环比折年率", r["日期"], r["数值"], "%",
+                source=FRED)
+
+    # ============ 美国 CPI / 核心 CPI / PPI（FRED 指数，自动计算同比/环比） ============
+    add_fred_level("US_CPI", "美国CPI指数", "fred_CPIAUCSL", "1982-84=100", FRED)
+    add_fred_level("US_CORE_CPI", "美国核心CPI指数", "fred_CPILFESL", "1982-84=100", FRED)
+    add_fred_level("US_PPI", "美国PPI指数", "fred_PPIACO", "指数", FRED)
+
+    # ============ 美国非农新增就业（由 FRED 总就业人数月度差分得到） ============
+    nfp = fetch("fred_PAYEMS")
+    if not nfp.empty and {"日期", "数值"}.issubset(nfp.columns):
+        nfp = nfp.copy().sort_values("日期").reset_index(drop=True)
+        vals = pd.to_numeric(nfp["数值"], errors="coerce")
+        change = vals.diff()
+        for i, r in nfp.iterrows():
+            add("US_NONFARM", "美国非农新增就业", r["日期"], change.iloc[i], "千人",
+                source=FRED)
+
+    # ============ 美国利率预测（美联储利率决议预测值） ============
+    rate = fetch("macro_bank_usa_interest_rate")
+    if not rate.empty and {"日期", "预测值"}.issubset(rate.columns):
+        for _, r in rate.iterrows():
+            add("US_RATE_FORECAST", "美国利率预测", r["日期"], r["预测值"], "%",
+                source=US_CALENDAR + "（预测值）")
 
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     if not df.empty:

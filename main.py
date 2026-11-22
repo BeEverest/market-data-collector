@@ -113,7 +113,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     timeout = fetch_cfg.get("timeout_sec", 15)
 
     if not etf_only:
-        logger.info("开始采集宏观数据（17 个月度指标）...")
+        logger.info("开始采集宏观数据（24 项指标：17 项原指标 + 中国GDP + 6 项美国指标）...")
         macro_df = collect_macro(
             start_date=config.get("macro", {}).get("start_date"),
             monitor=monitor,

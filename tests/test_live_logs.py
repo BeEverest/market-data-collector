@@ -53,15 +53,16 @@ class TestLiveLogBuffer:
         assert entry["message"] == "字段校验日志"
         assert entry["level"] == "INFO"
 
-    def test_buffer_caps_at_200(self, clean_buffer):
-        for i in range(250):
+    def test_buffer_caps_at_limit(self, clean_buffer):
+        limit = web_app.LIVE_LOG_LIMIT
+        for i in range(limit + 50):
             _emit(f"line-{i}")
         with web_app._live_lock:
             logs = list(web_app._live_logs)
-        assert len(logs) == web_app.LIVE_LOG_LIMIT == 200
-        # 保留最新的 200 行：首行应为 line-50
-        assert logs[0]["message"] == "line-50"
-        assert logs[-1]["message"] == "line-249"
+        assert len(logs) == limit
+        # 保留最新的 limit 行：首行应为 line-50
+        assert logs[0]["message"] == f"line-50"
+        assert logs[-1]["message"] == f"line-{limit + 49}"
 
     def test_seq_monotonic_increasing(self, clean_buffer):
         for i in range(5):
@@ -86,7 +87,7 @@ class TestLiveLogsApi:
             first_seq = list(web_app._live_logs)[0]["seq"]
         data = client.get("/api/live-logs", params={"after": first_seq}).json()
         assert {e["message"] for e in data["logs"]} == {"B", "C"}
-        assert data["limit"] == 200
+        assert data["limit"] == web_app.LIVE_LOG_LIMIT
         assert data["latest"] >= max(e["seq"] for e in data["logs"])
         assert data["total"] == 3
 

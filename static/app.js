@@ -55,7 +55,7 @@ let renderedLogCount = 0;
 let logAutoScroll = true;
 let liveLogSeq = 0;          // 全局实时日志已渲染到的序号
 let liveLogTimer = null;     // 常驻轮询：含定时调度在内的所有线程日志
-const LIVE_LOG_LIMIT = 200;  // 与后端环形缓冲一致：保留最近 200 行
+const LIVE_LOG_LIMIT = 5000;  // 与后端环形缓冲一致：保留最近 5000 行
 
 /* ---------- 概览 ---------- */
 async function loadStatus() {
@@ -203,7 +203,7 @@ $('importBtn').addEventListener('click', async () => {
 function startJob(jobId) {
   currentJobId = jobId;
   // 日志统一由全局实时流渲染（含定时调度任务），此处不再清空 logBody，
-  // 以满足「保留最近 200 行」的连续展示。
+  // 以满足「保留最近 5000 行」的连续展示。
   setLogMarquee(`任务 ${jobId} 已提交，日志见下方实时流…`, 'INFO');
   $('logDot').classList.add('live');
   setButtons(false);
@@ -1127,7 +1127,7 @@ async function init() {
   monitorDefaultRange();
   await loadData();
   await refresh();
-  startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 200 行
+  startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 5000 行
 }
 init();
 setInterval(refresh, 30000);

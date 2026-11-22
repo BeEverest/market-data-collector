@@ -56,8 +56,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
                     datefmt="%H:%M:%S")
 
 # 全局实时日志环形缓冲：承接所有线程（含定时调度器/后台采集）的日志，供「实时监控」常驻轮询。
-# 与 per-job 日志（JobLogHandler，任务结束即固定）互补：这里跨任务保留最近 200 行。
-LIVE_LOG_LIMIT = 200
+# 与 per-job 日志（JobLogHandler，任务结束即固定）互补：这里跨任务保留最近 5000 行。
+LIVE_LOG_LIMIT = 5000
 _live_logs: deque[dict] = deque(maxlen=LIVE_LOG_LIMIT)
 _live_seq = itertools.count(1)
 _live_lock = threading.Lock()
@@ -707,7 +707,7 @@ def api_jobs():
 
 @app.get("/api/live-logs")
 def api_live_logs(after: int = 0):
-    """实时监控日志：返回序号大于 after 的全局日志（含定时调度），跨任务保留最近 200 行。"""
+    """实时监控日志：返回序号大于 after 的全局日志（含定时调度），跨任务保留最近 5000 行。"""
     with _live_lock:
         logs = [dict(e) for e in _live_logs if e["seq"] > after]
         latest = _live_logs[-1]["seq"] if _live_logs else 0

@@ -177,15 +177,19 @@ def _submit(kind: str, func) -> str:
 
 
 def _do_collect(macro_only: bool = False, etf_only: bool = False,
-                index_only: bool = False) -> str:
+                index_only: bool = False, start: str | None = None,
+                end: str | None = None) -> str:
     config = _cfg()
     db_path = _db_path(config)
     monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config),
                       db_path=db_path)
     label = "仅宏观" if macro_only else ("仅 ETF" if etf_only else ("仅指数" if index_only else "全量"))
+    if start or end:
+        label += f"（{start or '起始默认'} ~ {end or '结束默认'}）"
     logger.info("Web 触发采集：%s", label)
     macro_df, etf_df, index_df = _collect(
-        config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only
+        config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only,
+        start_date=start, end_date=end,
     )
     # SQLite 按业务键 upsert；空 DataFrame 不会覆盖库中已有数据
     _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
@@ -602,7 +606,9 @@ def api_collect(payload: dict | None = None):
     macro_only = bool(payload.get("macro_only", False))
     etf_only = bool(payload.get("etf_only", False))
     index_only = bool(payload.get("index_only", False))
-    job_id = _submit("collect", lambda: _do_collect(macro_only, etf_only, index_only))
+    start = str(payload.get("start") or "").strip() or None
+    end = str(payload.get("end") or "").strip() or None
+    job_id = _submit("collect", lambda: _do_collect(macro_only, etf_only, index_only, start, end))
     return {"job_id": job_id}
 
 

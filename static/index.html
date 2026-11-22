@@ -42,22 +42,22 @@
             <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF + 指数</small></span>
             <span class="scope whole">整体</span>
           </button>
-          <button class="btn has-scope" data-action="collect" data-kind="macro">
-            <span class="ico">▤</span><span><b>仅宏观采集</b><small>25 项指标（含中美GDP/美国宏观）</small></span>
-            <span class="scope part">部分</span>
-          </button>
-          <button class="btn has-scope" data-action="collect" data-kind="etf">
-            <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
-            <span class="scope part">部分</span>
-          </button>
-          <button class="btn has-scope" data-action="collect" data-kind="index">
-            <span class="ico">◈</span><span><b>仅指数采集</b><small>四大指数 · 近一年日线</small></span>
-            <span class="scope part">部分</span>
-          </button>
           <button class="btn warn has-scope" data-action="retry">
             <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
             <span class="scope ops">运维</span>
           </button>
+        </div>
+        <div class="full-range-box">
+          <div class="full-range-head">
+            <span class="full-range-title">全量采集日期范围</span>
+            <span class="full-range-hint">统一作用于宏观 / ETF / 指数，留空则沿用各类别配置</span>
+          </div>
+          <div class="prec-dates">
+            <input id="fullStart" class="prec-input" type="date" title="全量采集起始日期">
+            <span class="date-sep">~</span>
+            <input id="fullEnd" class="prec-input" type="date" title="全量采集结束日期">
+            <button type="button" class="btn tiny" id="fullRangeReset" title="恢复默认 2024-01-01 至今天">默认</button>
+          </div>
         </div>
         <div class="divider"></div>
         <div class="precision-box">

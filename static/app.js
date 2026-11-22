@@ -80,6 +80,10 @@ function setButtons(enabled) {
   document.querySelectorAll('button[data-action]').forEach(b => b.disabled = !enabled);
   const prec = $('precRun');
   if (prec) prec.disabled = !enabled;
+  ['fullStart', 'fullEnd', 'fullRangeReset'].forEach(id => {
+    const el = $(id);
+    if (el) el.disabled = !enabled;
+  });
 }
 
 /* ---------- 调度设置 ---------- */
@@ -107,6 +111,10 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
       url = '/api/collect';
       const kind = btn.dataset.kind;
       payload = { macro_only: kind === 'macro', etf_only: kind === 'etf', index_only: kind === 'index' };
+      if (kind === 'full') {
+        payload.start = $('fullStart').value.trim();
+        payload.end = $('fullEnd').value.trim();
+      }
     } else {
       url = '/api/retry';
       payload = {};
@@ -119,6 +127,7 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
     } catch (e) { alert('任务启动失败：' + e.message); }
   });
 });
+$('fullRangeReset').addEventListener('click', () => applyDefaultRange('fullStart', 'fullEnd'));
 
 function startJob(jobId) {
   currentJobId = jobId;
@@ -781,6 +790,7 @@ async function init() {
   // 并行加载目录/配置，再填充下拉并套用默认日期区间
   await Promise.all([loadCatalog(), loadEtfConfig(), loadIndexConfig()]);
   fillCodeOptions();
+  applyDefaultRange('fullStart', 'fullEnd');
   applyDefaultRange('precStart', 'precEnd');
   resetToDefaultRange();
   monitorDefaultRange();

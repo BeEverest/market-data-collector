@@ -150,8 +150,12 @@ def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str])
 
 
 def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False,
-             index_only=False) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """执行一次完整采集，返回 (宏观_df, ETF_df, 指数_df)。"""
+             index_only=False, start_date=None, end_date=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """执行一次完整采集，返回 (宏观_df, ETF_df, 指数_df)。
+
+    start_date / end_date 为全量采集的日期范围覆盖值；留空时回退到各类别的
+    配置默认值。这样一次采集即可让宏观、ETF、指数三类统一按指定范围抓取。
+    """
     macro_df = pd.DataFrame()
     etf_df = pd.DataFrame()
     index_df = pd.DataFrame()
@@ -163,7 +167,8 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     if not etf_only and not index_only:
         logger.info("开始采集宏观数据（25 项指标：17 项原指标 + 中国GDP + 7 项美国指标）...")
         macro_df = collect_macro(
-            start_date=config.get("macro", {}).get("start_date"),
+            start_date=start_date or config.get("macro", {}).get("start_date"),
+            end_date=end_date or config.get("macro", {}).get("end_date"),
             monitor=monitor,
             retries=retries,
             retry_interval=retry_interval,
@@ -180,8 +185,8 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             listing_dates = etf_cfg.get("listing_dates", {}) or {}
             etf_df = collect_etf(
                 codes=codes,
-                start_date=etf_cfg.get("start_date") or None,
-                end_date=etf_cfg.get("end_date") or None,
+                start_date=start_date or etf_cfg.get("start_date") or None,
+                end_date=end_date or etf_cfg.get("end_date") or None,
                 default_trade_days=etf_cfg.get("default_trade_days", 20),
                 retries=retries,
                 retry_interval=retry_interval,
@@ -203,8 +208,8 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             logger.info("开始采集 %d 个主要指数的日频行情（近一年）...", len(index_codes))
             index_df = collect_index(
                 codes=index_codes,
-                start_date=index_cfg.get("start_date") or None,
-                end_date=index_cfg.get("end_date") or None,
+                start_date=start_date or index_cfg.get("start_date") or None,
+                end_date=end_date or index_cfg.get("end_date") or None,
                 lookback_days=index_cfg.get("lookback_days", 365),
                 retries=retries,
                 retry_interval=retry_interval,
@@ -525,8 +530,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--collect-interface", action="store_true", help="按接口/指标+时间范围精确采集")
     parser.add_argument("--category", choices=["macro", "etf", "index"], help="精确采集类别")
     parser.add_argument("--codes", help="指标代码/基金代码，逗号分隔；留空为该类别全部")
-    parser.add_argument("--start", help="起始时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
-    parser.add_argument("--end", help="结束时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
+    parser.add_argument("--start", help="起始时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
+    parser.add_argument("--end", help="结束时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -564,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     macro_df, etf_df, index_df = _collect(
         config, monitor, macro_only=args.macro_only,
         etf_only=args.etf_only, index_only=args.index_only,
+        start_date=args.start, end_date=args.end,
     )
     _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
     return 0

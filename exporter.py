@@ -71,6 +71,13 @@ def _write_excel(path: Path, sheets: list[tuple[str, pd.DataFrame]]) -> None:
             ws.freeze_panes = "A2"
 
 
+def _zip_files(files: list[str], zip_path: Path) -> str:
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for file in files:
+            zf.write(file, arcname=Path(file).name)
+    return str(zip_path)
+
+
 def export_macro(macro_df: pd.DataFrame, base_dir: Path, config: dict,
                  stamp: str | None = None) -> list[str]:
     """导出宏观数据：CSV + 口径说明 CSV + Excel（含口径说明 Sheet）。"""
@@ -84,8 +91,11 @@ def export_macro(macro_df: pd.DataFrame, base_dir: Path, config: dict,
     macro_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     notes.to_csv(note_path, index=False, encoding="utf-8-sig")
     _write_excel(xlsx_path, [("宏观数据", macro_df), ("口径说明", notes)])
+    zip_path = out_dir / f"宏观数据_{stamp}.zip"
+    files = [str(csv_path), str(note_path), str(xlsx_path)]
+    files.append(_zip_files(files, zip_path))
     logger.info("宏观数据导出完成：%d 行", len(macro_df))
-    return [str(csv_path), str(note_path), str(xlsx_path)]
+    return files
 
 
 def export_etf(etf_df: pd.DataFrame, base_dir: Path, config: dict,
@@ -100,8 +110,11 @@ def export_etf(etf_df: pd.DataFrame, base_dir: Path, config: dict,
     etf_df.to_csv(csv_path, index=False, encoding="utf-8-sig")
     notes.to_csv(note_path, index=False, encoding="utf-8-sig")
     _write_excel(xlsx_path, [("ETF规模", etf_df), ("口径说明", notes)])
+    zip_path = out_dir / f"ETF数据_{stamp}.zip"
+    files = [str(csv_path), str(note_path), str(xlsx_path)]
+    files.append(_zip_files(files, zip_path))
     logger.info("ETF 数据导出完成：%d 行", len(etf_df))
-    return [str(csv_path), str(note_path), str(xlsx_path)]
+    return files
 
 
 def export_monitor(history_df: pd.DataFrame, base_dir: Path, config: dict,
@@ -121,8 +134,11 @@ def export_monitor(history_df: pd.DataFrame, base_dir: Path, config: dict,
     notes.to_csv(note_path, index=False, encoding="utf-8-sig")
     sheets = list(report.items()) + [("口径说明", notes)]
     _write_excel(xlsx_path, sheets)
+    zip_path = out_dir / f"接口监控_{stamp}.zip"
+    files = [str(csv_path), str(note_path), str(xlsx_path)]
+    files.append(_zip_files(files, zip_path))
     logger.info("接口监控导出完成：%d 行调用明细", len(detail))
-    return [str(csv_path), str(note_path), str(xlsx_path)]
+    return files
 
 
 def export_full(macro_df: pd.DataFrame, etf_df: pd.DataFrame,
@@ -132,12 +148,10 @@ def export_full(macro_df: pd.DataFrame, etf_df: pd.DataFrame,
     files = export_macro(macro_df, base_dir, config, stamp)
     files += export_etf(etf_df, base_dir, config, stamp)
     files += export_monitor(history_df, base_dir, config, stamp)
+    files = [f for f in files if not f.lower().endswith(".zip")]
     out_dir = _export_dir(base_dir, config)
     zip_path = out_dir / f"全量导出_{stamp}.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file in files:
-            zf.write(file, arcname=Path(file).name)
-    files.append(str(zip_path))
+    files.append(_zip_files(files, zip_path))
     logger.info("全量导出完成：%s", zip_path)
     return files
 
@@ -222,9 +236,9 @@ def prune_snapshots(base_dir: Path, config: dict) -> list[str]:
     batches: dict[str, list[Path]] = {}
     patterns = [
         f"{prefix}_宏观数据_*.csv", f"{prefix}_ETF规模_*.csv", f"{prefix}_*.xlsx",
-        "宏观数据_*.csv", "宏观数据口径说明_*.csv", "宏观数据_*.xlsx",
-        "ETF数据_*.csv", "ETF数据口径说明_*.csv", "ETF数据_*.xlsx",
-        "接口监控_*.csv", "接口监控口径说明_*.csv", "接口监控_*.xlsx",
+        "宏观数据_*.csv", "宏观数据口径说明_*.csv", "宏观数据_*.xlsx", "宏观数据_*.zip",
+        "ETF数据_*.csv", "ETF数据口径说明_*.csv", "ETF数据_*.xlsx", "ETF数据_*.zip",
+        "接口监控_*.csv", "接口监控口径说明_*.csv", "接口监控_*.xlsx", "接口监控_*.zip",
         "全量导出_*.zip",
     ]
     candidates: list[Path] = []

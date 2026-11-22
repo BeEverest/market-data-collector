@@ -654,11 +654,23 @@ function esc(s) {
 }
 
 /* ---------- SQLite 分类导出 ---------- */
+function downloadFile(name) {
+  if (!name) return;
+  const a = document.createElement('a');
+  a.href = '/api/download?name=' + encodeURIComponent(name);
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 async function runExport(url, label) {
   try {
     const res = await api(url, { method: 'POST' });
     const files = res.files || [];
     flashLog(`${label}完成，生成 ${files.length} 个文件：${files.join('、')}`, 'INFO');
+    // 后端最后一个文件始终是 ZIP 包，点击按钮后直接触发浏览器下载
+    downloadFile(files[files.length - 1]);
     if (dataTab === 'files') loadData();
   } catch (e) {
     alert(`${label}失败：${e.message}`);

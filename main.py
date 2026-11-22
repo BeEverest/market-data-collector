@@ -31,8 +31,13 @@ from collectors.etf import fetch_nav, get_trade_dates
 from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
 from collectors.rate_limit import configure as configure_rate_limit
+from collectors.trade_calendar import resolve_default_end
 from exporter import export_results, prune_snapshots
 from monitor import Monitor, format_failure_detail
+
+# 采集范围的兜底默认值集中取自 storage 的唯一定义；运行时实际值来自 SQLite 配置的权威源。
+_ETF_DEFAULT_DAYS = storage.DEFAULT_ETF_CONFIG["default_trade_days"]
+_INDEX_DEFAULT_DAYS = storage.DEFAULT_INDEX_CONFIG["lookback_days"]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,8 +57,20 @@ def load_config(path: str) -> dict:
         db_path = storage.db_path(config, BASE_DIR)
         storage.init_schema(db_path)
         # SQLite 为 ETF/指数配置权威源；config.json 保留为镜像与回滚基线
-        config["etf"] = storage.get_etf_config(db_path, config.get("etf", {}))
-        config["index"] = storage.get_index_config(db_path, config.get("index", {}))
+        etf_cfg = storage.get_etf_config(db_path, config.get("etf", {}))
+        index_cfg = storage.get_index_config(db_path, config.get("index", {}))
+        # 迁移旧版硬编码默认值：历史上 _save_listing_dates 会把 default_trade_days=20 /
+        # lookback_days=365 写回 SQLite 权威源，导致「默认最近一个交易日」失效。
+        # 仅当仍是旧版遗留值时，归一到 storage 的集中默认（1），不覆盖用户显式配置。
+        legacy_days = {20, 365}
+        if etf_cfg.get("default_trade_days") in legacy_days:
+            etf_cfg["default_trade_days"] = storage.DEFAULT_ETF_CONFIG["default_trade_days"]
+            storage.save_etf_config(db_path, etf_cfg)
+        if index_cfg.get("lookback_days") in legacy_days:
+            index_cfg["lookback_days"] = storage.DEFAULT_INDEX_CONFIG["lookback_days"]
+            storage.save_index_config(db_path, index_cfg)
+        config["etf"] = etf_cfg
+        config["index"] = index_cfg
     return config
 
 
@@ -112,7 +129,7 @@ def _save_listing_dates(config: dict, config_path: str = "config.json") -> None:
             "listing_dates": etf_cfg.get("listing_dates", {}),
             "start_date": etf_cfg.get("start_date", ""),
             "end_date": etf_cfg.get("end_date", ""),
-            "default_trade_days": etf_cfg.get("default_trade_days", 20),
+            "default_trade_days": etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
         })
     try:
         cfg_path.write_text(json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -175,10 +192,14 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     timeout = fetch_cfg.get("timeout_sec", 15)
 
     if not etf_only and not index_only:
+        macro_cfg = config.get("macro", {})
+        # 宏观为月度数据，"最近一期"=当前月份；无显式日期且配置留空时动态取当月，
+        # 避免 config.json 里写死的月份随时间过期。
+        macro_start = start_date or macro_cfg.get("start_date") or datetime.now().strftime("%Y-%m")
         logger.info("开始采集宏观数据（25 项指标：17 项原指标 + 中国GDP + 7 项美国指标）...")
         macro_df = collect_macro(
-            start_date=start_date or config.get("macro", {}).get("start_date"),
-            end_date=end_date or config.get("macro", {}).get("end_date"),
+            start_date=macro_start,
+            end_date=end_date or macro_cfg.get("end_date"),
             monitor=monitor,
             retries=retries,
             retry_interval=retry_interval,
@@ -197,7 +218,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 codes=codes,
                 start_date=start_date or etf_cfg.get("start_date") or None,
                 end_date=end_date or etf_cfg.get("end_date") or None,
-                default_trade_days=etf_cfg.get("default_trade_days", 1),
+                default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
                 retries=retries,
                 retry_interval=retry_interval,
                 timeout=timeout,
@@ -220,7 +241,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 codes=index_codes,
                 start_date=start_date or index_cfg.get("start_date") or None,
                 end_date=end_date or index_cfg.get("end_date") or None,
-                lookback_days=index_cfg.get("lookback_days", 365),
+                lookback_days=index_cfg.get("lookback_days", _INDEX_DEFAULT_DAYS),
                 retries=retries,
                 retry_interval=retry_interval,
                 monitor=monitor,
@@ -369,12 +390,12 @@ def _retry_failed(config: dict, monitor_cfg: dict,
 
     etf_cfg = config.get("etf", {})
     codes = etf_cfg.get("codes", [])
-    end = etf_cfg.get("end_date") or datetime.now().strftime("%Y-%m-%d")
+    end = resolve_default_end(etf_cfg.get("end_date"))
     if etf_cfg.get("start_date"):
         start = etf_cfg["start_date"]
     else:
         history = get_trade_dates("2000-01-01", end)
-        n = etf_cfg.get("default_trade_days", 20)
+        n = etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS)
         start = history[-n] if len(history) >= n else (history[0] if history else end)
 
     etf_patch = pd.DataFrame()
@@ -383,7 +404,7 @@ def _retry_failed(config: dict, monitor_cfg: dict,
         logger.info("重跑 ETF 份额接口：sse_dates=%d, szse_range=%s", len(sse_dates), szse_range)
         etf_patch = collect_etf(
             codes=codes, start_date=start, end_date=end,
-            default_trade_days=etf_cfg.get("default_trade_days", 20),
+            default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, timeout=timeout,
             monitor=retry_monitor,
             sse_dates=None if full_etf_retry else (sse_dates or None),
@@ -431,7 +452,7 @@ def _retry_failed(config: dict, monitor_cfg: dict,
             codes=sorted(index_codes),
             start_date=index_cfg.get("start_date") or None,
             end_date=index_cfg.get("end_date") or None,
-            lookback_days=index_cfg.get("lookback_days", 365),
+            lookback_days=index_cfg.get("lookback_days", _INDEX_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, monitor=retry_monitor,
         )
 
@@ -515,7 +536,7 @@ def collect_interface(
         listing_dates = etf_cfg.get("listing_dates", {}) or {}
         patch = collect_etf(
             codes=target_codes, start_date=s_date, end_date=e_date,
-            default_trade_days=etf_cfg.get("default_trade_days", 20),
+            default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, timeout=timeout,
             monitor=monitor, listing_dates=listing_dates,
         )
@@ -540,7 +561,7 @@ def collect_interface(
         e_date = end or index_cfg.get("end_date") or None
         patch = collect_index(
             codes=target_codes, start_date=s_date, end_date=e_date,
-            lookback_days=index_cfg.get("lookback_days", 365),
+            lookback_days=index_cfg.get("lookback_days", _INDEX_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, monitor=monitor,
         )
         if not patch.empty:

@@ -126,7 +126,7 @@ def _etf_config_view() -> dict:
         "items": items,
         "start_date": etf.get("start_date", ""),
         "end_date": etf.get("end_date", ""),
-        "default_trade_days": etf.get("default_trade_days", 1),
+        "default_trade_days": etf.get("default_trade_days", storage.DEFAULT_ETF_CONFIG["default_trade_days"]),
     }
 
 
@@ -142,7 +142,7 @@ def _index_config_view() -> dict:
         "items": items,
         "start_date": idx.get("start_date", ""),
         "end_date": idx.get("end_date", ""),
-        "lookback_days": idx.get("lookback_days", 1),
+        "lookback_days": idx.get("lookback_days", storage.DEFAULT_INDEX_CONFIG["lookback_days"]),
     }
 
 

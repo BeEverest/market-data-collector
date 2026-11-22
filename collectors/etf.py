@@ -245,7 +245,7 @@ def fetch_sse_shares(
             df = pd.DataFrame(records)
             out = df[["SEC_CODE", "SEC_NAME", "TOT_VOL"]].copy()
             out.columns = ["基金代码", "基金简称", "份额(亿份)"]
-            out["基金代码"] = out["基金代码"].astype(str).str.zfill(6)
+            out["基金代码"] = out["基金代码"].astype(str).str.strip().str.zfill(6)
             out["份额(亿份)"] = pd.to_numeric(out["份额(亿份)"], errors="coerce") / 10000
             out["交易日期"] = trade_date
             out["交易市场"] = "SH"
@@ -314,7 +314,9 @@ def fetch_szse_shares(
             df = pd.read_excel(io.BytesIO(response.content), engine="openpyxl", dtype={"基金代码": str})
             out = df[["日期", "基金代码", "基金简称", "基金规模(份)"]].copy()
             out.columns = ["交易日期", "基金代码", "基金简称", "份额(份)"]
-            out["基金代码"] = out["基金代码"].astype(str).str.zfill(6)
+            # 深交所部分交易日（如 2026-11-20）导出的基金代码带尾随空格，
+            # 需先 strip 再补零，否则后续按 target_codes 匹配会整批丢失。
+            out["基金代码"] = out["基金代码"].astype(str).str.strip().str.zfill(6)
             out["交易日期"] = pd.to_datetime(out["交易日期"], errors="coerce").dt.strftime("%Y-%m-%d")
             out["份额(亿份)"] = pd.to_numeric(out["份额(份)"], errors="coerce") / 1e8
             out["交易市场"] = "SZ"
@@ -334,6 +336,8 @@ def fetch_szse_shares(
                 _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
                         status="success", params=szse_params, started=started,
                         attempts=attempt, rows=len(out))
+                logger.info("深交所份额采集成功：%s ~ %s，返回 %d 行（受影响标的：%s）",
+                            start, end, len(out), targets_label)
             return out
         except Exception as exc:
             last_exc = exc
@@ -526,6 +530,8 @@ def collect_etf(
 
     # 深市：一次拉取整个区间（部分重跑时用指定区间）
     sz_start, sz_end = szse_range if szse_range else (effective_start or start, end)
+    logger.info("开始采集深交所份额：%s ~ %s，深市标的 %d 只（%s）",
+                sz_start, sz_end, len(sz_targets), ", ".join(sz_targets) or "无")
     szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session,
                                    monitor=monitor, target_codes=sz_targets)
 
@@ -535,6 +541,11 @@ def collect_etf(
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     shares = pd.concat(frames, ignore_index=True)
+    # 兜底统一代码格式：去除交易所导出数据偶带的空白/非数字字符后补零，
+    # 避免任何来源的格式差异导致按 target_codes 匹配时整批丢失。
+    shares["基金代码"] = (
+        shares["基金代码"].astype(str).str.strip().str.replace(r"\D", "", regex=True).str.zfill(6)
+    )
     shares = shares[shares["基金代码"].isin(target_codes)].drop_duplicates(
         subset=["基金代码", "交易日期"], keep="last"
     )

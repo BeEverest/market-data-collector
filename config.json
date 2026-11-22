@@ -47,11 +47,11 @@
     "end_date": "",
     "default_trade_days": 1,
     "_date_help": "日频数据区间 YYYY-MM-DD。两者留空时：end_date 取最近一个已结束交易日（凌晨采集当天必为空），start_date 取往前 default_trade_days 个交易日。",
-    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日，默认 1（仅最近一个已结束交易日）；N 越大，上交所逐日查询耗时越长。"
+    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日，默认 1（仅最近一个已结束交易日）；N 越大，上交所逐日查询耗时越长。注意：SQLite 为权威源，Web 改配置会同步回写此处。"
   },
   "macro": {
-    "start_date": "2026-11",
-    "_start_date_help": "宏观数据起始月份 YYYY-MM；默认为当月（当天所在月）；置为空字符串表示取全部历史。"
+    "start_date": "",
+    "_start_date_help": "宏观数据起始月份 YYYY-MM；留空表示动态取最近一期（采集当天所在月），避免写死月份过期；也可填具体月份如 2026-11。"
   },
   "index": {
     "codes": [
@@ -101,7 +101,7 @@
   },
   "scheduler": {
     "enabled": true,
-    "time": "02:14",
+    "time": "02:38",
     "run_type": "etf",
     "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",
     "_time_help": "每日采集时刻，24小时制 HH:MM",

@@ -1,0 +1,169 @@
+"""storage.py 单元测试：业务主键、幂等写入、筛选分页、统计与配置。"""
+from __future__ import annotations
+
+import sqlite3
+
+import numpy as np
+import pandas as pd
+
+import storage
+
+
+class TestBizKeys:
+    def test_macro_key_from_month(self):
+        assert storage.macro_biz_key("M2", "2026-10") == "M2_202610"
+
+    def test_macro_key_from_full_date(self):
+        assert storage.macro_biz_key("M2", "2026-10-20") == "M2_202610"
+
+    def test_etf_key_pads_code_and_strips_dashes(self):
+        assert storage.etf_biz_key("51050", "2026-10-20") == "051050_20261020"
+        assert storage.etf_biz_key("510050", "20261020") == "510050_20261020"
+
+    def test_run_key_includes_sequence(self):
+        key = storage.run_biz_key("run1", "iface", "2026-11-02 09:00:10", 7)
+        assert key == "run1_iface_20261102_090010_007"
+
+    def test_db_path_relative_and_absolute(self, base, config):
+        relative = storage.db_path({"storage": {"db_path": "output/x.db"}}, base)
+        assert relative == base / "output" / "x.db"
+        absolute = storage.db_path(config, base)
+        assert absolute.is_absolute() and absolute.name == "test.db"
+
+
+class TestClean:
+    def test_clean_nan_and_none(self):
+        assert storage._clean(None) is None
+        assert storage._clean(np.nan) is None
+        assert storage._clean(float("nan")) is None
+        assert storage._clean(0.0) == 0.0
+        assert storage._clean("abc") == "abc"
+
+
+class TestMeta:
+    def test_schema_and_meta_roundtrip(self, db_path):
+        storage.init_schema(db_path)
+        assert storage.get_meta(db_path, "schema_version") == storage.SCHEMA_VERSION
+        storage.set_meta(db_path, "migrated_at", "2026-11-22")
+        assert storage.get_meta(db_path, "migrated_at") == "2026-11-22"
+        assert storage.get_meta(db_path, "missing", "fallback") == "fallback"
+
+
+class TestUpsert:
+    def test_upsert_macro_is_idempotent_and_updates_values(self, db_path, macro_df):
+        assert storage.upsert_macro(db_path, macro_df, "run_a") == 3
+        assert storage.upsert_macro(db_path, macro_df, "run_b") == 3
+        total, df = storage.read_macro(db_path)
+        assert total == 3
+        assert len(df) == 3
+        m2_latest = df[(df["指标代码"] == "M2") & (df["日期"] == "2026-10")].iloc[0]
+        assert m2_latest["数值"] == 3150000.0
+        assert m2_latest["同比(%)"] == 8.2
+
+    def test_upsert_macro_updates_same_key(self, db_path, macro_df):
+        storage.upsert_macro(db_path, macro_df, "run_a")
+        patch = macro_df.head(1).copy()
+        patch["数值"] = 999.0
+        patch["同比(%)"] = 9.9
+        storage.upsert_macro(db_path, patch, "run_b")
+        total, df = storage.read_macro(db_path)
+        assert total == 3
+        row = df[(df["指标代码"] == "M2") & (df["日期"] == "2026-10")].iloc[0]
+        assert row["数值"] == 999.0
+        assert row["同比(%)"] == 9.9
+
+    def test_upsert_macro_ignores_empty(self, db_path):
+        assert storage.upsert_macro(db_path, pd.DataFrame(), "run") == 0
+        assert storage.upsert_macro(db_path, pd.DataFrame([{"指标代码": "", "日期": "2026-10"}])) == 0
+
+    def test_upsert_etf_pads_code_and_is_idempotent(self, db_path, etf_df):
+        assert storage.upsert_etf(db_path, etf_df, "run_a") == 3
+        storage.upsert_etf(db_path, etf_df, "run_b")
+        total, df = storage.read_etf(db_path)
+        assert total == 3
+        assert set(df["基金代码"]) == {"510050", "159915"}
+
+    def test_append_interface_runs_uses_generated_biz_key(self, db_path, run_records):
+        assert storage.append_interface_runs(db_path, run_records) == 4
+        storage.append_interface_runs(db_path, run_records)
+        df = storage.read_interface_runs(db_path)
+        assert len(df) == 4
+        assert set(df["status"]) == {"success", "failed"}
+
+    def test_append_interface_runs_handles_nan_numbers(self, db_path):
+        rec = {
+            "run_id": "r1", "run_time": "2026-11-22 10:00:00",
+            "interface_key": "k", "status": "success",
+            "attempts": np.nan, "rows": np.nan, "duration_sec": np.nan,
+        }
+        storage.append_interface_runs(db_path, [rec])
+        df = storage.read_interface_runs(db_path)
+        assert df.iloc[0]["attempts"] == 0
+        assert df.iloc[0]["rows"] == 0
+        assert df.iloc[0]["duration_sec"] == 0.0
+
+
+class TestRead:
+    def test_read_macro_filters_and_paginates(self, db_path, macro_df):
+        storage.upsert_macro(db_path, macro_df)
+        total, page1 = storage.read_macro(db_path, code="M2", limit=1, offset=0)
+        assert total == 2
+        assert len(page1) == 1
+        assert page1.iloc[0]["日期"] == "2026-10"  # DATE DESC
+        _, page2 = storage.read_macro(db_path, code="M2", limit=1, offset=1)
+        assert page2.iloc[0]["日期"] == "2026-09"
+        by_range, _ = storage.read_macro(db_path, start="2026-09", end="2026-09")
+        assert by_range == 1
+
+    def test_read_etf_filters_code_and_date(self, db_path, etf_df):
+        storage.upsert_etf(db_path, etf_df)
+        total, df = storage.read_etf(db_path, code="510050", start="2026-10-20")
+        assert total == 1
+        assert df.iloc[0]["交易日期"] == "2026-10-20"
+        # 未补零的代码也能命中
+        assert storage.read_etf(db_path, code="510050")[0] == 2
+
+    def test_empty_read_returns_named_columns(self, db_path):
+        total, macro = storage.read_macro(db_path)
+        assert total == 0 and list(macro.columns) == storage.MACRO_COLUMNS
+        total, etf = storage.read_etf(db_path)
+        assert total == 0 and list(etf.columns) == storage.ETF_COLUMNS
+
+    def test_stats_and_status_counts(self, db_path, macro_df, etf_df, run_records):
+        storage.upsert_macro(db_path, macro_df)
+        storage.upsert_etf(db_path, etf_df)
+        storage.append_interface_runs(db_path, run_records)
+        mstats = storage.macro_stats(db_path)
+        assert mstats["M2"]["rows"] == 2
+        assert mstats["M2"]["last_date"] == "2026-10"
+        estats = storage.etf_stats(db_path)
+        assert estats["510050"]["first_date"] == "2026-10-19"
+        counts = storage.status_counts(db_path)
+        assert counts["macro_rows"] == 3
+        assert counts["etf_rows"] == 3
+        assert counts["macro_indicators"] == 2
+        assert counts["failed_total"] == 2
+        assert counts["last_run"]["run_type"] == "retry"
+
+
+class TestEtfConfigAndExportLog:
+    def test_etf_config_roundtrip_and_default_merge(self, db_path):
+        default = {"codes": ["000001"], "default_trade_days": 20, "start_date": ""}
+        cfg = storage.get_etf_config(db_path, default)
+        assert cfg == default
+        assert cfg is not default
+        storage.save_etf_config(db_path, {"codes": ["510050"], "listing_dates": {"510050": "2004-12-30"}})
+        loaded = storage.get_etf_config(db_path, default)
+        assert loaded["codes"] == ["510050"]
+        assert loaded["listing_dates"]["510050"] == "2004-12-30"
+        assert loaded["default_trade_days"] == 20  # default 补齐未保存的字段
+        assert default["codes"] == ["000001"]  # 不修改传入的 default
+
+    def test_log_export_writes_row(self, db_path):
+        storage.init_schema(db_path)
+        storage.log_export(db_path, "macro", "/tmp/macro.zip", {"rows": 10})
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute("SELECT scope, file_path, row_counts FROM export_log").fetchone()
+        assert row[0] == "macro"
+        assert row[1] == "/tmp/macro.zip"
+        assert "rows" in row[2]

@@ -253,4 +253,23 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 `GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/etf/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
 `POST /api/collect`、`/api/collect/interface`、`/api/retry`、`/api/scheduler`、`/api/etf/config`；
-`POST /api/export/macro`、`/api/export/etf`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。
+`POST /api/export/macro`、`/api/export/etf`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。点击看板上的导出按钮后，浏览器会自动下载对应的 ZIP 包（含数据 CSV、口径说明 CSV、Excel）。
+
+## 十、单元测试
+
+```bash
+python3.11 -m pytest          # 或 pytest
+```
+
+共 **78 个用例**，全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。
+
+| 测试文件 | 覆盖范围 |
+| --- | --- |
+| `tests/test_storage.py` | 三类业务主键、库路径解析、NaN 清洗、宏观/ETF/监控的 upsert 幂等、筛选分页、统计、ETF 配置与导出日志 |
+| `tests/test_exporter.py` | 口径说明生成、ZIP 打包、四类导出产物与嵌套 ZIP 排除、快照保留策略、旧版导出兼容 |
+| `tests/test_monitor.py` | 记录字段规范化、JSONL/SQLite 双通道持久化、损坏行跳过、最近失败批次提取、四张监控报表与重跑结果标注 |
+| `tests/test_collectors.py` | 月份/季度归一化、数值转换、指标目录完整性、`_fetch` 重试与 `only` 过滤（Mock 依赖，无网络） |
+| `tests/test_logic.py` | 补丁合并的非空覆盖与键类型兼容、分页边界（上限 100/越界纠正）、NaN/Inf 与 numpy 类型的 JSON 清洗 |
+| `tests/test_api.py` | FastAPI TestClient 端到端：健康检查、状态统计、数据筛选分页、监控、目录、ETF 配置、四类导出与下载链路 |
+
+测试过程中发现并修复了 `exporter._notes_for()` 的表头过滤缺陷：此前表头行被分类条件误过滤，导致导出口径说明的 CSV/Excel 首行数据被当作列名且丢失第一条说明；现已固定使用 `_NOTES[0]` 作为列名。

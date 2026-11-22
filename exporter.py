@@ -42,8 +42,9 @@ _NOTES = [
 
 
 def _notes_for(categories: set[str]) -> pd.DataFrame:
-    rows = [r for r in _NOTES if r[0] in categories]
-    return pd.DataFrame(rows[1:], columns=rows[0])
+    # 表头行（类别=「类别」）不参与分类过滤，必须显式保留为 columns
+    rows = [r for r in _NOTES[1:] if r[0] in categories]
+    return pd.DataFrame(rows, columns=_NOTES[0])
 
 
 def _stamp() -> str:

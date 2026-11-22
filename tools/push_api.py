@@ -74,6 +74,17 @@ def _remote_sha(base: str, headers: dict) -> str | None:
     return r.json()["object"]["sha"]
 
 
+def _is_local_commit(sha: str) -> bool:
+    try:
+        subprocess.check_output(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=CWD,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
 def _rebuild_commit(commit_sha: str, post) -> tuple[str, str]:
     """把一个本地 commit 复刻到远端，返回 (本地sha, 新sha)。"""
     raw = subprocess.check_output(
@@ -152,8 +163,13 @@ def main() -> None:
         return
 
     # 找出本地领先远端的提交（旧→新）
-    if remote:
+    # 若远端提交不在本地历史中（例如被误推成孤立提交），回退到 BASE_SHA 指定的共同基点
+    base_sha = os.environ.get("BASE_SHA", "").strip()
+    if remote and _is_local_commit(remote):
         rev_range = f"{remote}..HEAD"
+    elif base_sha:
+        print(f"远端提交不在本地历史中，使用 BASE_SHA={base_sha[:8]} 作为基点")
+        rev_range = f"{base_sha}..HEAD"
     else:
         rev_range = "HEAD"
     commits = _sh(["git", "rev-list", "--reverse", rev_range]).split()

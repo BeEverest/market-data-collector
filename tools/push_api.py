@@ -32,6 +32,11 @@ def _sh(args: list[str]) -> str:
     return subprocess.check_output(args, text=True, cwd=CWD).strip()
 
 
+def _sh_raw(args: list[str]) -> str:
+    """不 strip：commit 对象末尾的换行是 SHA 的一部分，不能丢。"""
+    return subprocess.check_output(args, text=True, cwd=CWD)
+
+
 def _find_token() -> str:
     env = os.environ.get("GITHUB_TOKEN", "").strip()
     if env:
@@ -84,7 +89,7 @@ def main() -> None:
         r.raise_for_status()
         return r.json()
 
-    raw = _sh(["git", "cat-file", "-p", "HEAD"])
+    raw = _sh_raw(["git", "cat-file", "-p", "HEAD"])
     lines = raw.splitlines()
     parent = lines[1].split()[1]
     name, email, ts, tz = re.match(
@@ -95,18 +100,28 @@ def main() -> None:
     date_iso = datetime.fromtimestamp(int(ts), tzinfo).isoformat()
     base_tree = _sh(["git", "rev-parse", f"{parent}^{{tree}}"])
 
-    files = _sh([
-        "git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"
-    ]).split()
+    # 变更文件列表（相对父提交）；注意 mode 需逐文件读取，避免把 100755 当成 100644
+    diff = _sh([
+        "git", "diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD"
+    ]).splitlines()
     tree_entries = []
-    for rel in files:
-        content = (CWD / rel).read_bytes()
+    for line in diff:
+        parts = line.split("\t")
+        status, rel = parts[0], parts[1]
+        if status.startswith("D"):
+            # 删除的文件：以 null sha 从 base_tree 移除
+            tree_entries.append({"path": rel, "mode": "100644",
+                                 "type": "blob", "sha": None})
+            continue
+        # 从 git 对象读取该文件在 HEAD 中的内容/.mode，而非工作区（工作区可能有未提交改动）
+        mode = _sh(["git", "ls-tree", "HEAD", "--", rel]).split()[0]
+        content = subprocess.check_output(
+            ["git", "show", f"HEAD:{rel}"], cwd=CWD
+        )
         blob = post("/git/blobs", {
             "content": base64.b64encode(content).decode(), "encoding": "base64"
         })
-        tree_entries.append({
-            "path": rel, "mode": "100644", "type": "blob", "sha": blob["sha"]
-        })
+        tree_entries.append({"path": rel, "mode": mode, "type": "blob", "sha": blob["sha"]})
 
     new_tree = post("/git/trees", {
         "base_tree": base_tree, "tree": tree_entries

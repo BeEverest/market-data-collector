@@ -231,10 +231,12 @@ def collect_macro(
 
     only 为接口函数名集合时，仅采集这些接口（失败接口重跑用）。
     codes 为指标代码集合时，仅输出这些指标（精确采集用；仍按接口抓取再一次过滤）。
-    end_date 为结束月份 YYYY-MM，含端点；与 start_date 共同限定采集区间。
+    start_date / end_date 支持 YYYY-MM 或 YYYY-MM-DD，内部统一按月比较（含端点）。
     """
     import akshare as ak
 
+    start_date = _normalize_month(start_date) if start_date else None
+    end_date = _normalize_month(end_date) if end_date else None
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows: list[dict] = []
     call_params = {

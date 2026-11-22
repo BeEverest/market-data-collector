@@ -27,30 +27,37 @@
   <section class="stats" id="stats"></section>
 
   <!-- 操作区 -->
-  <section class="card">
+  <section class="card module-collect">
     <div class="card-head">
-      <h2>采集控制台</h2>
+      <div class="title-group">
+        <h2>采集控制台</h2>
+        <span class="module-chip whole">整体 / 部分</span>
+      </div>
       <span class="hint" id="jobHint">选择任务后点击执行，实时日志在右侧滚动显示 · 点击日志可展开</span>
     </div>
     <div class="console-grid">
       <div class="actions">
         <div class="action-grid">
-          <button class="btn primary" data-action="collect" data-kind="full">
+          <button class="btn primary has-scope" data-action="collect" data-kind="full">
             <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF 日频</small></span>
+            <span class="scope whole">整体</span>
           </button>
-          <button class="btn" data-action="collect" data-kind="macro">
+          <button class="btn has-scope" data-action="collect" data-kind="macro">
             <span class="ico">▤</span><span><b>仅宏观采集</b><small>25 项指标（含中美GDP/美国宏观）</small></span>
+            <span class="scope part">部分</span>
           </button>
-          <button class="btn" data-action="collect" data-kind="etf">
+          <button class="btn has-scope" data-action="collect" data-kind="etf">
             <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
+            <span class="scope part">部分</span>
           </button>
-          <button class="btn warn" data-action="retry">
+          <button class="btn warn has-scope" data-action="retry">
             <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
+            <span class="scope ops">运维</span>
           </button>
         </div>
         <div class="divider"></div>
         <div class="precision-box">
-          <div class="prec-title">精确采集 <span class="tag retry">按接口 / 指标 + 时间范围</span></div>
+          <div class="prec-title">精确采集 <span class="tag scope-tag">部分</span><span class="tag retry">按接口 / 指标 + 时间范围</span></div>
           <div class="prec-grid">
             <div class="prec-field">
               <label class="field-label">数据类型</label>
@@ -64,11 +71,11 @@
               <select id="precCode" class="prec-input"><option value="">加载中…</option></select>
             </div>
             <div class="prec-field full">
-              <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按月份</span></label>
+              <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按日期 · YYYY-MM-DD</span></label>
               <div class="prec-dates">
-                <input id="precStart" class="prec-input" type="month" title="起始日期，留空=默认">
+                <input id="precStart" class="prec-input" type="date" title="起始日期，默认 2024-01-01">
                 <span class="date-sep">~</span>
-                <input id="precEnd" class="prec-input" type="month" title="结束日期，留空=默认">
+                <input id="precEnd" class="prec-input" type="date" title="结束日期，默认当天">
               </div>
             </div>
           </div>
@@ -79,7 +86,7 @@
         </div>
         <div class="divider"></div>
         <div class="sched-box">
-          <div class="sched-title">定时调度</div>
+          <div class="sched-title">定时调度 <span class="tag scope-tag auto">整体</span></div>
           <label class="switch-row">
             <input type="checkbox" id="schedEnabled">
             <span>每日自动采集</span>
@@ -122,9 +129,12 @@
   </section>
 
   <!-- ETF 标的配置 -->
-  <section class="card" id="etfConfigCard">
+  <section class="card module-etf" id="etfConfigCard">
     <div class="card-head">
-      <h2>ETF 标的配置</h2>
+      <div class="title-group">
+        <h2>ETF 标的配置</h2>
+        <span class="module-chip part">部分 · 标的</span>
+      </div>
       <span class="hint">灵活增删采集标的 · 自动解析基金上市日 · 早于上市日的数据自动忽略</span>
     </div>
     <div class="etf-config">
@@ -149,9 +159,12 @@
   </section>
 
   <!-- 监控看板 -->
-  <section class="card">
+  <section class="card module-monitor">
     <div class="card-head">
-      <h2>接口监控看板</h2>
+      <div class="title-group">
+        <h2>接口监控看板</h2>
+        <span class="module-chip ops">运维 · 监控</span>
+      </div>
       <div class="tabs" id="monitorTabs">
         <button class="tab active" data-tab="overview">运行总览</button>
         <button class="tab" data-tab="failures">失败明细 <span class="badge" id="failCount">0</span></button>
@@ -198,9 +211,12 @@
   </section>
 
   <!-- 数据浏览 -->
-  <section class="card">
+  <section class="card module-data">
     <div class="card-head">
-      <h2>采集数据</h2>
+      <div class="title-group">
+        <h2>采集数据</h2>
+        <span class="module-chip data">数据 · 预览</span>
+      </div>
       <div class="tabs" id="dataTabs">
         <button class="tab active" data-tab="macro">宏观数据</button>
         <button class="tab" data-tab="etf">ETF 日频</button>
@@ -210,16 +226,16 @@
     <div class="filters" id="dataFilters">
       <input id="filterCode" list="filterCodeOptions" placeholder="选择或输入代码，留空全部" autocomplete="off">
       <datalist id="filterCodeOptions"></datalist>
-      <input id="filterStart" type="month" title="起始日期">
+      <input id="filterStart" type="date" title="起始日期">
       <span class="date-sep">~</span>
-      <input id="filterEnd" type="month" title="结束日期">
+      <input id="filterEnd" type="date" title="结束日期">
       <select id="filterPageSize" class="filter-select" title="每页行数（单页上限 100）">
         <option value="25" selected>25 行/页</option>
         <option value="50">50 行/页</option>
         <option value="100">100 行/页</option>
       </select>
       <button class="btn tiny primary" id="filterBtn">筛选</button>
-      <button class="btn tiny" id="filterResetBtn">最近一周</button>
+      <button class="btn tiny" id="filterResetBtn">默认区间</button>
       <span class="hint" id="dataTotal"></span>
     </div>
     <div class="table-wrap tall" id="dataTable"><div class="empty">加载中…</div></div>

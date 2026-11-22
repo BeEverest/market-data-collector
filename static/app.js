@@ -22,6 +22,17 @@ let dataPage = 1;
 let dataPages = 1;
 let dataTotalRows = 0;
 const MAX_PAGE_SIZE = 100;
+const DEFAULT_START_DATE = '2024-01-01';
+
+function todayText() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function applyDefaultRange(startId, endId) {
+  $(startId).value = DEFAULT_START_DATE;
+  $(endId).value = todayText();
+}
 let monitorPage = 1;
 let monitorPages = 1;
 let monitorTotalRows = 0;
@@ -227,11 +238,12 @@ function renderPrecItems() {
   const items = catalogData[precCategory] || [];
   const sel = $('precCode');
   const isMacro = precCategory === 'macro';
-  // 日期控件随类别切换：宏观用月份、ETF 用日期
-  const dtype = isMacro ? 'month' : 'date';
-  $('precStart').type = dtype;
-  $('precEnd').type = dtype;
-  $('precDateHint').textContent = isMacro ? '按月份 · YYYY-MM' : '按交易日 · YYYY-MM-DD';
+  // 统一使用日期控件；宏观在后端自动按月归并
+  $('precStart').type = 'date';
+  $('precEnd').type = 'date';
+  $('precDateHint').textContent = isMacro
+    ? '按日期 · YYYY-MM-DD（宏观自动按月归并）'
+    : '按交易日 · YYYY-MM-DD';
   sel.innerHTML = '<option value="">全部（该类别整体）</option>' + items.map(it => {
     const meta = [it.iface, it.unit, it.granularity].filter(Boolean).join(' · ');
     const listing = it.listing_date ? `，上市 ${it.listing_date}` : '';
@@ -261,7 +273,7 @@ document.querySelectorAll('#precCategory .seg-btn').forEach(btn => {
     document.querySelectorAll('#precCategory .seg-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     precCategory = btn.dataset.cat;
-    $('precStart').value = ''; $('precEnd').value = '';
+    applyDefaultRange('precStart', 'precEnd');
     renderPrecItems();
   });
 });
@@ -411,20 +423,17 @@ document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
 });
 $('monFilterBtn').addEventListener('click', () => { monitorPage = 1; renderMonitor(); });
 $('monResetBtn').addEventListener('click', () => {
-  ['monKeyword','monStart','monEnd'].forEach(id => $(id).value = '');
+  $('monKeyword').value = '';
   $('monRunType').value = ''; $('monCategory').value = ''; $('monStatus').value = '';
+  applyDefaultRange('monStart', 'monEnd');
   monitorPage = 1;
   renderMonitor();
 });
 $('monPageSize').addEventListener('change', () => { monitorPage = 1; renderMonitor(); });
 
-// 监控看板默认日期：最近一周（按系统时间，监控记录均为运行当天）
-function monitorRecentWeek() {
-  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  const now = new Date();
-  const back = new Date(now.getTime() - 7 * 86400 * 1000);
-  $('monStart').value = fmt(back);
-  $('monEnd').value = fmt(now);
+// 监控看板默认日期：2024-01-01 至当天
+function monitorDefaultRange() {
+  applyDefaultRange('monStart', 'monEnd');
 }
 
 // 从一行里按字段名取值（各 sheet 字段名不同，做兼容映射）
@@ -519,40 +528,10 @@ function renderMonitorPager() {
 }
 
 /* ---------- 数据浏览 ---------- */
-// 数据实际最新日期（从目录各指标的 last_date 取最大值），避免按系统时间取到空区间
-function dataLatestDate() {
-  const items = catalogData?.[dataTab] || [];
-  const dates = items.map(x => x.last_date).filter(Boolean).sort();
-  return dates.length ? dates[dates.length - 1] : '';
-}
-
-// 默认日期：以数据最新日为基准回退一周；宏观按月则回退约 1 个月，保证默认有数据
-function defaultWeekRange() {
-  const macro = dataTab === 'macro';
-  const latest = dataLatestDate();
-  if (!latest) {
-    const now = new Date();
-    const f = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-    return { start: f(now), end: f(now) };
-  }
-  if (macro) {
-    // 最新月往前 1 个月 -> 最新月（覆盖最近两个月，月度粒度近似"最近一周"）
-    const [y, m] = latest.split('-').map(Number);
-    const d = new Date(y, m - 2, 1);
-    const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
-    return { start, end: latest };
-  }
-  // ETF 日频：最新日往前 7 天
-  const dt = new Date(latest + 'T00:00:00');
-  dt.setDate(dt.getDate() - 7);
-  const start = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
-  return { start, end: latest };
-}
-
+// 数据预览日期统一为完整日期控件；后端按月指标自动截取到 YYYY-MM
 function applyDateControl() {
-  const t = dataTab === 'macro' ? 'month' : 'date';
-  $('filterStart').type = t;
-  $('filterEnd').type = t;
+  $('filterStart').type = 'date';
+  $('filterEnd').type = 'date';
 }
 
 function fillCodeOptions() {
@@ -574,22 +553,20 @@ document.querySelectorAll('#dataTabs .tab').forEach(tab => {
     if (dataTab !== 'files') {
       applyDateControl();
       fillCodeOptions();
-      resetToRecentWeek();  // 切换类别重置为最近一周
+      resetToDefaultRange();  // 切换类别重置为默认区间
     }
     dataPage = 1;
     loadData();
   });
 });
 
-function resetToRecentWeek() {
-  const { start, end } = defaultWeekRange();
-  $('filterStart').value = start;
-  $('filterEnd').value = end;
+function resetToDefaultRange() {
+  applyDefaultRange('filterStart', 'filterEnd');
   $('filterCode').value = '';
 }
 
 $('filterBtn').addEventListener('click', () => { dataPage = 1; loadData(); });
-$('filterResetBtn').addEventListener('click', () => { resetToRecentWeek(); dataPage = 1; loadData(); });
+$('filterResetBtn').addEventListener('click', () => { resetToDefaultRange(); dataPage = 1; loadData(); });
 $('filterPageSize').addEventListener('change', () => { dataPage = 1; loadData(); });
 
 async function loadData() {
@@ -683,11 +660,12 @@ async function refresh() {
 
 async function init() {
   applyDateControl();
-  // 并行加载目录/配置，再填充下拉并默认最近一周
+  // 并行加载目录/配置，再填充下拉并套用默认日期区间
   await Promise.all([loadCatalog(), loadEtfConfig()]);
   fillCodeOptions();
-  resetToRecentWeek();
-  monitorRecentWeek();   // 监控看板默认最近一周
+  applyDefaultRange('precStart', 'precEnd');
+  resetToDefaultRange();
+  monitorDefaultRange();
   await loadData();
   await refresh();
 }

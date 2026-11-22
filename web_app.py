@@ -348,6 +348,9 @@ def _paged(df: pd.DataFrame, page: int, page_size: int) -> dict:
 @app.get("/api/data/macro")
 def api_data_macro(code: str | None = None, start: str | None = None,
                    end: str | None = None, page: int = 1, page_size: int = 25):
+    # 宏观数据按月存储，兼容前端传入的 YYYY-MM-DD
+    start = start[:7] if start else None
+    end = end[:7] if end else None
     df = _read_csv("macro")
     if code and not df.empty:
         df = df[df["指标代码"] == code]
@@ -360,7 +363,7 @@ def api_data_macro(code: str | None = None, start: str | None = None,
 
 @app.get("/api/data/etf")
 def api_data_etf(code: str | None = None, start: str | None = None,
-                 end: str | None = None, page: int = 1, page_size: int = 50):
+                 end: str | None = None, page: int = 1, page_size: int = 25):
     df = _read_csv("etf")
     if code and not df.empty:
         df = df[df["基金代码"] == code]

@@ -235,6 +235,7 @@ async function loadCatalog() {
   try {
     catalogData = await api('/api/catalog');
     renderPrecItems();
+    renderCleanItems();
     const cfg = catalogData.defaults || {};
     if (!$('precStart').value && precCategory === 'macro') $('precStart').placeholder = cfg.macro_start || '起始，留空=默认';
   } catch (e) {
@@ -304,6 +305,95 @@ $('precRun').addEventListener('click', async () => {
     flashLog(`精确采集任务已提交（${precCategory} / ${payload.codes[0] || '全部'}）`, 'INFO');
     startJob(res.job_id);
   } catch (e) { alert('精确采集启动失败：' + e.message); }
+});
+
+/* ---------- 数据清理（按口径 / 时间范围，危险操作） ---------- */
+let cleanCategory = 'macro';
+
+function renderCleanItems() {
+  if (!catalogData) return;
+  const items = catalogData[cleanCategory] || [];
+  $('cleanCode').innerHTML = '<option value="">全部（该类别整体）</option>' + items.map(it => {
+    const label = `${it.name || it.code}（${it.code}）`;
+    return `<option value="${esc(it.code)}">${esc(label)}</option>`;
+  }).join('');
+  $('cleanItemCount').textContent = `共 ${items.length} 项`;
+  setCleanResult('—');
+}
+
+function cleanPayload() {
+  return {
+    category: cleanCategory,
+    code: $('cleanCode').value.trim(),
+    start: $('cleanStart').value.trim(),
+    end: $('cleanEnd').value.trim(),
+  };
+}
+
+function setCleanResult(text, cls = '') {
+  const el = $('cleanResult');
+  el.textContent = text;
+  el.className = 'clean-result' + (cls ? ' ' + cls : '');
+}
+
+function scopeText(p) {
+  const cat = {macro: '宏观指标', etf: 'ETF 基金', index: '指数'}[p.category] || p.category;
+  return `${cat} / ${p.code || '全部口径'} / ${p.start || '不限'} ~ ${p.end || '不限'}`;
+}
+
+document.querySelectorAll('#cleanCategory .seg-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#cleanCategory .seg-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    cleanCategory = btn.dataset.cat;
+    renderCleanItems();
+  });
+});
+
+$('cleanPreviewBtn').addEventListener('click', async () => {
+  const p = cleanPayload();
+  try {
+    const res = await api('/api/clean/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+    });
+    const scope = scopeText(p);
+    if (!res.matched) {
+      setCleanResult(`预览 ${scope}：匹配 0 行，无可清理数据。`, 'warn');
+    } else {
+      setCleanResult(`预览 ${scope}：将删除 ${res.matched} 行（该类别当前共 ${res.total} 行）。`, 'warn');
+    }
+  } catch (e) { setCleanResult('预览失败：' + e.message, 'warn'); }
+});
+
+$('cleanExecBtn').addEventListener('click', async () => {
+  const p = cleanPayload();
+  try {
+    const pre = await api('/api/clean/preview', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
+    });
+    if (!pre.matched) {
+      setCleanResult(`无匹配数据，无需清理：${scopeText(p)}`, 'warn');
+      return;
+    }
+    const ok = window.confirm(
+      `即将删除 ${pre.matched} 行数据：\n${scopeText(p)}\n\n` +
+      `此操作不可撤销，不影响配置、监控与导出记录。确认继续？`
+    );
+    if (!ok) { setCleanResult('已取消清理。', 'warn'); return; }
+    const res = await api('/api/clean', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...p, confirm: true }),
+    });
+    setCleanResult(`已清理 ${scopeText(p)}：删除 ${res.deleted} 行，剩余 ${res.after} 行。`, 'done');
+    flashLog(`数据清理完成：删除 ${res.deleted} 行（${p.category}/${p.code || '全部'}）`, 'INFO');
+    await Promise.all([loadCatalog(), loadStatus(), loadData()]);
+  } catch (e) { setCleanResult('清理失败：' + e.message, 'warn'); }
+});
+
+$('cleanResetBtn').addEventListener('click', () => {
+  $('cleanCode').value = '';
+  applyDefaultRange('cleanStart', 'cleanEnd');
+  setCleanResult('—');
 });
 
 /* ---------- ETF 标的配置 ---------- */
@@ -792,6 +882,7 @@ async function init() {
   fillCodeOptions();
   applyDefaultRange('fullStart', 'fullEnd');
   applyDefaultRange('precStart', 'precEnd');
+  applyDefaultRange('cleanStart', 'cleanEnd');
   resetToDefaultRange();
   monitorDefaultRange();
   await loadData();

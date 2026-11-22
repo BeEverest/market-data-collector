@@ -289,6 +289,45 @@
     <div class="table-wrap tall" id="dataTable"><div class="empty">加载中…</div></div>
     <div class="pager" id="dataPager"></div>
   </section>
+
+  <!-- 数据清理 -->
+  <section class="card module-clean">
+    <div class="card-head">
+      <div class="title-group">
+        <h2>数据清理</h2>
+        <span class="module-chip clean">运维 · 危险操作</span>
+      </div>
+      <span class="hint">按口径 / 时间范围精确删除，不可撤销；不影响配置、监控与导出记录</span>
+    </div>
+    <div class="clean-box">
+      <div class="prec-field">
+        <label class="field-label">数据类别</label>
+        <div class="seg" id="cleanCategory">
+          <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
+          <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
+          <button type="button" class="seg-btn" data-cat="index">指数</button>
+        </div>
+      </div>
+      <div class="prec-field">
+        <label class="field-label">细分口径 <span id="cleanItemCount" class="muted-inline"></span></label>
+        <select id="cleanCode" class="prec-input"><option value="">全部（该类别整体）</option></select>
+      </div>
+      <div class="prec-field full">
+        <label class="field-label">时间范围 <span class="muted-inline">留空 = 该口径全部时间</span></label>
+        <div class="prec-dates">
+          <input id="cleanStart" class="prec-input" type="date" title="起始日期，留空不限">
+          <span class="date-sep">~</span>
+          <input id="cleanEnd" class="prec-input" type="date" title="结束日期，留空不限">
+        </div>
+      </div>
+      <div class="clean-actions">
+        <button type="button" class="btn tiny" id="cleanPreviewBtn">预览影响</button>
+        <button type="button" class="btn tiny danger" id="cleanExecBtn">执行清理</button>
+        <button type="button" class="btn tiny" id="cleanResetBtn">重置</button>
+      </div>
+      <div class="clean-result" id="cleanResult">—</div>
+    </div>
+  </section>
 </main>
 
 <footer class="footer">

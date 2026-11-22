@@ -845,6 +845,48 @@ def api_collect_interface(payload: dict):
     return {"job_id": job_id}
 
 
+@app.post("/api/clean/preview")
+def api_clean_preview(payload: dict | None = None):
+    """预览按类别/细分口径/时间范围将删除的行数（只读，不修改数据）。"""
+    payload = payload or {}
+    category = payload.get("category")
+    if category not in storage.CLEAN_TARGETS:
+        raise HTTPException(status_code=400, detail="category 应为 macro、etf 或 index")
+    code = str(payload.get("code") or "").strip() or None
+    start = str(payload.get("start") or "").strip() or None
+    end = str(payload.get("end") or "").strip() or None
+    db = _db_path(_cfg())
+    if not db:
+        raise HTTPException(status_code=400, detail="未配置 SQLite 主存储，无法清理")
+    try:
+        return storage.preview_clean(db, category, code, start, end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/clean")
+def api_clean(payload: dict | None = None):
+    """执行清理：必须显式 confirm=true；不触发采集，不影响配置与监控数据。"""
+    payload = payload or {}
+    if payload.get("confirm") is not True:
+        raise HTTPException(status_code=400, detail="缺少 confirm=true，拒绝清理")
+    category = payload.get("category")
+    if category not in storage.CLEAN_TARGETS:
+        raise HTTPException(status_code=400, detail="category 应为 macro、etf 或 index")
+    code = str(payload.get("code") or "").strip() or None
+    start = str(payload.get("start") or "").strip() or None
+    end = str(payload.get("end") or "").strip() or None
+    db = _db_path(_cfg())
+    if not db:
+        raise HTTPException(status_code=400, detail="未配置 SQLite 主存储，无法清理")
+    try:
+        result = storage.clean_data(db, category, code, start, end)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    logger.warning("Web 触发数据清理：%s", result)
+    return result
+
+
 @app.post("/api/retry")
 def api_retry():
     job_id = _submit("retry", _do_retry)

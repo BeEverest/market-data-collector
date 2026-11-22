@@ -627,7 +627,87 @@ def log_export(path: str | Path, scope: str, file_path: str, row_counts: dict) -
         )
 
 
-# ---------- 全量清空（服务启动时调用） ----------
+# ---------- 按口径/时间范围清理业务数据 ----------
+# 仅覆盖三类观测表，不触碰配置、监控、meta 与导出记录。
+CLEAN_TARGETS = {
+    "macro": {"table": "macro_observation", "date_col": "date", "date_len": 7, "zfill": 0},
+    "etf": {"table": "etf_observation", "date_col": "trade_date", "date_len": 10, "zfill": 6},
+    "index": {"table": "index_observation", "date_col": "trade_date", "date_len": 10, "zfill": 6},
+}
+
+
+def _clean_scope(category: str, code: str | None, start: str | None,
+                 end: str | None) -> tuple[str, str, list]:
+    if category not in CLEAN_TARGETS:
+        raise ValueError(f"category 应为 {', '.join(CLEAN_TARGETS)}")
+    spec = CLEAN_TARGETS[category]
+    clauses: list[str] = []
+    args: list = []
+    if code:
+        c = str(code).strip()
+        if spec["zfill"]:
+            c = c.zfill(spec["zfill"])
+        clauses.append("code=?")
+        args.append(c)
+    if start:
+        clauses.append(f"{spec['date_col']}>=?")
+        args.append(str(start)[:spec["date_len"]])
+    if end:
+        clauses.append(f"{spec['date_col']}<=?")
+        args.append(str(end)[:spec["date_len"]])
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    return spec["table"], where, args
+
+
+def preview_clean(path: str | Path, category: str, code: str | None = None,
+                  start: str | None = None, end: str | None = None) -> dict:
+    """预览按类别/代码/时间范围将删除的行数，不修改任何数据。"""
+    init_schema(path)
+    table, where, args = _clean_scope(category, code, start, end)
+    with connect(path) as conn:
+        matched = conn.execute(
+            f"SELECT COUNT(*) AS n FROM {table}{where}", args
+        ).fetchone()["n"]
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        sample = conn.execute(
+            f"SELECT code, {CLEAN_TARGETS[category]['date_col']} AS d "
+            f"FROM {table}{where} ORDER BY d DESC LIMIT 3", args
+        ).fetchall()
+    return {
+        "category": category,
+        "code": str(code).strip() if code else "",
+        "start": str(start) if start else "",
+        "end": str(end) if end else "",
+        "matched": int(matched),
+        "total": int(total),
+        "sample": [{"code": r["code"], "date": r["d"]} for r in sample],
+    }
+
+
+def clean_data(path: str | Path, category: str, code: str | None = None,
+               start: str | None = None, end: str | None = None) -> dict:
+    """按类别/代码/时间范围删除观测数据，返回删除行数与剩余行数。"""
+    init_schema(path)
+    table, where, args = _clean_scope(category, code, start, end)
+    with connect(path) as conn:
+        before = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+        cur = conn.execute(f"DELETE FROM {table}{where}", args)
+        deleted = cur.rowcount
+        after = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+    result = {
+        "category": category,
+        "code": str(code).strip() if code else "",
+        "start": str(start) if start else "",
+        "end": str(end) if end else "",
+        "deleted": int(deleted),
+        "before": int(before),
+        "after": int(after),
+    }
+    logger.warning("按口径清理数据：%s", result)
+    return result
+
+
+# ---------- 全量清空（按需调用，服务启动不会触发） ----------
 CLEAR_TABLES = [
     "macro_observation", "etf_observation", "index_observation",
     "interface_run", "etf_config", "index_config", "meta", "export_log",

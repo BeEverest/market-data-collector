@@ -30,37 +30,47 @@
   <section class="card">
     <div class="card-head">
       <h2>采集控制台</h2>
-      <span class="hint" id="jobHint">选择任务后点击执行，实时日志在右侧显示</span>
+      <span class="hint" id="jobHint">选择任务后点击执行，实时日志在右侧滚动显示 · 点击日志可展开</span>
     </div>
     <div class="console-grid">
       <div class="actions">
-        <button class="btn primary" data-action="collect" data-kind="full">
-          <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF 日频</small></span>
-        </button>
-        <button class="btn" data-action="collect" data-kind="macro">
-          <span class="ico">▤</span><span><b>仅宏观采集</b><small>17 个月度指标</small></span>
-        </button>
-        <button class="btn" data-action="collect" data-kind="etf">
-          <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
-        </button>
-        <button class="btn warn" data-action="retry">
-          <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
-        </button>
+        <div class="action-grid">
+          <button class="btn primary" data-action="collect" data-kind="full">
+            <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF 日频</small></span>
+          </button>
+          <button class="btn" data-action="collect" data-kind="macro">
+            <span class="ico">▤</span><span><b>仅宏观采集</b><small>17 个月度指标</small></span>
+          </button>
+          <button class="btn" data-action="collect" data-kind="etf">
+            <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
+          </button>
+          <button class="btn warn" data-action="retry">
+            <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
+          </button>
+        </div>
         <div class="divider"></div>
         <div class="precision-box">
-          <div class="sched-title">精确采集 <span class="tag retry" style="margin-left:6px">按接口 / 指标 + 时间范围</span></div>
-          <label class="field-label">数据类型</label>
-          <div class="seg" id="precCategory">
-            <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
-            <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
-          </div>
-          <label class="field-label">选择指标 <span id="precItemCount" class="muted-inline"></span></label>
-          <select id="precCode" class="prec-input"><option value="">加载中…</option></select>
-          <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按月份</span></label>
-          <div class="prec-dates">
-            <input id="precStart" class="prec-input" type="month" title="起始日期，留空=默认">
-            <span class="date-sep">~</span>
-            <input id="precEnd" class="prec-input" type="month" title="结束日期，留空=默认">
+          <div class="prec-title">精确采集 <span class="tag retry">按接口 / 指标 + 时间范围</span></div>
+          <div class="prec-grid">
+            <div class="prec-field">
+              <label class="field-label">数据类型</label>
+              <div class="seg" id="precCategory">
+                <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
+                <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
+              </div>
+            </div>
+            <div class="prec-field">
+              <label class="field-label">选择指标 <span id="precItemCount" class="muted-inline"></span></label>
+              <select id="precCode" class="prec-input"><option value="">加载中…</option></select>
+            </div>
+            <div class="prec-field full">
+              <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按月份</span></label>
+              <div class="prec-dates">
+                <input id="precStart" class="prec-input" type="month" title="起始日期，留空=默认">
+                <span class="date-sep">~</span>
+                <input id="precEnd" class="prec-input" type="month" title="结束日期，留空=默认">
+              </div>
+            </div>
           </div>
           <button class="btn primary prec-run" id="precRun">
             <span class="ico">◎</span><span><b>采集所选范围</b><small>仅采此项并合并，不影响其它数据</small></span>
@@ -86,13 +96,26 @@
           <div class="sched-next" id="schedNext">下次运行：--</div>
         </div>
       </div>
-      <div class="log-panel">
+      <div class="log-panel" id="logPanel">
         <div class="log-head">
           <span>实时日志</span>
-          <span class="log-dot" id="logDot"></span>
+          <div class="log-tools">
+            <label class="auto-scroll" title="新日志自动滚到底部">
+              <input type="checkbox" id="logAutoScroll" checked> 自动滚动
+            </label>
+            <button type="button" class="log-tool" id="logBottom" title="回到底部">↓</button>
+            <button type="button" class="log-tool expand" id="logToggle" title="展开/收起完整日志">展开</button>
+            <span class="log-dot" id="logDot"></span>
+          </div>
         </div>
-        <div class="log-body" id="logBody">
-          <div class="log-empty">尚无任务日志。点击左侧按钮开始采集。</div>
+        <div class="log-strip" id="logStrip" title="点击展开完整日志">
+          <span class="log-strip-label">最新</span>
+          <div class="log-marquee"><span id="logMarquee" class="INFO">尚无任务日志。点击左侧按钮开始采集。</span></div>
+        </div>
+        <div class="log-body-wrap" id="logBodyWrap">
+          <div class="log-body" id="logBody">
+            <div class="log-empty">尚无任务日志。点击左侧按钮开始采集。</div>
+          </div>
         </div>
       </div>
     </div>

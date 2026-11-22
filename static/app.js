@@ -26,6 +26,8 @@ let monitorPage = 1;
 let monitorPages = 1;
 let monitorTotalRows = 0;
 let monitorPageSize = 25;
+let renderedLogCount = 0;
+let logAutoScroll = true;
 
 /* ---------- 概览 ---------- */
 async function loadStatus() {
@@ -109,6 +111,8 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
 function startJob(jobId) {
   currentJobId = jobId;
   $('logBody').innerHTML = '';
+  renderedLogCount = 0;
+  setLogMarquee(`任务 ${jobId} 已提交，等待日志…`, 'INFO');
   $('logDot').classList.add('live');
   setButtons(false);
   $('jobHint').textContent = `任务 ${jobId} 运行中…`;
@@ -120,11 +124,7 @@ function startJob(jobId) {
 async function pollJob(jobId) {
   try {
     const job = await api('/api/jobs/' + jobId);
-    const body = $('logBody');
-    body.innerHTML = job.logs.map(l => `
-      <div class="log-line ${l.level}"><span class="t">[${l.time}]</span> ${esc(l.message)}</div>
-    `).join('') || '<div class="log-empty">等待日志…</div>';
-    body.scrollTop = body.scrollHeight;
+    renderJobLogs(job.logs || []);
     if (job.status !== 'running') {
       clearInterval(jobPollTimer);
       jobPollTimer = null;
@@ -137,13 +137,77 @@ async function pollJob(jobId) {
 }
 
 function flashLog(msg, level) {
+  const time = new Date().toLocaleTimeString('zh-CN', {hour12: false});
   const body = $('logBody');
   const div = document.createElement('div');
   div.className = 'log-line ' + level;
-  div.textContent = `[${new Date().toLocaleTimeString('zh-CN', {hour12:false})}] ${msg}`;
+  div.textContent = `[${time}] ${msg}`;
   body.appendChild(div);
   body.scrollTop = body.scrollHeight;
+  setLogMarquee(`[${time}] ${msg}`, level);
 }
+
+// 顶部滚动条：始终显示最新一条日志
+function setLogMarquee(text, level = 'INFO') {
+  const el = $('logMarquee');
+  if (!el) return;
+  el.textContent = text;
+  el.className = ['ERROR', 'WARNING', 'INFO'].includes(level) ? level : 'INFO';
+  el.style.animation = 'none';
+  void el.offsetWidth;  // 重启动画
+  el.style.animation = '';
+}
+
+// 完整日志：只追加新增行，避免每次轮询重置滚动位置
+function renderJobLogs(logs) {
+  const body = $('logBody');
+  if (logs.length < renderedLogCount) {
+    body.innerHTML = '';
+    renderedLogCount = 0;
+  }
+  if (renderedLogCount === 0) body.innerHTML = '';
+  if (logs.length === renderedLogCount) return;
+  for (let i = renderedLogCount; i < logs.length; i++) {
+    const l = logs[i];
+    body.insertAdjacentHTML('beforeend',
+      `<div class="log-line ${esc(l.level)}"><span class="t">[${esc(l.time)}]</span> ${esc(l.message)}</div>`);
+  }
+  renderedLogCount = logs.length;
+  const last = logs[logs.length - 1];
+  setLogMarquee(`[${last.time}] ${last.message}`, last.level);
+  if (logAutoScroll) scrollLogToBottom(false);
+}
+
+function scrollLogToBottom(resume = true) {
+  const body = $('logBody');
+  if (!body) return;
+  body.scrollTop = body.scrollHeight;
+  if (resume) {
+    logAutoScroll = true;
+    $('logAutoScroll').checked = true;
+  }
+}
+
+$('logToggle').addEventListener('click', () => {
+  const panel = $('logPanel');
+  const expanded = panel.classList.toggle('expanded');
+  $('logToggle').textContent = expanded ? '收起' : '展开';
+  if (expanded) scrollLogToBottom();
+});
+$('logStrip').addEventListener('click', () => $('logToggle').click());
+$('logBottom').addEventListener('click', () => scrollLogToBottom());
+$('logAutoScroll').addEventListener('change', (e) => {
+  logAutoScroll = e.target.checked;
+  if (logAutoScroll) scrollLogToBottom(false);
+});
+$('logBody').addEventListener('scroll', () => {
+  const body = $('logBody');
+  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight <= 20;
+  if (!atBottom && logAutoScroll) {
+    logAutoScroll = false;
+    $('logAutoScroll').checked = false;
+  }
+});
 
 /* ---------- 精确采集（按接口/指标 + 时间范围） ---------- */
 async function loadCatalog() {

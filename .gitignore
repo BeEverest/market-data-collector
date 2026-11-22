@@ -1,0 +1,22 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 运行环境
+.venv/
+venv/
+env/
+
+# 采集运行输出（数据结果、监控历史、报告 —— 每次运行重新生成）
+output/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# 日志
+*.log

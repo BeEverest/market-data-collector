@@ -1,0 +1,53 @@
+{
+  "_comment": "投研大盘数据采集模块配置。ETF 已改为每个交易日口径。",
+  "etf": {
+    "codes": [
+      "510300",
+      "510050",
+      "510500",
+      "159915",
+      "588000"
+    ],
+    "_codes_help": "ETF 代码清单（6 位数字）。当前为主流宽基示例，请替换为你的标的清单。",
+    "start_date": "",
+    "end_date": "",
+    "default_trade_days": 20,
+    "_date_help": "日频数据区间 YYYY-MM-DD。两者留空时：end_date 取今天，start_date 取往前 default_trade_days 个交易日。",
+    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日；N 越大，上交所逐日查询耗时越长。"
+  },
+  "macro": {
+    "start_date": "2024-01",
+    "_start_date_help": "宏观数据起始月份 YYYY-MM；置为空字符串表示取全部历史。"
+  },
+  "output": {
+    "dir": "output",
+    "formats": [
+      "csv",
+      "excel"
+    ],
+    "filename_prefix": "market_data"
+  },
+  "fetch": {
+    "retry": 3,
+    "retry_interval_sec": 2,
+    "timeout_sec": 15
+  },
+  "monitor": {
+    "history_file": "output/monitor/interface_runs.jsonl",
+    "_history_file_help": "接口调用历史（JSONL 追加写），记录哪天/哪个接口/失败原因/重试次数；重跑命令读取此文件定位失败接口",
+    "_retry_help": "运行 python main.py --retry-failed 重跑最近批次失败接口；--monitor-report 生成历史监控报告"
+  },
+  "scheduler": {
+    "enabled": false,
+    "time": "08:30",
+    "run_type": "full",
+    "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",
+    "_time_help": "每日采集时刻，24小时制 HH:MM",
+    "_run_type_help": "full=全量采集 / macro=仅宏观 / etf=仅 ETF"
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8000,
+    "_help": "Web 看板监听地址与端口；启动：python web_app.py"
+  }
+}

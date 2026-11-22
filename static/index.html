@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投研大盘数据采集系统</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">◈</span>
+    <div>
+      <div class="brand-title">投研大盘数据采集系统</div>
+      <div class="brand-sub">Market Data Collection & Monitoring</div>
+    </div>
+  </div>
+  <div class="header-status">
+    <span id="sysTime" class="pill ghost">--</span>
+    <span id="schedBadge" class="pill">调度 --</span>
+    <span id="runBadge" class="pill ghost">空闲</span>
+  </div>
+</header>
+
+<main class="container">
+  <!-- 概览卡片 -->
+  <section class="stats" id="stats"></section>
+
+  <!-- 操作区 -->
+  <section class="card">
+    <div class="card-head">
+      <h2>采集控制台</h2>
+      <span class="hint" id="jobHint">选择任务后点击执行，实时日志在右侧显示</span>
+    </div>
+    <div class="console-grid">
+      <div class="actions">
+        <button class="btn primary" data-action="collect" data-kind="full">
+          <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF 日频</small></span>
+        </button>
+        <button class="btn" data-action="collect" data-kind="macro">
+          <span class="ico">▤</span><span><b>仅宏观采集</b><small>17 个月度指标</small></span>
+        </button>
+        <button class="btn" data-action="collect" data-kind="etf">
+          <span class="ico">▥</span><span><b>仅 ETF 采集</b><small>逐交易日份额与规模</small></span>
+        </button>
+        <button class="btn warn" data-action="retry">
+          <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
+        </button>
+        <div class="divider"></div>
+        <div class="sched-box">
+          <div class="sched-title">定时调度</div>
+          <label class="switch-row">
+            <input type="checkbox" id="schedEnabled">
+            <span>每日自动采集</span>
+          </label>
+          <div class="sched-fields">
+            <input type="time" id="schedTime" value="08:30">
+            <select id="schedType">
+              <option value="full">全量</option>
+              <option value="macro">仅宏观</option>
+              <option value="etf">仅ETF</option>
+            </select>
+            <button class="btn tiny" id="schedSave">保存</button>
+          </div>
+          <div class="sched-next" id="schedNext">下次运行：--</div>
+        </div>
+      </div>
+      <div class="log-panel">
+        <div class="log-head">
+          <span>实时日志</span>
+          <span class="log-dot" id="logDot"></span>
+        </div>
+        <div class="log-body" id="logBody">
+          <div class="log-empty">尚无任务日志。点击左侧按钮开始采集。</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 监控看板 -->
+  <section class="card">
+    <div class="card-head">
+      <h2>接口监控看板</h2>
+      <div class="tabs" id="monitorTabs">
+        <button class="tab active" data-tab="overview">运行总览</button>
+        <button class="tab" data-tab="failures">失败明细 <span class="badge" id="failCount">0</span></button>
+        <button class="tab" data-tab="health">接口健康度</button>
+        <button class="tab" data-tab="detail">调用明细</button>
+      </div>
+    </div>
+    <div class="table-wrap" id="monitorTable"><div class="empty">加载中…</div></div>
+  </section>
+
+  <!-- 数据浏览 -->
+  <section class="card">
+    <div class="card-head">
+      <h2>采集数据</h2>
+      <div class="tabs" id="dataTabs">
+        <button class="tab active" data-tab="macro">宏观数据</button>
+        <button class="tab" data-tab="etf">ETF 日频</button>
+        <button class="tab" data-tab="files">输出文件</button>
+      </div>
+    </div>
+    <div class="filters" id="dataFilters">
+      <input id="filterCode" placeholder="指标代码 / 基金代码，留空全部">
+      <input id="filterStart" placeholder="起始 YYYY-MM-DD 或 YYYY-MM">
+      <input id="filterEnd" placeholder="结束 YYYY-MM-DD 或 YYYY-MM">
+      <button class="btn tiny" id="filterBtn">筛选</button>
+      <span class="hint" id="dataTotal"></span>
+    </div>
+    <div class="table-wrap tall" id="dataTable"><div class="empty">加载中…</div></div>
+  </section>
+</main>
+
+<footer class="footer">
+  投研大盘数据采集系统 · 数据源：中国人民银行 / 统计局 / 海关 / 交易所 / 天天基金 ·
+  存储：CSV / Excel / JSONL
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

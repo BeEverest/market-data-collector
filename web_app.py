@@ -14,6 +14,8 @@ import argparse
 import json
 import logging
 import os
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -22,7 +24,7 @@ from pathlib import Path
 
 import pandas as pd
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -696,6 +698,47 @@ def api_catalog():
             "index_lookback": cfg.get("index", {}).get("lookback_days", 365),
         },
         "keep_snapshots": cfg.get("output", {}).get("keep_snapshots", 3),
+    }
+
+
+@app.post("/api/import/etf")
+async def api_import_etf(files: list[UploadFile] = File(...)):
+    """导入 Choice「份额与规模_<代码>.xlsx」文件，作为 ETF 采集数据写入 SQLite。"""
+    from importer import import_choice_file
+
+    cfg = _cfg()
+    db_path = _db_path(cfg)
+    if not db_path:
+        raise HTTPException(status_code=400, detail="当前为文件模式，导入需要启用 SQLite 存储")
+
+    results: list[dict] = []
+    errors: list[dict] = []
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S_import")
+    # 文件名是标的代码的来源（份额与规模_<代码>.xlsx），临时目录内必须保留原名
+    tmp_dir = Path(tempfile.mkdtemp(prefix="etf_import_"))
+    try:
+        for upload in files:
+            name = Path(upload.filename or "").name
+            if not name.lower().endswith((".xlsx", ".xlsm")):
+                errors.append({"file": name, "error": "仅支持 .xlsx/.xlsm 文件"})
+                continue
+            target = tmp_dir / name
+            try:
+                with target.open("wb") as handle:
+                    handle.write(await upload.read())
+                summary = import_choice_file(target, db_path, run_id=run_id)
+                results.append(summary)
+            except Exception as exc:
+                errors.append({"file": name, "error": str(exc)})
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return {
+        "ok": not errors,
+        "run_id": run_id,
+        "imported": results,
+        "errors": errors,
+        "total_rows": sum(r["rows"] for r in results),
     }
 
 

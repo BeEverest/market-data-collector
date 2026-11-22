@@ -129,6 +129,39 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
 });
 $('fullRangeReset').addEventListener('click', () => applyDefaultRange('fullStart', 'fullEnd'));
 
+/* ---------- 文件导入（Choice 份额与规模） ---------- */
+$('importBtn').addEventListener('click', async () => {
+  const input = $('importFiles');
+  const files = input.files;
+  const result = $('importResult');
+  if (!files || files.length === 0) {
+    result.textContent = '请先选择要导入的 .xlsx 文件';
+    result.className = 'import-result err';
+    return;
+  }
+  const form = new FormData();
+  for (const f of files) form.append('files', f);
+  const btn = $('importBtn');
+  btn.disabled = true;
+  result.textContent = '导入中…';
+  result.className = 'import-result';
+  try {
+    const res = await api('/api/import/etf', { method: 'POST', body: form });
+    const parts = [`成功 ${res.imported.length} 个文件 / ${res.total_rows} 行`];
+    if (res.errors.length) parts.push(`失败 ${res.errors.length} 个：${res.errors.map(e => e.file + '（' + e.error + '）').join('；')}`);
+    result.textContent = parts.join(' · ');
+    result.className = 'import-result ' + (res.ok ? 'ok' : 'err');
+    flashLog('文件导入：' + result.textContent, res.ok ? 'INFO' : 'WARN');
+    await Promise.all([loadStatus(), loadData()]);
+    input.value = '';
+  } catch (e) {
+    result.textContent = '导入失败：' + e.message;
+    result.className = 'import-result err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 function startJob(jobId) {
   currentJobId = jobId;
   $('logBody').innerHTML = '';

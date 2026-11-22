@@ -108,6 +108,16 @@
           </div>
           <div class="sched-next" id="schedNext">下次运行：--</div>
         </div>
+        <div class="divider"></div>
+        <div class="import-box">
+          <div class="sched-title">文件导入 <span class="tag scope-tag ops">ETF 数据</span></div>
+          <div class="import-hint">按文件名「份额与规模_代码.xlsx」识别标的，导入 Choice 份额/规模数据至 SQLite</div>
+          <div class="import-row">
+            <input type="file" id="importFiles" accept=".xlsx,.xlsm" multiple title="选择份额与规模 Excel 文件，可多选">
+            <button type="button" class="btn tiny primary" id="importBtn">导入数据</button>
+          </div>
+          <div class="import-result" id="importResult">—</div>
+        </div>
       </div>
       <div class="log-panel" id="logPanel">
         <div class="log-head">

@@ -575,6 +575,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codes", help="指标代码/基金代码，逗号分隔；留空为该类别全部")
     parser.add_argument("--start", help="起始时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
     parser.add_argument("--end", help="结束时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
+    parser.add_argument(
+        "--import-files", nargs="+", metavar="PATH",
+        help="导入 Choice「份额与规模_<代码>.xlsx」文件/目录到 SQLite（作为 ETF 采集数据）",
+    )
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -599,6 +603,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.retry_failed:
         return _retry_failed(config, monitor_cfg)
+
+    if args.import_files:
+        from importer import import_choice_paths
+        if not db_path:
+            logger.error("导入需要 SQLite 存储，请在 config 中启用 storage.backend=sqlite")
+            return 2
+        run_ts = datetime.now().strftime("%Y%m%d_%H%M%S_import")
+        results = import_choice_paths(args.import_files, db_path, run_id=run_ts)
+        logger.info("导入完成：%d 个文件，共 %d 行", len(results), sum(r["rows"] for r in results))
+        for item in results:
+            logger.info("  - %s [%s] %d 行（%s ~ %s）",
+                        item["file"], item["code"], item["rows"], item["start"], item["end"])
+        return 0
 
     if args.collect_interface:
         if not args.category:

@@ -31,6 +31,10 @@ CWD = Path(__file__).resolve().parent.parent
 
 
 def _sh(args: list[str]) -> str:
+    # 强制 git 不转义非 ASCII 路径：否则 diff-tree 会把中文文件名输出成
+    # 八进制转义串，导致 ls-tree/rev-parse 按该串查不到路径而失败。
+    if args and args[0] == "git":
+        args = [args[0], "-c", "core.quotepath=false", *args[1:]]
     return subprocess.check_output(args, text=True, cwd=CWD).strip()
 
 

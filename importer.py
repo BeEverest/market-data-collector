@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,45 @@ CODE_RE = re.compile(r"份额与规模[_\-\s]?(\d{6})")
 FOOTNOTE_MARKERS = ("数据来源", "来源：", "来源:", "备注", "说明：")
 DEFAULT_SOURCE = "妙想Choice"
 MAX_FILES_PER_IMPORT = 10  # 单次导入文件数上限（命令行/Web 统一）
+
+# 基金代码 -> 简称 的进程内缓存（一次进程只拉取一次外部映射）
+_name_map_cache: dict[str, str] | None = None
+
+
+def get_fund_name_map() -> dict[str, str]:
+    """代码 -> 基金简称，来源 akshare 东财 ETF 列表；失败返回空字典（不影响导入）。"""
+    global _name_map_cache
+    if _name_map_cache is not None:
+        return _name_map_cache
+    mapping: dict[str, str] = {}
+    try:
+        import akshare as ak
+        df = ak.fund_etf_fund_daily_em()
+        if {"基金代码", "基金简称"}.issubset(df.columns):
+            mapping = dict(zip(
+                df["基金代码"].astype(str).str.zfill(6),
+                df["基金简称"].astype(str),
+            ))
+    except Exception:
+        # 外部接口不可用时静默降级：名称留空，不影响数据导入
+        pass
+    _name_map_cache = mapping
+    return mapping
+
+
+def _resolve_fund_name(code: str, db_path: str | Path) -> str:
+    """按代码补全基金简称：优先 SQLite 已有名称，其次 akshare 映射。"""
+    code = str(code).zfill(6)
+    try:
+        _, existing = storage.read_etf(db_path, code)
+        if not existing.empty and "基金简称" in existing.columns:
+            for value in existing["基金简称"].dropna():
+                text = str(value).strip()
+                if text:
+                    return text
+    except Exception:
+        pass
+    return get_fund_name_map().get(code, "")
 
 
 def check_file_limit(items) -> None:
@@ -150,17 +190,36 @@ def import_choice_file(
     source: str = DEFAULT_SOURCE,
     name: str = "",
     display_name: str = "",
+    monitor=None,
 ) -> dict:
     """解析并写入 SQLite；返回本次导入的统计信息。
 
     display_name 仅用于日志/回执展示（如 Web 上传时的原始文件名）。
+    monitor 传入时，每个文件的导入结果都会写入接口监控（统计文件数与行数）。
     """
     shown = display_name or Path(path).name
-    df = parse_choice_file(path, source=source, name=name)
-    code = df["基金代码"].iloc[0]
-    db_path = Path(db_path)
-    storage.init_schema(db_path)
-    written = storage.upsert_etf(db_path, df, run_id)
+    started = time.monotonic()
+    try:
+        df = parse_choice_file(path, source=source, name=name)
+        code = df["基金代码"].iloc[0]
+        db_path = Path(db_path)
+        storage.init_schema(db_path)
+        # 补充基金简称：显式 name > SQLite 已有名称 > akshare 映射
+        if not str(df["基金简称"].iloc[0] or "").strip():
+            filled = _resolve_fund_name(code, db_path)
+            if filled:
+                df["基金简称"] = filled
+        written = storage.upsert_etf(db_path, df, run_id)
+    except Exception as exc:
+        if monitor is not None:
+            monitor.record(
+                category="ETF", interface_key="etf.import",
+                interface_name=f"Choice份额规模导入({shown})",
+                status="failed", attempts=1, rows=0, error=str(exc),
+                params={"file": shown, "source": source},
+                duration_sec=time.monotonic() - started,
+            )
+        raise
     summary = {
         "file": shown,
         "code": code,
@@ -169,6 +228,15 @@ def import_choice_file(
         "end": df["交易日期"].max(),
         "source": source,
     }
+    if monitor is not None:
+        monitor.record(
+            category="ETF", interface_key="etf.import",
+            interface_name=f"Choice份额规模导入({shown})",
+            status="success", attempts=1, rows=written,
+            params={"file": shown, "code": code, "source": source,
+                    "start": summary["start"], "end": summary["end"]},
+            duration_sec=time.monotonic() - started,
+        )
     # 逐文件日志由调用方（命令行 / Web）记录，统一带原始文件名，避免重复输出
     return summary
 
@@ -179,6 +247,7 @@ def import_choice_paths(
     *,
     run_id: str = "",
     source: str = DEFAULT_SOURCE,
+    monitor=None,
 ) -> list[dict]:
     """导入一个或多个路径（文件或目录）；目录内匹配「份额与规模_*.xlsx」。"""
     files: list[Path] = []
@@ -196,7 +265,8 @@ def import_choice_paths(
     results: list[dict] = []
     for f in files:
         try:
-            results.append(import_choice_file(f, db_path, run_id=run_id, source=source))
+            results.append(import_choice_file(f, db_path, run_id=run_id, source=source,
+                                              monitor=monitor))
         except Exception as exc:
             # 失败信息带上文件名，便于批量导入时定位到具体文件
             raise ValueError(f"文件 [{f.name}] 导入失败：{exc}") from exc

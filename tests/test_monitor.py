@@ -96,6 +96,8 @@ class TestReport:
         assert full_run["接口调用数"] == 2
         assert full_run["失败数"] == 1
         assert full_run["成功率(%)"] == 50.0
+        assert "运行时间" in overview.columns  # 精确到时分秒的运行时刻
+        assert str(full_run["运行时间"]).startswith("2026-11-01")
 
         fails = report["失败明细"].set_index("运行ID")
         assert "已重跑成功" in fails.loc["20261102_090000_full", "重跑结果"]

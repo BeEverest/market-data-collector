@@ -610,11 +610,18 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("导入需要 SQLite 存储，请在 config 中启用 storage.backend=sqlite")
             return 2
         run_ts = datetime.now().strftime("%Y%m%d_%H%M%S_import")
+        # 导入计入接口监控（成功/失败文件、行数、耗时、运行时刻均记录）
+        import_monitor = Monitor(BASE_DIR, run_type="import",
+                                 history_path=history_path, db_path=db_path)
+        import_monitor.run_id = run_ts
         try:
-            results = import_choice_paths(args.import_files, db_path, run_id=run_ts)
+            results = import_choice_paths(args.import_files, db_path, run_id=run_ts,
+                                          monitor=import_monitor)
         except ValueError as exc:
+            import_monitor.save()
             logger.error("导入失败：%s", exc)
             return 2
+        import_monitor.save()
         logger.info("导入完成：%d 个文件，共 %d 行", len(results), sum(r["rows"] for r in results))
         for item in results:
             logger.info("  - %s [%s] %d 行（%s ~ %s）",

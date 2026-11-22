@@ -131,3 +131,57 @@ def test_import_paths_error_includes_filename(tmp_path: Path, db_path: Path):
     with pytest.raises(ValueError, match="份额与规模_000000.xlsx"):
         importer.import_choice_paths([good, bad], db_path)
 
+
+class _DummyMonitor:
+    def __init__(self):
+        self.records: list[dict] = []
+
+    def record(self, **kwargs):
+        self.records.append(kwargs)
+
+
+def test_import_records_monitor(tmp_path: Path, db_path: Path, monkeypatch):
+    """导入成功/失败都应写入监控，统计行数、文件、耗时。"""
+    monkeypatch.setattr(importer, "get_fund_name_map", lambda: {})
+    mon = _DummyMonitor()
+    good = _make_choice_file(tmp_path / "份额与规模_159629.xlsx", [
+        ["2026-11-20", 100000000, 200000000, "2026-11-21"],
+    ])
+    bad = tmp_path / "份额与规模_000000.xlsx"
+    bad.write_bytes(b"not an excel file")
+    importer.import_choice_file(good, db_path, monitor=mon)
+    with pytest.raises(Exception):
+        importer.import_choice_file(bad, db_path, monitor=mon)
+    assert len(mon.records) == 2
+    ok, fail = mon.records
+    assert ok["status"] == "success" and ok["interface_key"] == "etf.import"
+    assert ok["rows"] == 1 and ok["duration_sec"] >= 0
+    assert "159629" in ok["interface_name"]
+    assert fail["status"] == "failed" and fail["rows"] == 0
+    assert "000000" in fail["interface_name"]
+
+
+def test_import_fills_fund_name(tmp_path: Path, db_path: Path, monkeypatch):
+    """基金简称为空时，从 akshare 映射按代码补全。"""
+    monkeypatch.setattr(importer, "get_fund_name_map",
+                        lambda: {"159629": "中证1000ETF富"})
+    path = _make_choice_file(tmp_path / "份额与规模_159629.xlsx", [
+        ["2026-11-20", 100000000, 200000000, "2026-11-21"],
+    ])
+    importer.import_choice_file(path, db_path)
+    total, out = storage.read_etf(db_path, "159629")
+    assert total == 1
+    assert out.iloc[0]["基金简称"] == "中证1000ETF富"
+
+
+def test_import_explicit_name_wins(tmp_path: Path, db_path: Path, monkeypatch):
+    """显式传入的 name 优先级最高，不被映射覆盖。"""
+    monkeypatch.setattr(importer, "get_fund_name_map",
+                        lambda: {"159629": "映射名称"})
+    path = _make_choice_file(tmp_path / "份额与规模_159629.xlsx", [
+        ["2026-11-20", 100000000, 200000000, "2026-11-21"],
+    ])
+    importer.import_choice_file(path, db_path, name="显式名称")
+    _, out = storage.read_etf(db_path, "159629")
+    assert out.iloc[0]["基金简称"] == "显式名称"
+

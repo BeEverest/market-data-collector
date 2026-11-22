@@ -50,8 +50,8 @@
     "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日；N 越大，上交所逐日查询耗时越长。"
   },
   "macro": {
-    "start_date": "2024-01",
-    "_start_date_help": "宏观数据起始月份 YYYY-MM；置为空字符串表示取全部历史。"
+    "start_date": "2026-11",
+    "_start_date_help": "宏观数据起始月份 YYYY-MM；默认为当月（当天所在月）；置为空字符串表示取全部历史。"
   },
   "index": {
     "codes": [

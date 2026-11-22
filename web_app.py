@@ -718,6 +718,10 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
     results: list[dict] = []
     errors: list[dict] = []
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S_import")
+    # 导入计入接口监控：每个文件一条记录（成功/失败、行数、耗时、真实运行时刻）
+    monitor = Monitor(MAIN_BASE, run_type="import",
+                      history_path=_history_path(cfg), db_path=db_path)
+    monitor.run_id = run_id  # 与 ETF 数据行 run_id 保持一致，便于追溯
     logger.info("ETF 文件导入开始：run_id=%s，共 %d 个文件", run_id, len(files))
     # 文件名是标的代码的来源（份额与规模_<代码>.xlsx），临时目录内必须保留原名
     tmp_dir = Path(tempfile.mkdtemp(prefix="etf_import_"))
@@ -733,7 +737,8 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
             try:
                 with target.open("wb") as handle:
                     handle.write(await upload.read())
-                summary = import_choice_file(target, db_path, run_id=run_id, display_name=name)
+                summary = import_choice_file(target, db_path, run_id=run_id,
+                                             display_name=name, monitor=monitor)
                 results.append(summary)
                 logger.info("ETF 文件导入成功 [%s]：标的 %s，%d 行（%s ~ %s）",
                             name, summary["code"], summary["rows"], summary["start"], summary["end"])
@@ -742,6 +747,18 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
                 errors.append({"file": name, "error": str(exc)})
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    # 非 xlsx 文件（扩展名校验失败）也补一条监控记录，保证文件数统计完整
+    for err in errors:
+        if err["error"] == "仅支持 .xlsx/.xlsm 文件" and not any(
+            rec["interface_name"].endswith(f"({err['file']})") for rec in monitor.records
+        ):
+            monitor.record(
+                category="ETF", interface_key="etf.import",
+                interface_name=f"Choice份额规模导入({err['file']})",
+                status="failed", attempts=1, rows=0, error=err["error"],
+                params={"file": err["file"]}, duration_sec=0.0,
+            )
+    monitor.save()
     logger.info("ETF 文件导入结束：run_id=%s，成功 %d / 失败 %d / 共 %d 行",
                 run_id, len(results), len(errors), sum(r["rows"] for r in results))
 

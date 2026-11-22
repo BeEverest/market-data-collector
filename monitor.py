@@ -179,6 +179,7 @@ class Monitor:
             overview.append({
                 "运行ID": run_id,
                 "运行日期": g["run_date"].iloc[0],
+                "运行时间": g["run_time"].iloc[0],  # 精确到时分秒的运行时刻
                 "运行类型": g["run_type"].iloc[0],
                 "接口调用数": total,
                 "成功数": total - failed,

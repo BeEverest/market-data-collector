@@ -22,12 +22,13 @@ let dataPage = 1;
 let dataPages = 1;
 let dataTotalRows = 0;
 const MAX_PAGE_SIZE = 100;
-const DEFAULT_START_DATE = '2024-01-01';
 
 function todayText() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
+// 日期控件默认值：起始与结束均为当天
+const DEFAULT_START_DATE = todayText();
 
 function applyDefaultRange(startId, endId) {
   $(startId).value = DEFAULT_START_DATE;
@@ -733,7 +734,7 @@ $('mcResetBtn').addEventListener('click', () => {
   setMcResult('—');
 });
 
-// 监控看板默认日期：2024-01-01 至当天
+// 监控看板默认日期：当天
 function monitorDefaultRange() {
   applyDefaultRange('monStart', 'monEnd');
 }

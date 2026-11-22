@@ -23,7 +23,7 @@ from datetime import datetime
 import pandas as pd
 import requests
 
-from monitor import describe_failure
+from monitor import describe_failure, describe_http_failure
 
 logger = logging.getLogger(__name__)
 
@@ -203,9 +203,13 @@ def fetch_sse_shares(
             response = sess.get(SSE_URL, params=params, headers=SSE_HEADERS, timeout=timeout)
             response.raise_for_status()
             records = response.json().get("result") or []
+            sse_params = {
+                "trade_date": trade_date, "market": "SH", "url": SSE_URL,
+                "sqlId": params["sqlId"], "pageSize": params["pageHelp.pageSize"],
+            }
             if not records:
                 _report(monitor, key="etf.sse_shares", name=f"上交所ETF日份额({trade_date})",
-                        status="failed", params={"trade_date": trade_date}, started=started,
+                        status="failed", params=sse_params, started=started,
                         attempts=attempt, error="接口返回空数据（无有效记录）")
                 return _empty_shares()
             df = pd.DataFrame(records)
@@ -217,7 +221,7 @@ def fetch_sse_shares(
             out["交易市场"] = "SH"
             out = out[_SHARE_COLUMNS].dropna(subset=["份额(亿份)"])
             _report(monitor, key="etf.sse_shares", name=f"上交所ETF日份额({trade_date})",
-                    status="success", params={"trade_date": trade_date}, started=started,
+                    status="success", params=sse_params, started=started,
                     attempts=attempt, rows=len(out))
             return out
         except Exception as exc:
@@ -226,8 +230,11 @@ def fetch_sse_shares(
                 time.sleep(retry_interval)
 
     _report(monitor, key="etf.sse_shares", name=f"上交所ETF日份额({trade_date})",
-            status="failed", params={"trade_date": trade_date}, started=started,
-            attempts=retries, error=describe_failure(last_exc))
+            status="failed", params={
+                "trade_date": trade_date, "market": "SH", "url": SSE_URL,
+                "sqlId": params["sqlId"], "pageSize": params["pageHelp.pageSize"],
+            }, started=started,
+            attempts=retries, error=describe_http_failure(last_exc, url=SSE_URL))
     logger.warning("上交所 %s 份额采集失败：%s", trade_date, last_exc)
     return _empty_shares()
 
@@ -268,9 +275,14 @@ def fetch_szse_shares(
             out["份额(亿份)"] = pd.to_numeric(out["份额(份)"], errors="coerce") / 1e8
             out["交易市场"] = "SZ"
             out = out[_SHARE_COLUMNS].dropna(subset=["交易日期", "份额(亿份)"])
+            szse_params = {
+                "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
+                "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
+                "jjlb": params["jjlb"],
+            }
             _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
                     status="success" if not out.empty else "failed",
-                    params={"start": start, "end": end}, started=started,
+                    params=szse_params, started=started,
                     attempts=attempt, rows=len(out),
                     error="" if not out.empty else "接口返回空数据（无有效记录）")
             return out
@@ -280,8 +292,12 @@ def fetch_szse_shares(
                 time.sleep(retry_interval)
 
     _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
-            status="failed", params={"start": start, "end": end}, started=started,
-            attempts=retries, error=describe_failure(last_exc))
+            status="failed", params={
+                "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
+                "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
+                "jjlb": params["jjlb"],
+            }, started=started,
+            attempts=retries, error=describe_http_failure(last_exc, url=SZSE_URL))
     logger.warning("深交所 %s ~ %s 份额采集失败：%s", start, end, last_exc)
     return _empty_shares()
 
@@ -323,9 +339,13 @@ def fetch_nav(
                     break
                 params["pageIndex"] += 1
 
+            nav_params = {
+                "code": code, "start": start, "end": end, "url": NAV_URL,
+                "source": "天天基金", "page_size": params["pageSize"],
+            }
             if not records:
                 _report(monitor, key=f"etf.nav.{code}", name=f"天天基金日净值({code})",
-                        status="failed", params={"code": code, "start": start, "end": end},
+                        status="failed", params=nav_params,
                         started=started, attempts=attempt, error="接口返回空数据（无有效记录）")
                 return _empty_nav()
             df = pd.DataFrame(records)[["FSRQ", "DWJZ"]].copy()
@@ -334,7 +354,7 @@ def fetch_nav(
             df["单位净值(元)"] = pd.to_numeric(df["单位净值(元)"], errors="coerce")
             df = df[_NAV_COLUMNS].dropna(subset=["交易日期"])
             _report(monitor, key=f"etf.nav.{code}", name=f"天天基金日净值({code})",
-                    status="success", params={"code": code, "start": start, "end": end},
+                    status="success", params=nav_params,
                     started=started, attempts=attempt, rows=len(df))
             return df
         except Exception as exc:
@@ -343,8 +363,11 @@ def fetch_nav(
                 time.sleep(retry_interval)
 
     _report(monitor, key=f"etf.nav.{code}", name=f"天天基金日净值({code})",
-            status="failed", params={"code": code, "start": start, "end": end},
-            started=started, attempts=retries, error=describe_failure(last_exc))
+            status="failed", params={
+                "code": code, "start": start, "end": end, "url": NAV_URL,
+                "source": "天天基金", "page_size": params["pageSize"],
+            }, started=started, attempts=retries,
+            error=describe_http_failure(last_exc, url=NAV_URL))
     logger.warning("基金 %s 净值采集失败：%s", code, last_exc)
     return _empty_nav()
 

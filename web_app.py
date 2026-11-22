@@ -381,8 +381,10 @@ def api_status():
 @app.get("/api/monitor/report")
 def api_monitor_report():
     cfg = _cfg()
-    monitor = Monitor(MAIN_BASE, history_path=_history_path(cfg), db_path=_db_path(cfg))
-    report = monitor.build_report()
+    db_path = _db_path(cfg)
+    monitor = Monitor(MAIN_BASE, history_path=_history_path(cfg), db_path=db_path)
+    stats_df = storage.read_collection_stats(db_path) if db_path else pd.DataFrame()
+    report = monitor.build_report(stats_df=stats_df)
     return {sheet: _frame_to_records(df) for sheet, df in report.items()}
 
 
@@ -965,8 +967,8 @@ def api_scheduler_set(payload: dict):
             raise HTTPException(status_code=400, detail="时间格式应为 HH:MM")
         sched["time"] = payload["time"]
     if "run_type" in payload:
-        if payload["run_type"] not in ("full", "macro", "etf"):
-            raise HTTPException(status_code=400, detail="run_type 应为 full/macro/etf")
+        if payload["run_type"] not in ("full", "macro", "etf", "index"):
+            raise HTTPException(status_code=400, detail="run_type 应为 full/macro/etf/index")
         sched["run_type"] = payload["run_type"]
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True, "config": api_scheduler_get()}

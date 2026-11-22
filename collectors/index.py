@@ -149,14 +149,20 @@ def collect_index(
             out = out[OUTPUT_COLUMNS]
             frames.append(out)
             _report(monitor, key=key, name=meta["name"], status="success",
-                    params={"code": code, "start": start_date, "end": end_date},
+                    params={"code": code, "symbol": symbol, "start": start_date,
+                            "end": end_date, "interface": "stock_zh_index_daily",
+                            "source": SOURCE, "lookback_days": lookback_days},
                     started=started, attempts=attempts, rows=len(out))
             logger.info("指数 %s %s 采集完成：%d 行（%s ~ %s）",
                         code, meta["name"], len(out), start_date, end_date)
         except Exception as exc:
-            reason = describe_failure(exc)
+            reason = describe_failure(
+                exc, extra=f"接口=stock_zh_index_daily | symbol={symbol} | 区间={start_date}~{end_date}"
+            )
             _report(monitor, key=key, name=meta["name"], status="failed",
-                    params={"code": code, "start": start_date, "end": end_date},
+                    params={"code": code, "symbol": symbol, "start": start_date,
+                            "end": end_date, "interface": "stock_zh_index_daily",
+                            "source": SOURCE, "lookback_days": lookback_days},
                     started=started, attempts=max(1, attempts or 1),
                     rows=0, error=reason)
             logger.error("指数 %s %s 采集失败：%s", code, meta["name"], reason)

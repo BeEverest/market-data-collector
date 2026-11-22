@@ -149,7 +149,15 @@ def export_monitor(history_df: pd.DataFrame, base_dir: Path, config: dict,
     stamp = stamp or _stamp()
     out_dir = _export_dir(base_dir, config)
     notes = _notes_for({"监控", "注意"})
-    report = Monitor(base_dir).build_report(history=history_df)
+    db_path = config.get("storage", {}).get("db_path")
+    stats_df = None
+    if db_path:
+        try:
+            import storage as _storage
+            stats_df = _storage.read_collection_stats(db_path)
+        except Exception:
+            stats_df = None
+    report = Monitor(base_dir).build_report(history=history_df, stats_df=stats_df)
     csv_path = out_dir / f"接口监控_{stamp}.csv"
     note_path = out_dir / f"接口监控口径说明_{stamp}.csv"
     xlsx_path = out_dir / f"接口监控_{stamp}.xlsx"

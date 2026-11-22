@@ -702,8 +702,8 @@ function filterMonitorRows(rows) {
     if (kw && !Object.values(r).some(v => String(v ?? '').toLowerCase().includes(kw))) return false;
     // 运行类型（各 sheet 字段名不同）
     if (runType && monField(r, ['运行类型']) && monField(r, ['运行类型']) !== runType) return false;
-    // 类别
-    if (category && monField(r, ['类别']) !== category) return false;
+    // 类别（采集量统计用「类别口径」）
+    if (category && monField(r, ['类别', '类别口径']) !== category) return false;
     // 状态：成功/失败；失败明细无状态列，按"失败原因"存在视为失败
     if (status) {
       const st = monField(r, ['状态']);
@@ -724,7 +724,7 @@ function filterMonitorRows(rows) {
 function sheetIsFailureView() { return monitorTab === 'failures'; }
 
 function renderMonitor() {
-  const map = { overview: '运行总览', failures: '失败明细', health: '接口健康度', detail: '调用明细' };
+  const map = { overview: '运行总览', failures: '失败明细', health: '接口健康度', detail: '调用明细', stats: '采集量统计' };
   let rows = (monitorData && monitorData[map[monitorTab]]) || [];
   const hasNotice = !!(rows.length && rows[0]['提示']);
   if (!hasNotice) rows = filterMonitorRows(rows);

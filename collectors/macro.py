@@ -24,7 +24,7 @@ from datetime import datetime
 import pandas as pd
 import requests
 
-from monitor import describe_failure
+from monitor import describe_failure, describe_http_failure
 
 logger = logging.getLogger(__name__)
 
@@ -180,6 +180,16 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
     if only is not None and fn_name not in only:
         return pd.DataFrame()
 
+    # 完整调用参数：函数级时间范围 + 具体接口标识 + 数据源 + FRED 序列 ID
+    call_params: dict = dict(params or {})
+    call_params.setdefault("interface", fn_name)
+    is_fred = fn_name.startswith("fred_")
+    call_params.setdefault("source", "FRED CSV" if is_fred else "akshare")
+    if is_fred and fn_name in FRED_SERIES:
+        call_params.setdefault("series_id", FRED_SERIES[fn_name])
+    if is_fred:
+        call_params.setdefault("url", FRED_CSV_URL)
+
     started = time.time()
     last_exc: Exception | None = None
     attempts = 0
@@ -194,7 +204,7 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
                         category="宏观", interface_key=f"macro.{fn_name}",
                         interface_name=IFACE_NAMES.get(fn_name, fn_name),
                         status="success", attempts=attempt, rows=len(df),
-                        params=params, duration_sec=time.time() - started,
+                        params=call_params, duration_sec=time.time() - started,
                     )
                 return df
             last_exc = None  # 空表属于无数据，非异常
@@ -205,13 +215,18 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
             if attempt < retries:
                 time.sleep(retry_interval)
 
-    reason = describe_failure(last_exc, empty=last_exc is None)
+    if last_exc is not None:
+        reason = describe_http_failure(
+            last_exc, url=FRED_CSV_URL if is_fred else "",
+        )
+    else:
+        reason = describe_failure(None, empty=True)
     if monitor:
         monitor.record(
             category="宏观", interface_key=f"macro.{fn_name}",
             interface_name=IFACE_NAMES.get(fn_name, fn_name),
             status="failed", attempts=attempts, rows=0, error=reason,
-            params=params, duration_sec=time.time() - started,
+            params=call_params, duration_sec=time.time() - started,
         )
     logger.error("宏观接口 %s 调用失败：%s", fn_name, reason)
     return pd.DataFrame()

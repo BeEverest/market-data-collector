@@ -156,12 +156,20 @@ class Monitor:
         return tasks
 
     # ---------- 报告 ----------
-    def build_report(self, history: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
-        """生成监控报告：运行总览 / 失败明细 / 接口健康度 / 调用明细。"""
+    def build_report(self, history: pd.DataFrame | None = None,
+                     stats_df: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
+        """生成监控报告：运行总览 / 失败明细 / 接口健康度 / 调用明细 / 采集量统计。"""
         hist = self.load(self.history_path, self.db_path) if history is None else history
         if hist.empty:
             msg = pd.DataFrame([["暂无监控记录，请先运行一次采集。"]], columns=["提示"])
-            return {"运行总览": msg, "失败明细": msg, "接口健康度": msg, "调用明细": msg}
+            empty_stat = (stats_df.rename(columns={
+                "run_id": "运行ID", "run_type": "运行类型", "run_date": "运行日期",
+                "category": "类别口径", "code": "细分口径", "name": "名称",
+                "rows": "采集行数", "collected_at": "统计时间",
+            }) if stats_df is not None and not stats_df.empty
+                else pd.DataFrame([["暂无采集量统计，请先运行一次采集。"]], columns=["提示"]))
+            return {"运行总览": msg, "失败明细": msg, "接口健康度": msg,
+                    "调用明细": msg, "采集量统计": empty_stat}
 
         # 1) 运行总览
         overview = []
@@ -249,11 +257,25 @@ class Monitor:
             "duration_sec": "耗时(秒)",
         }).reset_index(drop=True)
 
+        if stats_df is not None and not stats_df.empty:
+            stat_out = stats_df.rename(columns={
+                "run_id": "运行ID", "run_type": "运行类型", "run_date": "运行日期",
+                "category": "类别口径", "code": "细分口径", "name": "名称",
+                "rows": "采集行数", "collected_at": "统计时间",
+            })
+            stat_out = stat_out[[
+                "运行日期", "运行ID", "运行类型", "类别口径", "细分口径", "名称",
+                "采集行数", "统计时间",
+            ]].reset_index(drop=True)
+        else:
+            stat_out = pd.DataFrame([["暂无采集量统计，请先运行一次采集。"]], columns=["提示"])
+
         return {
             "运行总览": overview_df,
             "失败明细": fail_df,
             "接口健康度": health_df,
             "调用明细": detail_df,
+            "采集量统计": stat_out,
         }
 
     def export_report(self, base_dir: Path, run_ts: str | None = None,
@@ -280,10 +302,56 @@ class Monitor:
         return path
 
 
-def describe_failure(exc: Exception | None, empty: bool = False) -> str:
-    """统一生成失败原因文本。"""
+def describe_failure(
+    exc: Exception | None,
+    empty: bool = False,
+    *,
+    url: str = "",
+    http_status: int | None = None,
+    extra: str = "",
+) -> str:
+    """生成结构化失败原因：异常类型与消息 + HTTP 状态 + URL + 补充上下文。
+
+    保持向后兼容：不传新增关键字时输出与旧版一致（"类型: 消息" /
+    "接口返回空数据（无有效记录）" / "未知原因"），便于既有测试与重跑匹配。
+    """
     if exc is not None:
-        return f"{type(exc).__name__}: {exc}"
-    if empty:
-        return "接口返回空数据（无有效记录）"
-    return "未知原因"
+        parts = [f"{type(exc).__name__}: {exc}"]
+    elif empty:
+        parts = ["接口返回空数据（无有效记录）"]
+    else:
+        parts = ["未知原因"]
+    if http_status is not None:
+        parts.append(f"HTTP {http_status}")
+    if url:
+        parts.append(f"URL={url}")
+    if extra:
+        parts.append(extra)
+    return " | ".join(parts)
+
+
+def describe_http_failure(
+    exc: Exception,
+    *,
+    url: str = "",
+    response_text: str = "",
+    max_text: int = 300,
+) -> str:
+    """从 requests 异常或响应中提取 HTTP 状态与响应片段，生成失败原因。"""
+    status = None
+    resp = getattr(exc, "response", None)
+    if resp is not None:
+        code = getattr(resp, "status_code", None)
+        if code is not None:
+            status = int(code)
+        if not url:
+            url = str(getattr(resp, "url", "") or "")
+        if not response_text:
+            try:
+                response_text = str(getattr(resp, "text", "") or "")
+            except Exception:
+                response_text = ""
+    snippet = ""
+    if response_text:
+        snippet = "响应片段=" + " ".join(response_text.split())[:max_text]
+    return describe_failure(exc, url=url, http_status=status, extra=snippet)

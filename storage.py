@@ -156,6 +156,20 @@ def init_schema(path: str | Path) -> None:
                 file_path TEXT NOT NULL,
                 row_counts TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS collection_stat (
+                biz_key TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                run_type TEXT,
+                run_date TEXT,
+                category TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT,
+                rows INTEGER NOT NULL DEFAULT 0,
+                collected_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_cstat_run ON collection_stat(run_id, category);
+            CREATE INDEX IF NOT EXISTS idx_cstat_date ON collection_stat(run_date DESC);
             """
         )
         conn.execute(
@@ -195,6 +209,10 @@ def index_biz_key(code: str, trade_date: str) -> str:
 def run_biz_key(run_id: str, interface_key: str, run_time: str, seq: int) -> str:
     stamp = str(run_time).replace("-", "").replace(":", "").replace(" ", "_")
     return f"{run_id}_{interface_key}_{stamp}_{seq:03d}"
+
+
+def collection_stat_biz_key(run_id: str, category: str, code: str) -> str:
+    return f"{run_id}|{category}|{str(code).zfill(6) if category in ('ETF', '指数') else code}"
 
 
 def _clean(value):
@@ -353,6 +371,53 @@ def append_interface_runs(path: str | Path, records: list[dict]) -> int:
             rows,
         )
     return len(rows)
+
+
+def append_collection_stats(
+    path: str | Path,
+    records: list[dict],
+) -> int:
+    """写入每次采集按类别/细分口径的入库行数（同 run_id+类别+代码覆盖）。
+
+    records 每项：run_id / run_type / run_date / category / code / name / rows / collected_at。
+    """
+    if not records:
+        return 0
+    init_schema(path)
+    rows = []
+    for rec in records:
+        run_id = str(rec.get("run_id", ""))
+        category = str(rec.get("category", ""))
+        code = str(rec.get("code", ""))
+        rows.append((
+            collection_stat_biz_key(run_id, category, code),
+            run_id, str(rec.get("run_type", "")), str(rec.get("run_date", "")),
+            category, code, str(rec.get("name", "") or ""),
+            int(rec.get("rows", 0) or 0), str(rec.get("collected_at", "") or ""),
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO collection_stat(
+                biz_key, run_id, run_type, run_date, category, code, name, rows, collected_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                name=excluded.name, rows=excluded.rows, collected_at=excluded.collected_at
+            """,
+            rows,
+        )
+    return len(rows)
+
+
+def read_collection_stats(path: str | Path) -> pd.DataFrame:
+    """读取全部采集量统计，按运行时间倒序。"""
+    init_schema(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT run_id, run_type, run_date, category, code, name, rows, collected_at "
+            "FROM collection_stat ORDER BY run_date DESC, run_id DESC, category, code"
+        ).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
 
 
 # ---------- 读取 ----------
@@ -783,6 +848,7 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
 CLEAR_TABLES = [
     "macro_observation", "etf_observation", "index_observation",
     "interface_run", "etf_config", "index_config", "meta", "export_log",
+    "collection_stat",
 ]
 
 

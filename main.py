@@ -219,6 +219,35 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     return macro_df, etf_df, index_df
 
 
+def _collect_stat_records(monitor: Monitor, macro_df: pd.DataFrame,
+                          etf_df: pd.DataFrame, index_df: pd.DataFrame) -> list[dict]:
+    """按类别 + 细分口径汇总本次采集的入库行数，供监控看板统计。"""
+    specs = [
+        ("宏观", macro_df, "指标代码", "指标名称"),
+        ("ETF", etf_df, "基金代码", "基金简称"),
+        ("指数", index_df, "指数代码", "指数名称"),
+    ]
+    records: list[dict] = []
+    for category, df, code_col, name_col in specs:
+        if df is None or df.empty or code_col not in df.columns:
+            continue
+        grouped = df.groupby(code_col, dropna=False)
+        for code, group in grouped:
+            code = str(code)
+            names = group[name_col].dropna().unique().tolist() if name_col in group.columns else []
+            records.append({
+                "run_id": monitor.run_id,
+                "run_type": monitor.run_type,
+                "run_date": monitor.run_date,
+                "category": category,
+                "code": code,
+                "name": names[0] if names else "",
+                "rows": int(len(group)),
+                "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            })
+    return records
+
+
 def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
             config: dict, run_ts: str, index_df: pd.DataFrame | None = None) -> list[str]:
     """写入 SQLite 主存储；按配置决定是否自动生成文件快照。"""
@@ -231,6 +260,9 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
         storage.upsert_macro(db_path, macro_df, run_ts)
         storage.upsert_etf(db_path, etf_df, run_ts)
         storage.upsert_index(db_path, index_df, run_ts)
+        stat_records = _collect_stat_records(monitor, macro_df, etf_df, index_df)
+        written = storage.append_collection_stats(db_path, stat_records)
+        logger.info("采集量统计已写入：%d 条（类别/细分口径）", written)
         macro_rows, _ = storage.read_macro(db_path)
         etf_rows, _ = storage.read_etf(db_path)
         index_rows, _ = storage.read_index(db_path)

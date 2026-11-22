@@ -83,8 +83,9 @@ class TestFailedTasks:
 class TestReport:
     def test_empty_report(self, base):
         report = Monitor(base).build_report(history=pd.DataFrame(columns=RUN_FIELDS))
-        assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细"}
+        assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细", "采集量统计"}
         assert "暂无监控记录" in report["调用明细"].iloc[0, 0]
+        assert "暂无采集量统计" in report["采集量统计"].iloc[0, 0]
 
     def test_report_sheets_and_success_rate(self, base, run_records):
         report = Monitor(base).build_report(history=_frame(run_records))
@@ -113,9 +114,34 @@ class TestReport:
         report = Monitor(base).build_report(history=_frame(ok_only))
         assert report["失败明细"].iloc[0, 0] == "无失败记录"
 
+    def test_report_with_collection_stats(self, base, run_records):
+        stats = pd.DataFrame([
+            {"run_id": "20261101_090000_full", "run_type": "full", "run_date": "2026-11-01",
+             "category": "宏观", "code": "M2", "name": "货币供应量", "rows": 24,
+             "collected_at": "2026-11-01 09:00:30"},
+            {"run_id": "20261101_090000_full", "run_type": "full", "run_date": "2026-11-01",
+             "category": "ETF", "code": "510050", "name": "50ETF", "rows": 20,
+             "collected_at": "2026-11-01 09:00:40"},
+        ])
+        report = Monitor(base).build_report(history=_frame(run_records), stats_df=stats)
+        stat = report["采集量统计"]
+        assert len(stat) == 2
+        assert set(["运行ID", "类别口径", "细分口径", "采集行数"]).issubset(stat.columns)
+        assert stat.iloc[0]["采集行数"] == 24
+
 
 class TestDescribeFailure:
     def test_exception_and_empty(self):
         assert describe_failure(ValueError("bad")) == "ValueError: bad"
         assert describe_failure(None, empty=True) == "接口返回空数据（无有效记录）"
         assert describe_failure(None) == "未知原因"
+
+    def test_structured_context(self):
+        text = describe_failure(
+            TimeoutError("读超时"), url="https://api.example.com/x",
+            http_status=503, extra="重试3次",
+        )
+        assert "TimeoutError: 读超时" in text
+        assert "HTTP 503" in text
+        assert "URL=https://api.example.com/x" in text
+        assert "重试3次" in text

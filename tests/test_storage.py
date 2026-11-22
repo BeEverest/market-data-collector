@@ -202,3 +202,40 @@ class TestClearAll:
         # init_schema 会在 meta 写入 schema_version=1 行，其余业务表应为空
         assert removed["meta"] == 1
         assert all(v == 0 for k, v in removed.items() if k != "meta")
+
+
+class TestCollectionStat:
+    def test_append_and_read(self, db_path):
+        stats = [
+            {"run_id": "r1", "run_type": "full", "run_date": "2026-11-22",
+             "category": "宏观", "code": "M2", "name": "货币供应量", "rows": 24,
+             "collected_at": "2026-11-22 09:00:00"},
+            {"run_id": "r1", "run_type": "full", "run_date": "2026-11-22",
+             "category": "ETF", "code": "510050", "name": "50ETF", "rows": 20,
+             "collected_at": "2026-11-22 09:00:00"},
+            {"run_id": "r1", "run_type": "full", "run_date": "2026-11-22",
+             "category": "指数", "code": "000001", "name": "上证指数", "rows": 250,
+             "collected_at": "2026-11-22 09:00:00"},
+        ]
+        assert storage.append_collection_stats(db_path, stats) == 3
+        df = storage.read_collection_stats(db_path)
+        assert len(df) == 3
+        assert set(df["category"]) == {"宏观", "ETF", "指数"}
+
+    def test_same_run_code_overwrites(self, db_path):
+        base = {"run_id": "r1", "run_type": "full", "run_date": "2026-11-22",
+                "category": "宏观", "code": "M2", "name": "货币供应量", "rows": 10,
+                "collected_at": "2026-11-22 09:00:00"}
+        storage.append_collection_stats(db_path, [base])
+        storage.append_collection_stats(db_path, [{**base, "rows": 24}])
+        df = storage.read_collection_stats(db_path)
+        assert len(df) == 1 and df.iloc[0]["rows"] == 24
+
+    def test_etf_code_left_padded_in_biz_key(self, db_path):
+        stat = {"run_id": "r1", "run_type": "full", "run_date": "2026-11-22",
+                "category": "ETF", "code": "50050", "name": "50ETF", "rows": 5,
+                "collected_at": "2026-11-22 09:00:00"}
+        storage.append_collection_stats(db_path, [stat])
+        # 06 位补零后 biz_key 稳定，重复写入同码仍覆盖
+        storage.append_collection_stats(db_path, [{**stat, "rows": 6}])
+        assert len(storage.read_collection_stats(db_path)) == 1

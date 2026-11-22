@@ -68,8 +68,9 @@ class TestReadOnlyApis:
 
     def test_monitor_report_and_failed(self, client):
         report = client.get("/api/monitor/report").json()
-        assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细"}
+        assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细", "采集量统计"}
         assert len(report["调用明细"]) == 4
+        assert "采集量统计" in report  # 新增统计 sheet
         tasks = client.get("/api/monitor/failed").json()["tasks"]
         assert len(tasks) == 1
         assert tasks[0]["interface_key"] == "etf.sse_shares"

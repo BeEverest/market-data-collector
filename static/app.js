@@ -21,11 +21,24 @@ let precCategory = 'macro';
 let dataPage = 1;
 let dataPages = 1;
 let dataTotalRows = 0;
+let dataDateOrder = 'desc';  // 采集数据日期排序方向：desc 最新在前 / asc 最早在前
 const MAX_PAGE_SIZE = 100;
 
-function todayText() {
-  const d = new Date();
+function dateText(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function todayText() {
+  return dateText(new Date());
+}
+// 从今天往前推 N 个月（ clamp 到目标月的最后一天，避免 1/31 -> 2/31 溢出）
+function monthsAgoText(months) {
+  const d = new Date();
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() - months);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDay));
+  return dateText(d);
 }
 // 日期控件默认值：起始与结束均为当天
 const DEFAULT_START_DATE = todayText();
@@ -863,14 +876,34 @@ document.querySelectorAll('#dataTabs .tab').forEach(tab => {
   });
 });
 
+// 采集数据默认区间：近 1 个月（快捷按钮近1月/近1年/近5年）
+const DATA_DEFAULT_MONTHS = 1;
+function applyRecentRange(months, btn = null) {
+  $('filterStart').value = monthsAgoText(months);
+  $('filterEnd').value = todayText();
+  document.querySelectorAll('#dataRangeBtns button').forEach(b => {
+    b.classList.toggle('active', b === btn ||
+      (!btn && Number(b.dataset.months) === months));
+  });
+  dataRangeMonths = months;
+}
+let dataRangeMonths = DATA_DEFAULT_MONTHS;
+
 function resetToDefaultRange() {
-  applyDefaultRange('filterStart', 'filterEnd');
+  applyRecentRange(DATA_DEFAULT_MONTHS);
   $('filterCode').value = '';
 }
 
 $('filterBtn').addEventListener('click', () => { dataPage = 1; loadData(); });
 $('filterResetBtn').addEventListener('click', () => { resetToDefaultRange(); dataPage = 1; loadData(); });
 $('filterPageSize').addEventListener('change', () => { dataPage = 1; loadData(); });
+document.querySelectorAll('#dataRangeBtns button').forEach(b => {
+  b.addEventListener('click', () => {
+    applyRecentRange(Number(b.dataset.months), b);
+    dataPage = 1;
+    loadData();
+  });
+});
 
 async function loadData() {
   const el = $('dataTable');
@@ -879,14 +912,14 @@ async function loadData() {
   const start = $('filterStart').value.trim();
   const end = $('filterEnd').value.trim();
   const pageSize = Math.min(Math.max(parseInt($('filterPageSize').value, 10) || 25, 1), MAX_PAGE_SIZE);
-  const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}`;
+  const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}&order=${dataDateOrder}`;
   try {
     const res = await api(url);
     dataPages = res.pages || 1;
     dataTotalRows = res.total || 0;
     if (dataPage > dataPages) { dataPage = dataPages; return loadData(); }
     $('dataTotal').textContent = `共 ${res.total} 行 · 第 ${res.page}/${res.pages} 页`;
-    renderTable(el, res.rows);
+    renderTable(el, res.rows, false, { dateCol: dataTab === 'macro' ? '日期' : '交易日期', dateOrder: dataDateOrder, onSortDate: toggleDateOrder });
     renderPager();
   } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
@@ -938,16 +971,34 @@ async function loadFiles(el) {
   } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
 
-function renderTable(el, rows, allowHtml = false) {
+function renderTable(el, rows, allowHtml = false, opts = null) {
   if (!rows.length) { el.innerHTML = '<div class="empty">无数据</div>'; return; }
   const cols = Object.keys(rows[0]);
-  const head = '<thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
+  const sortable = opts && opts.dateCol && cols.includes(opts.dateCol);
+  const head = '<thead><tr>' + cols.map(c => {
+    if (sortable && c === opts.dateCol) {
+      const arrow = opts.dateOrder === 'asc' ? '▲' : '▼';
+      const tip = opts.dateOrder === 'asc' ? '点击改为降序' : '点击改为升序';
+      return `<th><button type="button" class="th-sort" data-sort-date title="${tip}">${esc(c)} <span class="sort-arrow">${arrow}</span></button></th>`;
+    }
+    return `<th>${esc(c)}</th>`;
+  }).join('') + '</tr></thead>';
   const body = '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
     const v = r[c] == null ? '' : String(r[c]);
     const html = allowHtml && c === '下载' ? v : esc(v);
     return `<td title="${esc(v)}"><div class="cell-clip">${html}</div></td>`;
   }).join('') + '</tr>').join('') + '</tbody>';
   el.innerHTML = '<table>' + head + body + '</table>';
+  if (sortable) {
+    const btn = el.querySelector('[data-sort-date]');
+    if (btn) btn.addEventListener('click', () => opts.onSortDate && opts.onSortDate());
+  }
+}
+
+function toggleDateOrder() {
+  dataDateOrder = dataDateOrder === 'asc' ? 'desc' : 'asc';
+  dataPage = 1;
+  loadData();
 }
 
 function esc(s) {

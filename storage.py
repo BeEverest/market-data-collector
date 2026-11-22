@@ -198,6 +198,11 @@ def macro_biz_key(code: str, date: str) -> str:
     return f"{code}_{str(date)[:7].replace('-', '')}"
 
 
+def _date_order_sql(order: str) -> str:
+    """把外部传入的排序方向映射为安全的 SQL 关键字（默认降序）。"""
+    return "ASC" if str(order).lower() == "asc" else "DESC"
+
+
 def etf_biz_key(code: str, trade_date: str) -> str:
     return f"{str(code).zfill(6)}_{str(trade_date).replace('-', '')}"
 
@@ -423,7 +428,8 @@ def read_collection_stats(path: str | Path) -> pd.DataFrame:
 # ---------- 读取 ----------
 def read_macro(path: str | Path, code: str | None = None,
                start: str | None = None, end: str | None = None,
-               limit: int | None = None, offset: int = 0) -> tuple[int, pd.DataFrame]:
+               limit: int | None = None, offset: int = 0,
+               date_order: str = "desc") -> tuple[int, pd.DataFrame]:
     init_schema(path)
     clauses, args = [], []
     if code:
@@ -441,7 +447,7 @@ def read_macro(path: str | Path, code: str | None = None,
         sql = f"""
             SELECT code, name, date, value, unit, yoy_pct, mom_pct, source, collected_at
             FROM macro_observation{where}
-            ORDER BY code ASC, date DESC
+            ORDER BY code ASC, date {_date_order_sql(date_order)}
         """
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
@@ -460,7 +466,8 @@ def read_macro(path: str | Path, code: str | None = None,
 
 def read_etf(path: str | Path, code: str | None = None,
              start: str | None = None, end: str | None = None,
-             limit: int | None = None, offset: int = 0) -> tuple[int, pd.DataFrame]:
+             limit: int | None = None, offset: int = 0,
+             date_order: str = "desc") -> tuple[int, pd.DataFrame]:
     init_schema(path)
     clauses, args = [], []
     if code:
@@ -478,7 +485,7 @@ def read_etf(path: str | Path, code: str | None = None,
         sql = f"""
             SELECT code, name, market, trade_date, shares, nav, market_cap, source, collected_at
             FROM etf_observation{where}
-            ORDER BY code ASC, trade_date DESC
+            ORDER BY code ASC, trade_date {_date_order_sql(date_order)}
         """
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"
@@ -497,7 +504,8 @@ def read_etf(path: str | Path, code: str | None = None,
 
 def read_index(path: str | Path, code: str | None = None,
                start: str | None = None, end: str | None = None,
-               limit: int | None = None, offset: int = 0) -> tuple[int, pd.DataFrame]:
+               limit: int | None = None, offset: int = 0,
+               date_order: str = "desc") -> tuple[int, pd.DataFrame]:
     init_schema(path)
     clauses, args = [], []
     if code:
@@ -516,7 +524,7 @@ def read_index(path: str | Path, code: str | None = None,
             SELECT code, name, trade_date, open, high, low, close, volume, pct_change,
                    source, collected_at
             FROM index_observation{where}
-            ORDER BY code ASC, trade_date DESC
+            ORDER BY code ASC, trade_date {_date_order_sql(date_order)}
         """
         if limit is not None:
             sql += " LIMIT ? OFFSET ?"

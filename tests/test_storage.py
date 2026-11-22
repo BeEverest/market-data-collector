@@ -120,6 +120,20 @@ class TestRead:
         total, df = storage.read_etf(db_path, code="510050", start="2026-10-20")
         assert total == 1
         assert df.iloc[0]["交易日期"] == "2026-10-20"
+
+    def test_date_order_asc_desc(self, db_path, etf_df, macro_df):
+        """日期排序：默认降序，asc 时升序；三类读取均支持。"""
+        storage.upsert_etf(db_path, etf_df)
+        _, etf_desc = storage.read_etf(db_path, code="510050")
+        _, etf_asc = storage.read_etf(db_path, code="510050", date_order="asc")
+        assert etf_desc.iloc[0]["交易日期"] == "2026-10-20"
+        assert etf_asc.iloc[0]["交易日期"] == "2026-10-19"
+        storage.upsert_macro(db_path, macro_df)
+        _, macro_asc = storage.read_macro(db_path, code="M2", date_order="asc")
+        assert macro_asc.iloc[0]["日期"] == "2026-09"
+        # 非法值安全回退到降序（SQL 注入防护）
+        _, fallback = storage.read_etf(db_path, code="510050", date_order="desc; DROP TABLE")
+        assert fallback.iloc[0]["交易日期"] == "2026-10-20"
         # 未补零的代码也能命中
         assert storage.read_etf(db_path, code="510050")[0] == 2
 

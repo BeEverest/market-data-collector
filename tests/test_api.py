@@ -66,6 +66,16 @@ class TestReadOnlyApis:
         assert data["total"] == 2
         assert all(row["基金代码"] == "510050" for row in data["rows"])
 
+    def test_data_date_order_asc(self, client):
+        """order=asc 时交易日期升序，默认 desc 降序。"""
+        desc = client.get("/api/data/etf", params={"code": "510050"}).json()
+        asc = client.get("/api/data/etf", params={"code": "510050", "order": "asc"}).json()
+        assert desc["rows"][0]["交易日期"] == "2026-10-20"
+        assert asc["rows"][0]["交易日期"] == "2026-10-19"
+        # 宏观接口同样支持
+        m_asc = client.get("/api/data/macro", params={"code": "M2", "order": "asc"}).json()
+        assert m_asc["rows"][0]["日期"] == "2026-09"
+
     def test_monitor_report_and_failed(self, client):
         report = client.get("/api/monitor/report").json()
         assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细", "采集量统计"}

@@ -331,6 +331,11 @@
       <input id="filterStart" type="date" title="起始日期">
       <span class="date-sep">~</span>
       <input id="filterEnd" type="date" title="结束日期">
+      <div class="range-quick" id="dataRangeBtns" title="快捷日期范围">
+        <button type="button" class="btn tiny active" data-months="1">近1月</button>
+        <button type="button" class="btn tiny" data-months="12">近1年</button>
+        <button type="button" class="btn tiny" data-months="60">近5年</button>
+      </div>
       <select id="filterPageSize" class="filter-select" title="每页行数（单页上限 100）">
         <option value="25" selected>25 行/页</option>
         <option value="50">50 行/页</option>

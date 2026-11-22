@@ -166,6 +166,15 @@ body {
 .prec-dates { display: flex; align-items: center; gap: 4px; }
 .prec-dates .prec-input { min-width: 0; flex: 1; }
 .date-sep { color: var(--muted); font-size: 11px; }
+.range-quick { display: inline-flex; gap: 2px; }
+.range-quick .btn.tiny.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+.range-quick .btn.tiny.active:hover { background: #2f4bc4; }
+.th-sort {
+  border: 0; background: none; color: inherit; font: inherit; font-weight: 600;
+  cursor: pointer; padding: 0; display: inline-flex; align-items: center; gap: 4px;
+}
+.th-sort:hover { color: var(--brand); }
+.th-sort .sort-arrow { font-size: 9px; color: var(--brand); }
 .prec-run { width: 100%; margin-top: 7px; justify-content: center; padding: 6px 10px; }
 .prec-note { font-size: 10px; color: var(--muted); margin-top: 5px; line-height: 1.45; }
 .clean-box { border: 1px solid #f5b7ae; border-radius: 8px; padding: 10px 12px; background: #fffaf9; }

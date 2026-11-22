@@ -414,20 +414,24 @@ def _paged(df: pd.DataFrame, page: int, page_size: int) -> dict:
 
 @app.get("/api/data/macro")
 def api_data_macro(code: str | None = None, start: str | None = None,
-                   end: str | None = None, page: int = 1, page_size: int = 25):
+                   end: str | None = None, page: int = 1, page_size: int = 25,
+                   order: str = "desc"):
     # 宏观数据按月存储，兼容前端传入的 YYYY-MM-DD
     start = start[:7] if start else None
     end = end[:7] if end else None
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
+    date_order = "asc" if str(order).lower() == "asc" else "desc"
     db_path = _db_path(_cfg())
     if db_path:
-        total, df = storage.read_macro(db_path, code, start, end, limit=page_size, offset=0)
+        total, df = storage.read_macro(db_path, code, start, end, limit=page_size,
+                                       offset=0, date_order=date_order)
         pages = max(1, (total + page_size - 1) // page_size)
         if page > pages:
             page = pages
         _, df = storage.read_macro(
-            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+            db_path, code, start, end, limit=page_size,
+            offset=(page - 1) * page_size, date_order=date_order)
         return {
             "total": total, "pages": pages, "page": page, "page_size": page_size,
             "rows": _frame_to_records(df, page_size),
@@ -439,14 +443,18 @@ def api_data_macro(code: str | None = None, start: str | None = None,
         df = df[df["日期"] >= start]
     if end and not df.empty:
         df = df[df["日期"] <= end]
+    if not df.empty and "日期" in df.columns:
+        df = df.sort_values("日期", ascending=(date_order == "asc"))
     return _paged(df, page, page_size)
 
 
 @app.get("/api/data/etf")
 def api_data_etf(code: str | None = None, start: str | None = None,
-                 end: str | None = None, page: int = 1, page_size: int = 25):
+                 end: str | None = None, page: int = 1, page_size: int = 25,
+                 order: str = "desc"):
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
+    date_order = "asc" if str(order).lower() == "asc" else "desc"
     db_path = _db_path(_cfg())
     if db_path:
         total, _ = storage.read_etf(db_path, code, start, end, limit=1)
@@ -454,7 +462,8 @@ def api_data_etf(code: str | None = None, start: str | None = None,
         if page > pages:
             page = pages
         _, df = storage.read_etf(
-            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+            db_path, code, start, end, limit=page_size,
+            offset=(page - 1) * page_size, date_order=date_order)
         return {
             "total": total, "pages": pages, "page": page, "page_size": page_size,
             "rows": _frame_to_records(df, page_size),
@@ -466,14 +475,18 @@ def api_data_etf(code: str | None = None, start: str | None = None,
         df = df[df["交易日期"] >= start]
     if end and not df.empty:
         df = df[df["交易日期"] <= end]
+    if not df.empty and "交易日期" in df.columns:
+        df = df.sort_values("交易日期", ascending=(date_order == "asc"))
     return _paged(df, page, page_size)
 
 
 @app.get("/api/data/index")
 def api_data_index(code: str | None = None, start: str | None = None,
-                   end: str | None = None, page: int = 1, page_size: int = 25):
+                   end: str | None = None, page: int = 1, page_size: int = 25,
+                   order: str = "desc"):
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
+    date_order = "asc" if str(order).lower() == "asc" else "desc"
     db_path = _db_path(_cfg())
     if db_path:
         total, _ = storage.read_index(db_path, code, start, end, limit=1)
@@ -481,7 +494,8 @@ def api_data_index(code: str | None = None, start: str | None = None,
         if page > pages:
             page = pages
         _, df = storage.read_index(
-            db_path, code, start, end, limit=page_size, offset=(page - 1) * page_size)
+            db_path, code, start, end, limit=page_size,
+            offset=(page - 1) * page_size, date_order=date_order)
         return {
             "total": total, "pages": pages, "page": page, "page_size": page_size,
             "rows": _frame_to_records(df, page_size),
@@ -493,6 +507,8 @@ def api_data_index(code: str | None = None, start: str | None = None,
         df = df[df["交易日期"] >= start]
     if end and not df.empty:
         df = df[df["交易日期"] <= end]
+    if not df.empty and "交易日期" in df.columns:
+        df = df.sort_values("交易日期", ascending=(date_order == "asc"))
     return _paged(df, page, page_size)
 
 

@@ -197,7 +197,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 codes=codes,
                 start_date=start_date or etf_cfg.get("start_date") or None,
                 end_date=end_date or etf_cfg.get("end_date") or None,
-                default_trade_days=etf_cfg.get("default_trade_days", 20),
+                default_trade_days=etf_cfg.get("default_trade_days", 1),
                 retries=retries,
                 retry_interval=retry_interval,
                 timeout=timeout,
@@ -215,7 +215,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
         if not index_codes:
             logger.warning("配置中未填写指数代码（index.codes），将不采集指数数据")
         else:
-            logger.info("开始采集 %d 个主要指数的日频行情（近一年）...", len(index_codes))
+            logger.info("开始采集 %d 个主要指数的日频行情（默认最近一个交易日）...", len(index_codes))
             index_df = collect_index(
                 codes=index_codes,
                 start_date=start_date or index_cfg.get("start_date") or None,

@@ -25,6 +25,7 @@ import requests
 
 from monitor import describe_failure, describe_http_failure
 from collectors.rate_limit import wait as throttle_wait
+from collectors.trade_calendar import resolve_default_end
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +445,7 @@ def collect_etf(
     codes: list[str],
     start_date: str | None = None,
     end_date: str | None = None,
-    default_trade_days: int = 60,
+    default_trade_days: int = 1,
     retries: int = 3,
     retry_interval: float = 2.0,
     timeout: float = 15.0,
@@ -465,7 +466,10 @@ def collect_etf(
                       传入的 dict 会被原地补全解析结果，供调用方持久化。
     """
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    end = end_date or datetime.now().strftime("%Y-%m-%d")
+    # 默认锚定到最近一个已结束交易日：凌晨运行时"今天"数据尚未披露，采当天必为空。
+    # 显式 end_date 始终最高优先。
+    end = resolve_default_end(end_date)
+    logger.info("ETF 采集区间结束日：%s%s", end, "（显式指定）" if (end_date or "").strip() else "（最近已结束交易日）")
 
     if start_date:
         start = start_date

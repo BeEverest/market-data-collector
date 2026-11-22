@@ -58,6 +58,32 @@ class TestIndexCollector:
         df = idx_mod.collect_index(codes=["999999"])
         assert df.empty and list(df.columns) == idx_mod.OUTPUT_COLUMNS
 
+    def test_default_range_is_last_completed_trade_day(self, monkeypatch):
+        """两端日期留空时，默认采集最近一个已结束交易日（单日）。"""
+        raw = pd.DataFrame({
+            "date": ["2026-11-18", "2026-11-19", "2026-11-20"],
+            "open": [10, 11, 12], "high": [11, 12, 13],
+            "low": [9, 10, 11], "close": [10, 11, 12], "volume": [100, 110, 120],
+        })
+        monkeypatch.setattr(idx_mod, "_fetch_index", lambda symbol, **kw: raw.copy())
+        monkeypatch.setattr(idx_mod, "last_completed_trade_day", lambda: "2026-11-20")
+
+        df = idx_mod.collect_index(codes=["000001"])
+        assert df["交易日期"].tolist() == ["2026-11-20"]
+
+    def test_explicit_date_still_wins(self, monkeypatch):
+        """显式 start/end 优先于默认锚点。"""
+        raw = pd.DataFrame({
+            "date": ["2026-11-18", "2026-11-19", "2026-11-20"],
+            "open": [10, 11, 12], "high": [11, 12, 13],
+            "low": [9, 10, 11], "close": [10, 11, 12], "volume": [100, 110, 120],
+        })
+        monkeypatch.setattr(idx_mod, "_fetch_index", lambda symbol, **kw: raw.copy())
+        monkeypatch.setattr(idx_mod, "last_completed_trade_day", lambda: "2026-11-20")
+
+        df = idx_mod.collect_index(codes=["000001"], start_date="2026-11-18", end_date="2026-11-19")
+        assert set(df["交易日期"]) == {"2026-11-18", "2026-11-19"}
+
 
 @pytest.fixture
 def index_df() -> pd.DataFrame:

@@ -45,9 +45,9 @@
     "_listing_dates_help": "各基金上市/成立日缓存 {代码: YYYY-MM-DD}，采集时自动解析并回写；早于该日的交易日数据自动忽略",
     "start_date": "",
     "end_date": "",
-    "default_trade_days": 20,
-    "_date_help": "日频数据区间 YYYY-MM-DD。两者留空时：end_date 取今天，start_date 取往前 default_trade_days 个交易日。",
-    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日；N 越大，上交所逐日查询耗时越长。"
+    "default_trade_days": 1,
+    "_date_help": "日频数据区间 YYYY-MM-DD。两者留空时：end_date 取最近一个已结束交易日（凌晨采集当天必为空），start_date 取往前 default_trade_days 个交易日。",
+    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日，默认 1（仅最近一个已结束交易日）；N 越大，上交所逐日查询耗时越长。"
   },
   "macro": {
     "start_date": "2026-11",
@@ -61,11 +61,11 @@
       "399006"
     ],
     "_codes_help": "指数代码清单：上证指数000001/沪深300 000300/科创50 000688/创业板指399006；前端可灵活配置，SQLite 为权威源",
-    "lookback_days": 365,
-    "_lookback_days_help": "采集范围：滚动近 N 天（默认 365=近一年）；也可由 start_date/end_date 覆盖",
+    "lookback_days": 1,
+    "_lookback_days_help": "兼容旧版自然日回退（默认 1）；最新行为：两者日期留空时默认采集最近一个已结束交易日，与 lookback_days 无关",
     "start_date": "",
     "end_date": "",
-    "_date_help": "日频区间 YYYY-MM-DD；两者留空时按 lookback_days 取近一年"
+    "_date_help": "日频区间 YYYY-MM-DD；两者留空时取最近一个已结束交易日；仅单边留空时按 lookback_days 自然日补齐"
   },
   "storage": {
     "backend": "sqlite",
@@ -100,9 +100,9 @@
     "_retry_help": "运行 python main.py --retry-failed 重跑最近批次失败接口；--monitor-report 生成历史监控报告"
   },
   "scheduler": {
-    "enabled": false,
-    "time": "08:30",
-    "run_type": "full",
+    "enabled": true,
+    "time": "02:14",
+    "run_type": "etf",
     "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",
     "_time_help": "每日采集时刻，24小时制 HH:MM",
     "_run_type_help": "full=全量采集 / macro=仅宏观 / etf=仅 ETF / index=仅指数"

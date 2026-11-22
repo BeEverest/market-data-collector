@@ -207,6 +207,10 @@ body {
   display: flex; justify-content: space-between; align-items: center; gap: 10px;
   padding: 7px 12px; background: #1c2640; color: #c7d2f0; font-size: 11.5px; font-weight: 600;
 }
+.log-scope {
+  margin-right: auto; font-size: 10px; font-weight: 400; color: #7fb0ff;
+  border: 1px solid #35508c; background: #1a2d55; border-radius: 10px; padding: 1px 8px;
+}
 .log-tools { display: flex; align-items: center; gap: 8px; font-weight: 400; }
 .auto-scroll { display: flex; align-items: center; gap: 4px; color: #9fb0d4; font-size: 10.5px; cursor: pointer; }
 .auto-scroll input { accent-color: #37d399; width: 12px; height: 12px; }

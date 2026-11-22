@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import logging
 import os
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -52,6 +54,37 @@ _run_lock = threading.Lock()          # 采集/重跑互斥，避免并发写同
 logger = logging.getLogger("market_data.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                     datefmt="%H:%M:%S")
+
+# 全局实时日志环形缓冲：承接所有线程（含定时调度器/后台采集）的日志，供「实时监控」常驻轮询。
+# 与 per-job 日志（JobLogHandler，任务结束即固定）互补：这里跨任务保留最近 200 行。
+LIVE_LOG_LIMIT = 200
+_live_logs: deque[dict] = deque(maxlen=LIVE_LOG_LIMIT)
+_live_seq = itertools.count(1)
+_live_lock = threading.Lock()
+
+
+class LiveLogHandler(logging.Handler):
+    """常驻 root 的 handler：把任意 logger/线程的记录写入全局缓冲。"""
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            msg = record.getMessage()
+        except Exception:
+            msg = str(record.msg)
+        entry = {
+            "seq": next(_live_seq),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "level": record.levelname,
+            "message": msg,
+        }
+        with _live_lock:
+            _live_logs.append(entry)
+
+
+# 挂载一次到 root：所有子 logger 默认向 root 传播，覆盖 JobLogHandler 捕获不到的调度器日志。
+_root_logger = logging.getLogger()
+if not any(isinstance(h, LiveLogHandler) for h in _root_logger.handlers):
+    _root_logger.addHandler(LiveLogHandler())
 
 CONFIG_PATH = BASE_DIR / "config.json"
 
@@ -93,7 +126,7 @@ def _etf_config_view() -> dict:
         "items": items,
         "start_date": etf.get("start_date", ""),
         "end_date": etf.get("end_date", ""),
-        "default_trade_days": etf.get("default_trade_days", 20),
+        "default_trade_days": etf.get("default_trade_days", 1),
     }
 
 
@@ -109,7 +142,7 @@ def _index_config_view() -> dict:
         "items": items,
         "start_date": idx.get("start_date", ""),
         "end_date": idx.get("end_date", ""),
-        "lookback_days": idx.get("lookback_days", 365),
+        "lookback_days": idx.get("lookback_days", 1),
     }
 
 
@@ -180,7 +213,7 @@ def _submit(kind: str, func) -> str:
 
 def _do_collect(macro_only: bool = False, etf_only: bool = False,
                 index_only: bool = False, start: str | None = None,
-                end: str | None = None) -> str:
+                end: str | None = None, trigger: str = "Web") -> str:
     config = _cfg()
     db_path = _db_path(config)
     monitor = Monitor(MAIN_BASE, run_type="full", history_path=_history_path(config),
@@ -188,7 +221,7 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
     label = "仅宏观" if macro_only else ("仅 ETF" if etf_only else ("仅指数" if index_only else "全量"))
     if start or end:
         label += f"（{start or '起始默认'} ~ {end or '结束默认'}）"
-    logger.info("Web 触发采集：%s", label)
+    logger.info("[%s] 触发采集：%s", trigger, label)
     macro_df, etf_df, index_df = _collect(
         config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only,
         start_date=start, end_date=end,
@@ -317,10 +350,10 @@ class Scheduler:
                     continue
                 self._last_triggered = today
                 run_type = cfg.get("run_type", "full")
-                logger.info("定时调度触发：%s %s", today, run_type)
+                logger.info("【定时调度】触发：%s 类型=%s", today, run_type)
                 _submit("scheduled", lambda rt=run_type: _do_collect(
                     macro_only=(rt == "macro"), etf_only=(rt == "etf"),
-                    index_only=(rt == "index"),
+                    index_only=(rt == "index"), trigger="定时调度",
                 ))
             except Exception as exc:
                 logger.warning("调度器异常：%s", exc)
@@ -643,6 +676,16 @@ def api_jobs():
     } for j in reversed(jobs)]}
 
 
+@app.get("/api/live-logs")
+def api_live_logs(after: int = 0):
+    """实时监控日志：返回序号大于 after 的全局日志（含定时调度），跨任务保留最近 200 行。"""
+    with _live_lock:
+        logs = [dict(e) for e in _live_logs if e["seq"] > after]
+        latest = _live_logs[-1]["seq"] if _live_logs else 0
+        total = len(_live_logs)
+    return {"logs": logs, "latest": latest, "total": total, "limit": LIVE_LOG_LIMIT}
+
+
 @app.post("/api/collect")
 def api_collect(payload: dict | None = None):
     payload = payload or {}
@@ -729,7 +772,7 @@ def api_catalog():
             "etf_end": cfg.get("etf", {}).get("end_date", ""),
             "index_start": cfg.get("index", {}).get("start_date", ""),
             "index_end": cfg.get("index", {}).get("end_date", ""),
-            "index_lookback": cfg.get("index", {}).get("lookback_days", 365),
+            "index_lookback": cfg.get("index", {}).get("lookback_days", 1),
         },
         "keep_snapshots": cfg.get("output", {}).get("keep_snapshots", 3),
     }

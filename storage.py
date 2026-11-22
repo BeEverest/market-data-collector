@@ -624,7 +624,7 @@ def status_counts(path: str | Path) -> dict:
 # ---------- ETF 配置 ----------
 DEFAULT_ETF_CONFIG = {
     "codes": [], "listing_dates": {}, "start_date": "",
-    "end_date": "", "default_trade_days": 20,
+    "end_date": "", "default_trade_days": 1,
 }
 
 
@@ -658,7 +658,7 @@ def save_etf_config(path: str | Path, cfg: dict) -> dict:
 
 # ---------- 指数配置 ----------
 DEFAULT_INDEX_CONFIG = {
-    "codes": [], "start_date": "", "end_date": "", "lookback_days": 365,
+    "codes": [], "start_date": "", "end_date": "", "lookback_days": 1,
 }
 
 

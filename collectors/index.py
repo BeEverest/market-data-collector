@@ -8,7 +8,7 @@ A 股主要指数日频采集（口径：每个交易日）。
 输出字段：指数代码 / 指数名称 / 交易日期 / 开盘价 / 最高价 / 最低价 /
           收盘价 / 成交量 / 涨跌幅(%) / 数据源 / 采集时间
 
-采集范围：默认近一年（可由 start_date / end_date 覆盖）。
+采集范围：默认最近一个已结束交易日（可由 start_date / end_date 覆盖；lookback_days 为旧版自然日回退，仅兼容用）。
 运维监控：每个指数接口一次调用，记录到 Monitor（状态/失败原因/重试次数/耗时）。
 """
 from __future__ import annotations
@@ -18,6 +18,8 @@ import time
 from datetime import date, datetime, timedelta
 
 import pandas as pd
+
+from collectors.trade_calendar import last_completed_trade_day
 
 from monitor import describe_failure
 
@@ -97,10 +99,11 @@ def collect_index(
     retries: int = 1,
     retry_interval: float = 0.0,
 ) -> pd.DataFrame:
-    """采集主要指数近一年日频数据，返回统一 schema 的 DataFrame。
+    """采集主要指数日频数据，返回统一 schema 的 DataFrame。
 
     codes       : 指数代码列表（6 位）；留空采集全部目录标的
-    start/end   : YYYY-MM-DD；默认近一年（lookback_days 天前 ~ 今天）
+    start/end   : YYYY-MM-DD；两者留空时默认采集最近一个已结束交易日
+                  （凌晨运行时"今天"行情未生成，锚定 T-1 交易日）
     """
     targets = [str(c).strip().zfill(6) for c in (codes or list(INDEX_CATALOG)) if str(c).strip()]
     targets = [c for c in dict.fromkeys(targets) if c in INDEX_CATALOG]
@@ -108,7 +111,13 @@ def collect_index(
         logger.warning("指数代码为空或均不在目录中，未采集")
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
-    if not start_date or not end_date:
+    if not start_date and not end_date:
+        # 默认：最近一个已结束交易日（单日）；显式 start/end 仍最高优先
+        day = last_completed_trade_day()
+        start_date = end_date = day
+        logger.info("指数采集默认区间：%s（最近已结束交易日）", day)
+    elif not start_date or not end_date:
+        # 单边指定时用默认范围补齐另一侧（保留旧行为，按 lookback_days 自然日）
         d_start, d_end = _default_range(lookback_days)
         start_date = start_date or d_start
         end_date = end_date or d_end

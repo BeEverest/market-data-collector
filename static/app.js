@@ -53,6 +53,9 @@ let monitorTotalRows = 0;
 let monitorPageSize = 25;
 let renderedLogCount = 0;
 let logAutoScroll = true;
+let liveLogSeq = 0;          // 全局实时日志已渲染到的序号
+let liveLogTimer = null;     // 常驻轮询：含定时调度在内的所有线程日志
+const LIVE_LOG_LIMIT = 200;  // 与后端环形缓冲一致：保留最近 200 行
 
 /* ---------- 概览 ---------- */
 async function loadStatus() {
@@ -199,12 +202,12 @@ $('importBtn').addEventListener('click', async () => {
 
 function startJob(jobId) {
   currentJobId = jobId;
-  $('logBody').innerHTML = '';
-  renderedLogCount = 0;
-  setLogMarquee(`任务 ${jobId} 已提交，等待日志…`, 'INFO');
+  // 日志统一由全局实时流渲染（含定时调度任务），此处不再清空 logBody，
+  // 以满足「保留最近 200 行」的连续展示。
+  setLogMarquee(`任务 ${jobId} 已提交，日志见下方实时流…`, 'INFO');
   $('logDot').classList.add('live');
   setButtons(false);
-  $('jobHint').textContent = `任务 ${jobId} 运行中…`;
+  $('jobHint').textContent = `任务 ${jobId} 运行中…（含定时调度日志持续刷新）`;
   if (jobPollTimer) clearInterval(jobPollTimer);
   jobPollTimer = setInterval(() => pollJob(jobId), 900);
   pollJob(jobId);
@@ -213,7 +216,7 @@ function startJob(jobId) {
 async function pollJob(jobId) {
   try {
     const job = await api('/api/jobs/' + jobId);
-    renderJobLogs(job.logs || []);
+    // job.logs 不再渲染（已由 /api/live-logs 全局流承接，避免重复）
     if (job.status !== 'running') {
       clearInterval(jobPollTimer);
       jobPollTimer = null;
@@ -225,13 +228,46 @@ async function pollJob(jobId) {
   } catch (e) { console.error(e); }
 }
 
+// 全局实时日志流：常驻轮询，承接定时调度/后台采集/手动任务等所有线程日志。
+async function pollLiveLogs() {
+  try {
+    const res = await api('/api/live-logs?after=' + liveLogSeq);
+    const logs = res.logs || [];
+    if (logs.length) {
+      const body = $('logBody');
+      const empty = body.querySelector('.log-empty');
+      if (empty) empty.remove();
+      for (const l of logs) {
+        body.insertAdjacentHTML('beforeend',
+          `<div class="log-line ${esc(l.level)}"><span class="t">[${esc(l.time)}]</span> ${esc(l.message)}</div>`);
+      }
+      while (body.children.length > LIVE_LOG_LIMIT) body.removeChild(body.firstChild);
+      liveLogSeq = res.latest;
+      const last = logs[logs.length - 1];
+      setLogMarquee(`[${last.time}] ${last.message}`, last.level);
+      if (logAutoScroll) scrollLogToBottom(false);
+    } else if (res.latest > liveLogSeq) {
+      liveLogSeq = res.latest;  // 缓冲滚动导致的纯删除，同步游标
+    }
+  } catch (e) { console.error(e); }
+}
+
+function startLiveLogPolling() {
+  pollLiveLogs();
+  if (liveLogTimer) clearInterval(liveLogTimer);
+  liveLogTimer = setInterval(pollLiveLogs, 1500);
+}
+
 function flashLog(msg, level) {
   const time = new Date().toLocaleTimeString('zh-CN', {hour12: false});
   const body = $('logBody');
+  const empty = body.querySelector('.log-empty');
+  if (empty) empty.remove();
   const div = document.createElement('div');
   div.className = 'log-line ' + level;
   div.textContent = `[${time}] ${msg}`;
   body.appendChild(div);
+  while (body.children.length > LIVE_LOG_LIMIT) body.removeChild(body.firstChild);
   body.scrollTop = body.scrollHeight;
   setLogMarquee(`[${time}] ${msg}`, level);
 }
@@ -473,7 +509,7 @@ async function loadEtfConfig() {
     renderEtfChips();
     $('etfStart').value = etfCfg.start_date || '';
     $('etfEnd').value = etfCfg.end_date || '';
-    $('etfDays').value = etfCfg.default_trade_days || 20;
+    $('etfDays').value = etfCfg.default_trade_days || 1;
   } catch (e) {
     $('etfChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
     console.error(e);
@@ -515,7 +551,7 @@ function etfPayload() {
 
 async function saveEtfConfig(quiet = false) {
   const payload = etfPayload();
-  payload.default_trade_days = payload.default_trade_days ? parseInt(payload.default_trade_days, 10) : 20;
+  payload.default_trade_days = payload.default_trade_days ? parseInt(payload.default_trade_days, 10) : 1;
   try {
     const res = await api('/api/etf/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -579,7 +615,7 @@ async function loadIndexConfig() {
     renderIndexChips();
     $('indexStart').value = indexCfg.start_date || '';
     $('indexEnd').value = indexCfg.end_date || '';
-    $('indexDays').value = indexCfg.lookback_days || 365;
+    $('indexDays').value = indexCfg.lookback_days || 1;
   } catch (e) {
     $('indexChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
     console.error(e);
@@ -609,7 +645,7 @@ async function saveIndexConfig() {
     codes: indexCfg ? indexCfg.items.map(x => x.code) : [],
     start_date: $('indexStart').value.trim(),
     end_date: $('indexEnd').value.trim(),
-    lookback_days: $('indexDays').value.trim() ? parseInt($('indexDays').value.trim(), 10) : 365,
+    lookback_days: $('indexDays').value.trim() ? parseInt($('indexDays').value.trim(), 10) : 1,
   };
   try {
     const res = await api('/api/index/config', {
@@ -1091,6 +1127,7 @@ async function init() {
   monitorDefaultRange();
   await loadData();
   await refresh();
+  startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 200 行
 }
 init();
 setInterval(refresh, 30000);

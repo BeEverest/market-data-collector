@@ -24,8 +24,21 @@ import pandas as pd
 import requests
 
 from monitor import describe_failure, describe_http_failure
+from collectors.rate_limit import wait as throttle_wait
 
 logger = logging.getLogger(__name__)
+
+
+def _response_snippet(exc: Exception, limit: int = 200) -> str:
+    """从请求异常的 response 中提取可读响应片段，用于失败原因补充消息。"""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    try:
+        text = " ".join(str(getattr(resp, "text", "") or "").split())
+    except Exception:
+        return ""
+    return text[:limit]
 
 SSE_URL = "https://query.sse.com.cn/commonQuery.do"
 SZSE_URL = "https://fund.szse.cn/api/report/ShowReport"
@@ -119,6 +132,7 @@ def get_listing_dates(
         rec_ok = False
         for attempt in range(1, retries + 1):
             try:
+                throttle_wait()
                 resp = requests.get(
                     f"https://fundf10.eastmoney.com/jbgk_{code}.html",
                     headers=h, timeout=timeout,
@@ -182,9 +196,14 @@ def fetch_sse_shares(
     session: requests.Session | None = None,
     *,
     monitor=None,
+    target_codes: list[str] | None = None,
 ) -> pd.DataFrame:
-    """获取上交所某一交易日全部 ETF 份额。原始 TOT_VOL 单位为万份，换算为亿份。"""
+    """获取上交所某一交易日全部 ETF 份额。原始 TOT_VOL 单位为万份，换算为亿份。
+
+    target_codes 仅用于在失败时标注受影响标的，不影响请求与返回。
+    """
     sess = session or requests.Session()
+    targets_label = ", ".join(sorted(set(str(c).zfill(6) for c in (target_codes or [])))) or "未指定"
     params = {
         "isPagination": "true",
         "pageHelp.pageSize": "10000",
@@ -200,6 +219,7 @@ def fetch_sse_shares(
 
     for attempt in range(1, retries + 1):
         try:
+            throttle_wait()
             response = sess.get(SSE_URL, params=params, headers=SSE_HEADERS, timeout=timeout)
             response.raise_for_status()
             records = response.json().get("result") or []
@@ -227,14 +247,21 @@ def fetch_sse_shares(
         except Exception as exc:
             last_exc = exc
             if attempt < retries:
-                time.sleep(retry_interval)
+                # 指数退避 + 抖动，避免固定节律被反爬识别
+                time.sleep(retry_interval * (2 ** (attempt - 1)))
 
     _report(monitor, key="etf.sse_shares", name=f"上交所ETF日份额({trade_date})",
             status="failed", params={
                 "trade_date": trade_date, "market": "SH", "url": SSE_URL,
                 "sqlId": params["sqlId"], "pageSize": params["pageHelp.pageSize"],
+                "受影响标的": targets_label,
             }, started=started,
-            attempts=retries, error=describe_http_failure(last_exc, url=SSE_URL))
+            attempts=retries,
+            error=describe_http_failure(
+                last_exc, url=SSE_URL,
+                response_text=_response_snippet(last_exc),
+                extra=f"受影响标的={targets_label}",
+            ))
     logger.warning("上交所 %s 份额采集失败：%s", trade_date, last_exc)
     return _empty_shares()
 
@@ -248,9 +275,15 @@ def fetch_szse_shares(
     session: requests.Session | None = None,
     *,
     monitor=None,
+    target_codes: list[str] | None = None,
 ) -> pd.DataFrame:
-    """获取深交所日期区间内全部 ETF 每日份额（一次请求可返回多日）。"""
+    """获取深交所日期区间内全部 ETF 每日份额（一次请求可返回多日）。
+
+    target_codes 为本批次关注的标的，仅用于在失败时明确列出「受影响的标的」，
+    便于监控看板定位问题范围；不参与请求参数，也不过滤返回结果。
+    """
     sess = session or requests.Session()
+    targets_label = ", ".join(sorted(set(str(c).zfill(6) for c in (target_codes or [])))) or "未指定"
     params = {
         "CATALOGID": "scsj_fund_jjgm",
         "SHOWTYPE": "xlsx",
@@ -265,6 +298,7 @@ def fetch_szse_shares(
 
     for attempt in range(1, retries + 1):
         try:
+            throttle_wait()
             response = sess.get(SZSE_URL, params=params, headers=SZSE_HEADERS, timeout=timeout)
             response.raise_for_status()
             df = pd.read_excel(io.BytesIO(response.content), engine="openpyxl", dtype={"基金代码": str})
@@ -278,27 +312,33 @@ def fetch_szse_shares(
             szse_params = {
                 "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
                 "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
-                "jjlb": params["jjlb"],
+                "jjlb": params["jjlb"], "受影响标的": targets_label,
             }
             _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
                     status="success" if not out.empty else "failed",
                     params=szse_params, started=started,
                     attempts=attempt, rows=len(out),
-                    error="" if not out.empty else "接口返回空数据（无有效记录）")
+                    error="" if not out.empty else f"接口返回空数据（无有效记录） | 受影响标的={targets_label}")
             return out
         except Exception as exc:
             last_exc = exc
             if attempt < retries:
-                time.sleep(retry_interval)
+                time.sleep(retry_interval * (2 ** (attempt - 1)))
 
     _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
             status="failed", params={
                 "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
                 "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
-                "jjlb": params["jjlb"],
+                "jjlb": params["jjlb"], "受影响标的": targets_label,
             }, started=started,
-            attempts=retries, error=describe_http_failure(last_exc, url=SZSE_URL))
-    logger.warning("深交所 %s ~ %s 份额采集失败：%s", start, end, last_exc)
+            attempts=retries,
+            error=describe_http_failure(
+                last_exc, url=SZSE_URL,
+                response_text=_response_snippet(last_exc),
+                extra=f"受影响标的={targets_label}",
+            ))
+    logger.warning("深交所 %s ~ %s 份额采集失败（受影响标的：%s）：%s",
+                   start, end, targets_label, last_exc)
     return _empty_shares()
 
 
@@ -329,6 +369,7 @@ def fetch_nav(
         try:
             records: list[dict] = []
             while True:
+                throttle_wait()
                 query = sess.get(NAV_URL, params=params, headers=NAV_HEADERS, timeout=timeout)
                 query.raise_for_status()
                 payload = query.json()
@@ -360,14 +401,18 @@ def fetch_nav(
         except Exception as exc:
             last_exc = exc
             if attempt < retries:
-                time.sleep(retry_interval)
+                time.sleep(retry_interval * (2 ** (attempt - 1)))
 
     _report(monitor, key=f"etf.nav.{code}", name=f"天天基金日净值({code})",
             status="failed", params={
                 "code": code, "start": start, "end": end, "url": NAV_URL,
                 "source": "天天基金", "page_size": params["pageSize"],
+                "受影响标的": str(code).zfill(6),
             }, started=started, attempts=retries,
-            error=describe_http_failure(last_exc, url=NAV_URL))
+            error=describe_http_failure(
+                last_exc, url=NAV_URL, response_text=_response_snippet(last_exc),
+                extra=f"受影响标的={str(code).zfill(6)}",
+            ))
     logger.warning("基金 %s 净值采集失败：%s", code, last_exc)
     return _empty_nav()
 
@@ -439,9 +484,14 @@ def collect_etf(
     sse_target_dates = (
         [d for d in trade_dates if d in set(sse_dates)] if sse_dates is not None else trade_dates
     )
+    # 按市场拆分目标标的，失败时用于明确列出「受影响的标的」
+    sh_targets = [c for c in sorted(target_codes) if c.startswith(("5", "6"))]
+    sz_targets = [c for c in sorted(target_codes) if c.startswith(("1", "8"))]
+
     sse_frames = []
     for index, trade_date in enumerate(sse_target_dates, start=1):
-        frame = fetch_sse_shares(trade_date, retries, retry_interval, timeout, session, monitor=monitor)
+        frame = fetch_sse_shares(trade_date, retries, retry_interval, timeout, session,
+                                 monitor=monitor, target_codes=sh_targets)
         if not frame.empty:
             sse_frames.append(frame)
         if index % 20 == 0:
@@ -449,7 +499,8 @@ def collect_etf(
 
     # 深市：一次拉取整个区间（部分重跑时用指定区间）
     sz_start, sz_end = szse_range if szse_range else (effective_start or start, end)
-    szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session, monitor=monitor)
+    szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session,
+                                   monitor=monitor, target_codes=sz_targets)
 
     frames = sse_frames + ([szse_frame] if not szse_frame.empty else [])
     if not frames:

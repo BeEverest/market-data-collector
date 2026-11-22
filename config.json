@@ -88,7 +88,11 @@
   "fetch": {
     "retry": 3,
     "retry_interval_sec": 2,
-    "timeout_sec": 15
+    "timeout_sec": 15,
+    "min_interval_sec": 1.2,
+    "min_interval_sec_help": "相邻外部接口请求的最小间隔（秒）。交易所接口（尤其深交所）对密集请求会断连，1.2s+抖动可显著降低失败率；设为 0 关闭节流",
+    "jitter_sec": 0.5,
+    "jitter_sec_help": "在最小间隔之上叠加的随机抖动上限（秒），避免机械固定节律被反爬识别"
   },
   "monitor": {
     "history_file": "output/monitor/interface_runs.jsonl",

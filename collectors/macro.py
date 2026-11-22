@@ -216,8 +216,15 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
                 time.sleep(retry_interval)
 
     if last_exc is not None:
+        resp = getattr(last_exc, "response", None)
+        snippet = ""
+        if resp is not None:
+            try:
+                snippet = " ".join(str(getattr(resp, "text", "") or "").split())[:200]
+            except Exception:
+                snippet = ""
         reason = describe_http_failure(
-            last_exc, url=FRED_CSV_URL if is_fred else "",
+            last_exc, url=FRED_CSV_URL if is_fred else "", response_text=snippet,
         )
     else:
         reason = describe_failure(None, empty=True)

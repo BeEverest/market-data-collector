@@ -336,8 +336,12 @@ def describe_http_failure(
     url: str = "",
     response_text: str = "",
     max_text: int = 300,
+    extra: str = "",
 ) -> str:
-    """从 requests 异常或响应中提取 HTTP 状态与响应片段，生成失败原因。"""
+    """从 requests 异常或响应中提取 HTTP 状态与响应片段，生成失败原因。
+
+    extra 为附加上下文（如受影响标的），原样透传给 describe_failure。
+    """
     status = None
     resp = getattr(exc, "response", None)
     if resp is not None:
@@ -354,4 +358,5 @@ def describe_http_failure(
     snippet = ""
     if response_text:
         snippet = "响应片段=" + " ".join(response_text.split())[:max_text]
-    return describe_failure(exc, url=url, http_status=status, extra=snippet)
+    parts = [p for p in (snippet, extra) if p]
+    return describe_failure(exc, url=url, http_status=status, extra=" | ".join(parts))

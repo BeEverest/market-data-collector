@@ -30,6 +30,7 @@ from collectors import collect_etf, collect_index, collect_macro
 from collectors.etf import fetch_nav, get_trade_dates
 from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
+from collectors.rate_limit import configure as configure_rate_limit
 from exporter import export_results, prune_snapshots
 from monitor import Monitor
 
@@ -149,6 +150,14 @@ def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str])
     return out.reset_index(drop=True)
 
 
+def _apply_rate_limit(fetch_cfg: dict) -> None:
+    """按配置启用请求节流（最小间隔 + 抖动），默认关闭以兼容测试。"""
+    configure_rate_limit(
+        min_interval=fetch_cfg.get("min_interval_sec", 0.0),
+        jitter=fetch_cfg.get("jitter_sec", 0.0),
+    )
+
+
 def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False,
              index_only=False, start_date=None, end_date=None) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """执行一次完整采集，返回 (宏观_df, ETF_df, 指数_df)。
@@ -160,6 +169,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     etf_df = pd.DataFrame()
     index_df = pd.DataFrame()
     fetch_cfg = config.get("fetch", {})
+    _apply_rate_limit(fetch_cfg)
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
     timeout = fetch_cfg.get("timeout_sec", 15)
@@ -312,6 +322,7 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
 
     retry_monitor = Monitor(BASE_DIR, run_type="retry", history_path=history_path, db_path=db_path)
     fetch_cfg = config.get("fetch", {})
+    _apply_rate_limit(fetch_cfg)
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
     timeout = fetch_cfg.get("timeout_sec", 15)

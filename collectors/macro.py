@@ -6,7 +6,7 @@
   外贸：出口额、进口额、进出口总额
   消费与物价：社会消费品零售总额、CPI、PPI
   景气与市场：制造业PMI、非制造业PMI、A股总市值、央行黄金储备
-  增长与美国：中国GDP、美国GDP、美国CPI/核心CPI/PPI、非农新增就业、利率预测
+  增长与美国：中国GDP、美国GDP、美国CPI/核心CPI/PPI、非农新增就业、联邦基金目标利率上下限
 
 统一输出：指标代码 / 指标名称 / 日期 / 数值 / 单位 / 同比(%) / 环比(%) / 数据源 / 采集时间
 
@@ -37,7 +37,6 @@ PBC = "中国人民银行（akshare 封装）"
 NBS = "国家统计局（akshare 封装）"
 EXCHANGE = "交易所/第三方（akshare 封装）"
 FRED = "FRED（美联储 / BLS / BEA）"
-US_CALENDAR = "美国经济日历（akshare 封装）"
 
 # 接口键 -> 中文名称，用于监控报告
 IFACE_NAMES = {
@@ -58,7 +57,8 @@ IFACE_NAMES = {
     "fred_CPILFESL": "美国核心CPI指数(FRED)",
     "fred_PPIACO": "美国PPI指数(FRED)",
     "fred_PAYEMS": "美国非农就业人数(FRED)",
-    "macro_bank_usa_interest_rate": "美联储利率决议（含预测值）",
+    "fred_DFEDTARU": "美国联邦基金目标利率上限(FRED)",
+    "fred_DFEDTARL": "美国联邦基金目标利率下限(FRED)",
 }
 
 # 权威指标目录：供 Web 精确采集下拉与代码→接口推导使用。
@@ -87,7 +87,8 @@ CATALOG: list[dict] = [
     {"code": "US_CORE_CPI", "name": "美国核心CPI指数", "iface": "fred_CPILFESL", "unit": "1982-84=100", "granularity": "月度", "source": FRED},
     {"code": "US_PPI", "name": "美国PPI指数", "iface": "fred_PPIACO", "unit": "指数", "granularity": "月度", "source": FRED},
     {"code": "US_NONFARM", "name": "美国非农新增就业", "iface": "fred_PAYEMS", "unit": "千人", "granularity": "月度", "source": FRED},
-    {"code": "US_RATE_FORECAST", "name": "美国利率预测", "iface": "macro_bank_usa_interest_rate", "unit": "%", "granularity": "会议", "source": US_CALENDAR + "（预测值）"},
+    {"code": "US_RATE_UPPER", "name": "美国联邦基金目标利率上限", "iface": "fred_DFEDTARU", "unit": "%", "granularity": "月度", "source": FRED},
+    {"code": "US_RATE_LOWER", "name": "美国联邦基金目标利率下限", "iface": "fred_DFEDTARL", "unit": "%", "granularity": "月度", "source": FRED},
 ]
 
 CODE_TO_IFACE: dict[str, str] = {item["code"]: item["iface"] for item in CATALOG}
@@ -106,6 +107,8 @@ FRED_SERIES = {
     "fred_CPILFESL": "CPILFESL",                # 美国核心CPI指数（季调）
     "fred_PPIACO": "PPIACO",                    # 美国PPI指数（全部商品）
     "fred_PAYEMS": "PAYEMS",                    # 美国非农就业人数（千人）
+    "fred_DFEDTARU": "DFEDTARU",                # 美国联邦基金目标利率上限
+    "fred_DFEDTARL": "DFEDTARL",                # 美国联邦基金目标利率下限
 }
 
 
@@ -292,6 +295,17 @@ def collect_macro(
             mom = (value / val_map[mom_key] - 1) * 100 if mom_key in val_map else None
             add(code, name, r["日期"], value, unit, yoy, mom, source)
 
+    def add_fred_monthly_latest(code, name, fn, unit, source):
+        """FRED 日频序列按月取最新有效值，避免同月重复行。"""
+        d = fetch(fn)
+        if d.empty or not {"日期", "数值"}.issubset(d.columns):
+            return
+        d = d.copy()
+        d["_月"] = d["日期"].astype(str).str[:7]
+        d = d.dropna(subset=["数值"]).sort_values("日期").drop_duplicates("_月", keep="last")
+        for _, r in d.iterrows():
+            add(code, name, r["日期"], r["数值"], unit, source=source)
+
     # ============ 央行：货币供应量 M0 / M1 / M2 ============
     ms = fetch("macro_china_money_supply")
     money_specs = [
@@ -452,12 +466,11 @@ def collect_macro(
             add("US_NONFARM", "美国非农新增就业", r["日期"], change.iloc[i], "千人",
                 source=FRED)
 
-    # ============ 美国利率预测（美联储利率决议预测值） ============
-    rate = fetch("macro_bank_usa_interest_rate")
-    if not rate.empty and {"日期", "预测值"}.issubset(rate.columns):
-        for _, r in rate.iterrows():
-            add("US_RATE_FORECAST", "美国利率预测", r["日期"], r["预测值"], "%",
-                source=US_CALENDAR + "（预测值）")
+    # ============ 美国实际利率上下限（联邦基金目标利率，FRED 日频按月取最新） ============
+    add_fred_monthly_latest(
+        "US_RATE_UPPER", "美国联邦基金目标利率上限", "fred_DFEDTARU", "%", FRED)
+    add_fred_monthly_latest(
+        "US_RATE_LOWER", "美国联邦基金目标利率下限", "fred_DFEDTARL", "%", FRED)
 
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     if not df.empty:

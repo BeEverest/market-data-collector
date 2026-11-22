@@ -84,6 +84,70 @@ def get_fund_name_map() -> dict[str, str]:
     return _name_map_cache
 
 
+_listing_date_cache: dict[str, str] = {}
+
+
+def get_listing_dates(
+    codes: list[str],
+    *,
+    monitor=None,
+    retries: int = 2,
+    timeout: float = 12.0,
+) -> dict[str, str]:
+    """解析 ETF 上市/成立日期（YYYY-MM-DD）。
+
+    数据源：天天基金基金档案页（fundf10.eastmoney.com/jbgk_<code>.html）的「成立日期」。
+    ETF 的交易所上市日通常紧随成立日，成立之前必然无有效份额/净值，故以成立日作为
+    采集下界基准，保守且可靠。解析结果带模块级缓存，避免重复请求。
+    返回 {6位基金代码: 日期}，解析失败的基金不纳入（采集时不过滤）。
+    """
+    import re
+
+    todo = [str(c).strip().zfill(6) for c in codes if str(c).strip()]
+    result = {c: _listing_date_cache[c] for c in todo if c in _listing_date_cache}
+    missing = [c for c in todo if c not in result]
+    if not missing:
+        return result
+
+    h = {
+        "User-Agent": _UA,
+        "Referer": "https://fundf10.eastmoney.com/",
+    }
+    pattern = re.compile(r"成立日期[：:]\s*<span>(\d{4}-\d{2}-\d{2})</span>")
+    started = time.time()
+    for code in missing:
+        rec_ok = False
+        for attempt in range(1, retries + 1):
+            try:
+                resp = requests.get(
+                    f"https://fundf10.eastmoney.com/jbgk_{code}.html",
+                    headers=h, timeout=timeout,
+                )
+                resp.encoding = "utf-8"
+                text = re.sub(r"\s+", " ", resp.text)
+                m = pattern.search(text)
+                if m:
+                    _listing_date_cache[code] = m.group(1)
+                    result[code] = m.group(1)
+                    rec_ok = True
+                    break
+            except Exception as exc:
+                if attempt == retries:
+                    logger.debug("基金 %s 上市日期解析失败：%s", code, exc)
+            time.sleep(0.2)
+        if not rec_ok:
+            _report(monitor, key=f"etf.listing_date.{code}",
+                    name=f"基金上市日期({code})", status="failed",
+                    params={"code": code}, started=started, attempts=retries,
+                    error="档案页未解析到成立日期")
+        else:
+            _report(monitor, key=f"etf.listing_date.{code}",
+                    name=f"基金上市日期({code})", status="success",
+                    params={"code": code, "listing_date": result[code]},
+                    started=started, attempts=attempt, rows=1)
+    return result
+
+
 def get_trade_dates(start: str, end: str | None = None, *, monitor=None) -> list[str]:
     """返回区间内交易日列表，格式 YYYY-MM-DD。"""
     import akshare as ak
@@ -298,6 +362,7 @@ def collect_etf(
     sse_dates: list[str] | None = None,
     szse_range: tuple[str, str] | None = None,
     nav_codes: list[str] | None = None,
+    listing_dates: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """按交易日采集指定 ETF 的份额、单位净值与规模。
 
@@ -305,6 +370,8 @@ def collect_etf(
       sse_dates  - 仅采集这些交易日的沪市份额（None=区间内全部交易日）
       szse_range - 深市份额采集区间 (start, end)（None=默认区间）
       nav_codes  - 仅采集这些基金的日净值（None=全部目标基金）
+      listing_dates - {基金代码: 上市/成立日}；早于该日期的交易日记录会被忽略。
+                      传入的 dict 会被原地补全解析结果，供调用方持久化。
     """
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     end = end_date or datetime.now().strftime("%Y-%m-%d")
@@ -315,13 +382,35 @@ def collect_etf(
         history = get_trade_dates("2000-01-01", end, monitor=monitor)
         start = history[-default_trade_days] if len(history) >= default_trade_days else (history[0] if history else end)
 
-    trade_dates = get_trade_dates(start, end, monitor=monitor)
-    logger.info("ETF 日频采集区间：%s ~ %s，共 %d 个交易日", start, end, len(trade_dates))
-    if not trade_dates:
-        return pd.DataFrame(columns=OUTPUT_COLUMNS)
-
     target_codes = {str(code).strip().zfill(6) for code in codes if str(code).strip()}
     session = requests.Session()
+
+    # 解析并补全上市/成立日期；调用方传入的 dict 会被原地更新，便于持久化到配置
+    if listing_dates is None:
+        listing_dates = {}
+    resolved = get_listing_dates(sorted(target_codes), monitor=monitor)
+    for code, date in resolved.items():
+        listing_dates[code] = date
+    if listing_dates:
+        logger.info("ETF 上市日期基准：%d 只已解析", len(listing_dates))
+
+    # 抓取下界裁剪到「目标基金中最早的上市日」，避免请求全部基金都未上市的交易日
+    effective_start = start
+    if listing_dates:
+        earliest = min(listing_dates.values())
+        if effective_start is None or earliest > effective_start:
+            logger.info("采集区间起点由上市日裁剪：%s -> %s", effective_start or "默认", earliest)
+            effective_start = earliest
+
+    # 裁剪后起点已晚于结束日：用户指定范围全部早于上市日，无需任何接口调用
+    if effective_start and end and effective_start > end:
+        logger.info("采集区间 %s ~ %s 全部早于基金上市日，忽略全部记录", start, end)
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
+    trade_dates = get_trade_dates(effective_start or "2000-01-01", end, monitor=monitor)
+    logger.info("ETF 日频采集区间：%s ~ %s，共 %d 个交易日", effective_start or start, end, len(trade_dates))
+    if not trade_dates:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
     # 沪市：逐交易日拉取份额（部分重跑时只取指定交易日）
     sse_target_dates = (
@@ -336,7 +425,7 @@ def collect_etf(
             logger.info("上交所份额采集进度：%d/%d", index, len(sse_target_dates))
 
     # 深市：一次拉取整个区间（部分重跑时用指定区间）
-    sz_start, sz_end = szse_range if szse_range else (start, end)
+    sz_start, sz_end = szse_range if szse_range else (effective_start or start, end)
     szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session, monitor=monitor)
 
     frames = sse_frames + ([szse_frame] if not szse_frame.empty else [])
@@ -361,12 +450,26 @@ def collect_etf(
     nav_target_codes = sorted(nav_codes) if nav_codes is not None else sorted(shares["基金代码"].unique())
     nav_frames = []
     for code in nav_target_codes:
-        frame = fetch_nav(code, start, end, retries, retry_interval, timeout, session, monitor=monitor)
+        nav_start = start
+        listing = listing_dates.get(code)
+        if listing and start and listing > start:
+            nav_start = listing  # 净值只从上市/成立日起取
+        frame = fetch_nav(code, nav_start, end, retries, retry_interval, timeout, session, monitor=monitor)
         if not frame.empty:
             nav_frames.append(frame)
     nav_all = pd.concat(nav_frames, ignore_index=True) if nav_frames else _empty_nav()
 
     merged = shares.merge(nav_all, on=["基金代码", "交易日期"], how="left")
+
+    # 忽略早于该基金上市/成立日的交易日记录（成立前无有效份额与净值）
+    before = len(merged)
+    if listing_dates:
+        floor = merged["基金代码"].map(listing_dates)
+        mask = floor.isna() | (merged["交易日期"] >= floor)
+        ignored = int((~mask).sum())
+        merged = merged[mask]
+        if ignored:
+            logger.info("已忽略早于上市日的记录 %d 行", ignored)
     merged["规模(亿元)"] = merged["份额(亿份)"] * merged["单位净值(元)"]
     merged["数据源"] = "份额：交易所（上交所/深交所）；净值：天天基金（东方财富）"
     merged["采集时间"] = fetch_time
@@ -374,5 +477,5 @@ def collect_etf(
     result = merged[OUTPUT_COLUMNS].sort_values(
         ["基金代码", "交易日期"], ascending=[True, False]
     ).reset_index(drop=True)
-    logger.info("ETF 日频数据合并完成：%d 行", len(result))
+    logger.info("ETF 日频数据合并完成：%d 行（过滤前 %d 行）", len(result), before)
     return result

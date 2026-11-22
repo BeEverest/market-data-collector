@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -29,8 +30,13 @@ BASE_DIR = Path(__file__).resolve().parent
 import sys
 sys.path.insert(0, str(BASE_DIR))
 
-from main import BASE_DIR as MAIN_BASE, _collect, _finish, _latest_csv, _merge_patch, load_config
+from main import (
+    BASE_DIR as MAIN_BASE, _collect, _finish, _latest_csv, _merge_patch,
+    collect_interface, load_config,
+)
 from monitor import Monitor
+from collectors.macro import catalog as macro_catalog
+from collectors.etf import get_fund_name_map
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
@@ -53,6 +59,30 @@ def _history_path(config: dict) -> Path:
     return BASE_DIR / config.get("monitor", {}).get(
         "history_file", "output/monitor/interface_runs.jsonl"
     )
+
+
+def _save_config(cfg: dict) -> None:
+    CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _etf_config_view() -> dict:
+    cfg = _cfg()
+    etf = cfg.get("etf", {})
+    codes = [str(c).strip().zfill(6) for c in etf.get("codes", []) if str(c).strip()]
+    name_map = get_fund_name_map()
+    listing = {str(k).zfill(6): v for k, v in (etf.get("listing_dates") or {}).items()}
+    items = [{
+        "code": c,
+        "name": name_map.get(c, ""),
+        "listing_date": listing.get(c, ""),
+    } for c in codes]
+    return {
+        "codes": codes,
+        "items": items,
+        "start_date": etf.get("start_date", ""),
+        "end_date": etf.get("end_date", ""),
+        "default_trade_days": etf.get("default_trade_days", 20),
+    }
 
 
 # ---------------- 日志捕获 ----------------
@@ -151,6 +181,12 @@ def _do_retry() -> str:
     return "重跑完成" if code == 0 else "重跑后仍有失败接口"
 
 
+def _do_collect_interface(category: str, codes: list[str],
+                          start: str | None, end: str | None) -> str:
+    config = _cfg()
+    return collect_interface(config, category, codes, start, end)
+
+
 # ---------------- 数据读取 ----------------
 def _read_csv(kind: str) -> pd.DataFrame:
     path = _latest_csv(kind, _cfg())
@@ -166,7 +202,24 @@ def _read_csv(kind: str) -> pd.DataFrame:
 def _frame_to_records(df: pd.DataFrame, limit: int = 5000) -> list[dict]:
     if df.empty:
         return []
-    return df.head(limit).where(pd.notna(df.head(limit)), None).to_dict("records")
+    import numpy as np
+    head = df.head(limit)
+    records = []
+    for row in head.itertuples(index=False, name=None):
+        record = {}
+        for col, val in zip(head.columns, row):
+            if val is None:
+                record[col] = None
+            elif isinstance(val, (float, np.floating)) and not np.isfinite(val):
+                record[col] = None  # NaN / ±Inf 非法 JSON
+            elif isinstance(val, (np.integer,)):
+                record[col] = int(val)
+            elif isinstance(val, (np.bool_,)):
+                record[col] = bool(val)
+            else:
+                record[col] = val
+        records.append(record)
+    return records
 
 
 # ---------------- 定时调度 ----------------
@@ -277,9 +330,24 @@ def api_monitor_failed():
     return {"tasks": monitor.failed_tasks()}
 
 
+def _paged(df: pd.DataFrame, page: int, page_size: int) -> dict:
+    """分页返回 DataFrame，附带 total/pages/page/page_size 元信息。"""
+    total = len(df)
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)  # 单页上限 100 行
+    pages = max(1, (total + page_size - 1) // page_size)
+    if page > pages:
+        page = pages
+    chunk = df.iloc[(page - 1) * page_size: page * page_size]
+    return {
+        "total": total, "pages": pages, "page": page, "page_size": page_size,
+        "rows": _frame_to_records(chunk, page_size),
+    }
+
+
 @app.get("/api/data/macro")
 def api_data_macro(code: str | None = None, start: str | None = None,
-                   end: str | None = None, limit: int = 5000):
+                   end: str | None = None, page: int = 1, page_size: int = 25):
     df = _read_csv("macro")
     if code and not df.empty:
         df = df[df["指标代码"] == code]
@@ -287,12 +355,12 @@ def api_data_macro(code: str | None = None, start: str | None = None,
         df = df[df["日期"] >= start]
     if end and not df.empty:
         df = df[df["日期"] <= end]
-    return {"total": len(df), "rows": _frame_to_records(df, limit)}
+    return _paged(df, page, page_size)
 
 
 @app.get("/api/data/etf")
 def api_data_etf(code: str | None = None, start: str | None = None,
-                 end: str | None = None, limit: int = 5000):
+                 end: str | None = None, page: int = 1, page_size: int = 50):
     df = _read_csv("etf")
     if code and not df.empty:
         df = df[df["基金代码"] == code]
@@ -300,7 +368,7 @@ def api_data_etf(code: str | None = None, start: str | None = None,
         df = df[df["交易日期"] >= start]
     if end and not df.empty:
         df = df[df["交易日期"] <= end]
-    return {"total": len(df), "rows": _frame_to_records(df, limit)}
+    return _paged(df, page, page_size)
 
 
 @app.get("/api/files")
@@ -351,6 +419,143 @@ def api_collect(payload: dict | None = None):
     macro_only = bool(payload.get("macro_only", False))
     etf_only = bool(payload.get("etf_only", False))
     job_id = _submit("collect", lambda: _do_collect(macro_only, etf_only))
+    return {"job_id": job_id}
+
+
+@app.get("/api/catalog")
+def api_catalog():
+    """返回可精确采集的指标/基金清单，供前端下拉。"""
+    cfg = _cfg()
+    macro_items = macro_catalog()
+    # 用最新数据补充每个指标的数据条数与日期范围，便于用户选择
+    macro_df = _read_csv("macro")
+    if not macro_df.empty:
+        stats = macro_df.groupby("指标代码")["日期"].agg(["count", "min", "max"]).to_dict("index")
+        for item in macro_items:
+            s = stats.get(item["code"])
+            if s:
+                item["rows"] = int(s["count"])
+                item["last_date"] = str(s["max"])
+                item["first_date"] = str(s["min"])
+    for item in macro_items:
+        item.setdefault("rows", 0)
+        item.setdefault("last_date", "")
+        item.setdefault("first_date", "")
+
+    etf_codes = [str(c).strip().zfill(6) for c in cfg.get("etf", {}).get("codes", [])]
+    name_map = get_fund_name_map()
+    listing = {str(k).zfill(6): v for k, v in (cfg.get("etf", {}).get("listing_dates") or {}).items()}
+    etf_df = _read_csv("etf")
+    etf_items = []
+    for code in etf_codes:
+        item = {
+            "code": code, "name": name_map.get(code, ""), "iface": "etf.shares+nav",
+            "unit": "亿份 / 亿元", "granularity": "交易日",
+            "source": "上交所/深交所份额 + 天天基金净值",
+            "listing_date": listing.get(code, ""),
+        }
+        if not etf_df.empty and "基金代码" in etf_df.columns:
+            sub = etf_df[etf_df["基金代码"].astype(str).str.zfill(6) == code]
+            if not sub.empty:
+                item["rows"] = int(len(sub))
+                item["last_date"] = str(sub["交易日期"].max())
+                item["first_date"] = str(sub["交易日期"].min())
+        item.setdefault("rows", 0)
+        item.setdefault("last_date", "")
+        item.setdefault("first_date", "")
+        etf_items.append(item)
+
+    return {
+        "macro": macro_items,
+        "etf": etf_items,
+        "defaults": {
+            "macro_start": cfg.get("macro", {}).get("start_date", ""),
+            "etf_start": cfg.get("etf", {}).get("start_date", ""),
+            "etf_end": cfg.get("etf", {}).get("end_date", ""),
+        },
+        "keep_snapshots": cfg.get("output", {}).get("keep_snapshots", 3),
+    }
+
+
+@app.get("/api/etf/config")
+def api_etf_config_get():
+    """返回当前 ETF 标的配置（代码、名称、上市日期、区间）。"""
+    return _etf_config_view()
+
+
+@app.post("/api/etf/config")
+def api_etf_config_set(payload: dict):
+    """灵活配置 ETF：增删改代码清单、日期区间、默认交易日数。"""
+    cfg = _cfg()
+    etf = cfg.setdefault("etf", {})
+
+    updated = False
+    if "codes" in payload:
+        raw = payload["codes"]
+        if isinstance(raw, str):
+            raw = [c.strip() for c in raw.split(",") if c.strip()]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="codes 应为数组或逗号分隔字符串")
+        codes: list[str] = []
+        for c in raw:
+            s = str(c).strip()
+            if not s:
+                continue
+            if not s.isdigit() or len(s) > 6:
+                raise HTTPException(status_code=400, detail=f"无效的基金代码：{c}")
+            s = s.zfill(6)
+            if s not in codes:
+                codes.append(s)
+        if len(codes) > 50:
+            raise HTTPException(status_code=400, detail="ETF 标的数量上限 50 只")
+        etf["codes"] = codes
+        # 清理已移除代码的上市日期缓存
+        listing = etf.get("listing_dates") or {}
+        etf["listing_dates"] = {k: v for k, v in listing.items() if k in codes}
+        updated = True
+
+    for key in ("start_date", "end_date"):
+        if key in payload:
+            val = str(payload[key] or "").strip()
+            if val:
+                try:
+                    datetime.strptime(val, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"{key} 格式应为 YYYY-MM-DD")
+            etf[key] = val
+            updated = True
+
+    if "default_trade_days" in payload:
+        try:
+            n = int(payload["default_trade_days"])
+            if not (1 <= n <= 500):
+                raise ValueError
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="default_trade_days 应为 1~500 的整数")
+        etf["default_trade_days"] = n
+        updated = True
+
+    if not updated:
+        raise HTTPException(status_code=400, detail="无有效配置项")
+
+    _save_config(cfg)
+    logger.info("ETF 配置已更新：%d 只标的", len(etf.get("codes", [])))
+    return {"ok": True, "config": _etf_config_view()}
+
+
+@app.post("/api/collect/interface")
+def api_collect_interface(payload: dict):
+    """按类别 + 指标/基金代码 + 时间范围精确采集。"""
+    category = payload.get("category")
+    if category not in ("macro", "etf"):
+        raise HTTPException(status_code=400, detail="category 应为 macro 或 etf")
+    raw_codes = payload.get("codes") or []
+    if isinstance(raw_codes, str):
+        raw_codes = [c.strip() for c in raw_codes.split(",") if c.strip()]
+    codes = [str(c).strip() for c in raw_codes if str(c).strip()]
+    start = (payload.get("start") or "").strip() or None
+    end = (payload.get("end") or "").strip() or None
+    job_id = _submit("interface", lambda: _do_collect_interface(category, codes, start, end))
     return {"job_id": job_id}
 
 
@@ -410,7 +615,8 @@ def main():
     args = parser.parse_args()
     cfg = _cfg().get("web", {})
     host = args.host or cfg.get("host", "0.0.0.0")
-    port = args.port or cfg.get("port", 8000)
+    env_port = os.environ.get("PORT")
+    port = args.port or (int(env_port) if env_port else cfg.get("port", 8000))
     scheduler.start()
     logger.info("投研大盘数据采集系统启动：http://127.0.0.1:%d", port)
     uvicorn.run(app, host=host, port=port, log_level="warning")

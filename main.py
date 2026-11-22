@@ -26,7 +26,8 @@ sys.path.insert(0, str(BASE_DIR))
 
 from collectors import collect_etf, collect_macro
 from collectors.etf import fetch_nav, get_trade_dates
-from exporter import export_results
+from collectors.macro import CODE_TO_IFACE
+from exporter import export_results, prune_snapshots
 from monitor import Monitor
 
 logging.basicConfig(
@@ -53,6 +54,23 @@ def _latest_csv(kind: str, config: dict) -> Path | None:
     label = "宏观数据" if kind == "macro" else "ETF规模"
     candidates = sorted(out_dir.glob(f"{prefix}_{label}_*.csv"))
     return candidates[-1] if candidates else None
+
+
+def _save_listing_dates(config: dict, config_path: str = "config.json") -> None:
+    """仅把 ETF 上市日期回写配置文件，保留文件当前其它字段。"""
+    cfg_path = Path(config_path)
+    if not cfg_path.is_absolute():
+        cfg_path = BASE_DIR / cfg_path
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as handle:
+            disk = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        disk = config
+    disk.setdefault("etf", {})["listing_dates"] = config.get("etf", {}).get("listing_dates", {})
+    try:
+        cfg_path.write_text(json.dumps(disk, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("上市日期回写配置失败：%s", exc)
 
 
 def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
@@ -111,6 +129,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             logger.warning("配置中未填写 ETF 代码（etf.codes），将不采集 ETF 数据")
         else:
             logger.info("开始采集 %d 只 ETF 的日频份额与规模...", len(codes))
+            listing_dates = etf_cfg.get("listing_dates", {}) or {}
             etf_df = collect_etf(
                 codes=codes,
                 start_date=etf_cfg.get("start_date") or None,
@@ -120,7 +139,11 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 retry_interval=retry_interval,
                 timeout=timeout,
                 monitor=monitor,
+                listing_dates=listing_dates,
             )
+            # 回写新解析的上市日期到配置，避免每次重新请求档案页
+            etf_cfg["listing_dates"] = listing_dates
+            _save_listing_dates(config)
             logger.info("ETF 日频数据采集完成：%d 行", len(etf_df))
     return macro_df, etf_df
 
@@ -134,6 +157,8 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
     out_root = BASE_DIR / config.get("output", {}).get("dir", "output")
     report = monitor.export_report(BASE_DIR, run_ts, output_dir=out_root)
     files.append(str(report))
+    # 只保留最近 N 份数据快照（CSV/Excel/监控报告），监控历史 JSONL 不清
+    prune_snapshots(BASE_DIR, config)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     logger.info("接口监控：%d 次调用，%d 次失败，报告=%s", len(monitor.records), failed, report)
     logger.info("全部完成，生成文件：")
@@ -265,6 +290,93 @@ def _retry_failed(config: dict, monitor_cfg: dict) -> int:
     return 0 if failed == 0 else 1
 
 
+def collect_interface(
+    config: dict,
+    category: str,
+    codes: list[str],
+    start: str | None = None,
+    end: str | None = None,
+) -> str:
+    """精确采集：按类别 + 指标/基金代码 + 时间范围采集，合并进最新数据。
+
+    category : 'macro'（宏观指标代码）/ 'etf'（基金代码）
+    codes    : 指标代码或基金代码列表；为空时该类别全部目标
+    start/end: 宏观为 YYYY-MM，ETF 为 YYYY-MM-DD；留空表示按配置默认区间
+    返回执行摘要文本，供 Web 任务展示。
+    """
+    monitor_cfg = config.get("monitor", {})
+    history_path = BASE_DIR / monitor_cfg.get("history_file", "output/monitor/interface_runs.jsonl")
+    monitor = Monitor(BASE_DIR, run_type="interface", history_path=history_path)
+    fetch_cfg = config.get("fetch", {})
+    retries = fetch_cfg.get("retry", 3)
+    retry_interval = fetch_cfg.get("retry_interval_sec", 2)
+    timeout = fetch_cfg.get("timeout_sec", 15)
+
+    scope = f"类别={category}, 代码={','.join(codes) if codes else '全部'}, 区间={start or '默认'}~{end or '默认'}"
+    logger.info("精确采集开始：%s", scope)
+
+    # 读取最新主数据作为合并基底，避免单项采集覆盖其它数据
+    macro_base = pd.DataFrame()
+    etf_base = pd.DataFrame()
+    base_path = _latest_csv("macro", config)
+    if base_path:
+        macro_base = pd.read_csv(base_path)
+    base_path = _latest_csv("etf", config)
+    if base_path:
+        etf_base = pd.read_csv(base_path, dtype={"基金代码": str})
+
+    added_macro = added_etf = 0
+    if category == "macro":
+        code_set = set(codes) if codes else None
+        # 由指标代码推导需要调用的底层接口，避免无谓调用
+        only = None
+        if code_set:
+            only = {CODE_TO_IFACE[c] for c in code_set if c in CODE_TO_IFACE} or None
+        s_date = start or config.get("macro", {}).get("start_date") or None
+        patch = collect_macro(
+            start_date=s_date, end_date=end or None, monitor=monitor,
+            codes=code_set, only=only, retries=retries, retry_interval=retry_interval,
+        )
+        macro_final = _merge_patch(macro_base, patch, ["指标代码", "日期"])
+        added_macro = len(patch)
+        etf_final = etf_base
+        logger.info("精确采集宏观：补丁 %d 行，合并后 %d 行", added_macro, len(macro_final))
+    elif category == "etf":
+        etf_cfg = config.get("etf", {})
+        target_codes = [str(c).strip().zfill(6) for c in codes] if codes else list(etf_cfg.get("codes", []))
+        s_date = start or etf_cfg.get("start_date") or None
+        e_date = end or etf_cfg.get("end_date") or None
+        listing_dates = etf_cfg.get("listing_dates", {}) or {}
+        patch = collect_etf(
+            codes=target_codes, start_date=s_date, end_date=e_date,
+            default_trade_days=etf_cfg.get("default_trade_days", 20),
+            retries=retries, retry_interval=retry_interval, timeout=timeout,
+            monitor=monitor, listing_dates=listing_dates,
+        )
+        etf_cfg["listing_dates"] = listing_dates
+        _save_listing_dates(config)
+        # 统一基金代码类型，确保合并键一致
+        if not patch.empty:
+            patch["基金代码"] = patch["基金代码"].astype(str).str.zfill(6)
+        if not etf_base.empty:
+            etf_base["基金代码"] = etf_base["基金代码"].astype(str).str.zfill(6)
+        etf_final = _merge_patch(etf_base, patch, ["基金代码", "交易日期"])
+        if not etf_final.empty and {"份额(亿份)", "单位净值(元)"}.issubset(etf_final.columns):
+            etf_final["规模(亿元)"] = etf_final["份额(亿份)"] * etf_final["单位净值(元)"]
+        added_etf = len(patch)
+        macro_final = macro_base
+        logger.info("精确采集 ETF：补丁 %d 行，合并后 %d 行", added_etf, len(etf_final))
+    else:
+        raise ValueError(f"未知采集类别：{category}")
+
+    _finish(monitor, macro_final, etf_final, config, monitor.run_id)
+    failed = sum(1 for r in monitor.records if r["status"] == "failed")
+    summary = (f"精确采集完成（{scope}）：新增/更新宏观 {added_macro} 行、ETF {added_etf} 行，"
+               f"接口失败 {failed} 次")
+    logger.info(summary)
+    return summary
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="采集大盘宏观与 ETF 数据，导出 CSV/Excel，附接口运维监控")
     parser.add_argument("--config", default="config.json", help="配置文件路径")
@@ -278,6 +390,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--monitor-report", action="store_true", help="仅生成运维监控报告，不采集数据")
     parser.add_argument("--retry-failed", action="store_true", help="重跑最近批次的失败接口并合并结果")
+    parser.add_argument("--collect-interface", action="store_true", help="按接口/指标+时间范围精确采集")
+    parser.add_argument("--category", choices=["macro", "etf"], help="精确采集类别")
+    parser.add_argument("--codes", help="指标代码/基金代码，逗号分隔；留空为该类别全部")
+    parser.add_argument("--start", help="起始时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
+    parser.add_argument("--end", help="结束时间：宏观 YYYY-MM / ETF YYYY-MM-DD")
     args = parser.parse_args(argv)
 
     config = load_config(args.config)
@@ -301,6 +418,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.retry_failed:
         return _retry_failed(config, monitor_cfg)
+
+    if args.collect_interface:
+        if not args.category:
+            logger.error("精确采集需指定 --category macro|etf")
+            return 2
+        codes = [c.strip() for c in (args.codes or "").split(",") if c.strip()]
+        collect_interface(config, args.category, codes, args.start, args.end)
+        return 0
 
     monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path)
     macro_df, etf_df = _collect(config, monitor, macro_only=args.macro_only, etf_only=args.etf_only)

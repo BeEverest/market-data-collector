@@ -16,6 +16,11 @@ let currentJobId = null;
 let jobPollTimer = null;
 let monitorTab = 'overview';
 let dataTab = 'macro';
+let catalogData = null;
+let precCategory = 'macro';
+let dataPage = 1;
+let dataPages = 1;
+let dataTotalRows = 0;
 
 /* ---------- 概览 ---------- */
 async function loadStatus() {
@@ -54,6 +59,8 @@ async function loadStatus() {
 
 function setButtons(enabled) {
   document.querySelectorAll('button[data-action]').forEach(b => b.disabled = !enabled);
+  const prec = $('precRun');
+  if (prec) prec.disabled = !enabled;
 }
 
 /* ---------- 调度设置 ---------- */
@@ -133,6 +140,174 @@ function flashLog(msg, level) {
   body.scrollTop = body.scrollHeight;
 }
 
+/* ---------- 精确采集（按接口/指标 + 时间范围） ---------- */
+async function loadCatalog() {
+  try {
+    catalogData = await api('/api/catalog');
+    renderPrecItems();
+    const cfg = catalogData.defaults || {};
+    if (!$('precStart').value && precCategory === 'macro') $('precStart').placeholder = cfg.macro_start || '起始，留空=默认';
+  } catch (e) {
+    $('precCode').innerHTML = '<option value="">目录加载失败</option>';
+    console.error(e);
+  }
+}
+
+function renderPrecItems() {
+  if (!catalogData) return;
+  const items = catalogData[precCategory] || [];
+  const sel = $('precCode');
+  const isMacro = precCategory === 'macro';
+  // 日期控件随类别切换：宏观用月份、ETF 用日期
+  const dtype = isMacro ? 'month' : 'date';
+  $('precStart').type = dtype;
+  $('precEnd').type = dtype;
+  $('precDateHint').textContent = isMacro ? '按月份 · YYYY-MM' : '按交易日 · YYYY-MM-DD';
+  sel.innerHTML = '<option value="">全部（该类别整体）</option>' + items.map(it => {
+    const meta = [it.iface, it.unit, it.granularity].filter(Boolean).join(' · ');
+    const listing = it.listing_date ? `，上市 ${it.listing_date}` : '';
+    const label = `${it.name || it.code}（${it.code}${listing}）`;
+    return `<option value="${esc(it.code)}" data-meta="${esc(meta)}" data-last="${esc(it.last_date || '')}" data-listing="${esc(it.listing_date || '')}">${esc(label)}</option>`;
+  }).join('');
+  $('precItemCount').textContent = `共 ${items.length} 项`;
+  updatePrecNote();
+}
+
+function updatePrecNote() {
+  const sel = $('precCode');
+  const opt = sel.options[sel.selectedIndex];
+  if (!catalogData) return;
+  let note = `数据快照保留最近 ${catalogData.keep_snapshots || 3} 份。`;
+  if (opt && opt.dataset.last) note += ` 最新数据截至 ${opt.dataset.last}。`;
+  if (opt && opt.dataset.meta) note += `\n接口：${opt.dataset.meta}`;
+  if (precCategory === 'etf' && opt && opt.dataset.listing) {
+    note += `\n上市日 ${opt.dataset.listing}，早于上市日的范围自动忽略。`;
+  }
+  $('precNote').textContent = note;
+}
+
+// 类别切换
+document.querySelectorAll('#precCategory .seg-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#precCategory .seg-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    precCategory = btn.dataset.cat;
+    $('precStart').value = ''; $('precEnd').value = '';
+    renderPrecItems();
+  });
+});
+$('precCode').addEventListener('change', updatePrecNote);
+
+// 精确采集提交
+$('precRun').addEventListener('click', async () => {
+  const payload = {
+    category: precCategory,
+    codes: $('precCode').value ? [$('precCode').value] : [],
+    start: $('precStart').value.trim(),
+    end: $('precEnd').value.trim(),
+  };
+  try {
+    const res = await api('/api/collect/interface', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    flashLog(`精确采集任务已提交（${precCategory} / ${payload.codes[0] || '全部'}）`, 'INFO');
+    startJob(res.job_id);
+  } catch (e) { alert('精确采集启动失败：' + e.message); }
+});
+
+/* ---------- ETF 标的配置 ---------- */
+let etfCfg = null;
+
+async function loadEtfConfig() {
+  try {
+    etfCfg = await api('/api/etf/config');
+    renderEtfChips();
+    $('etfStart').value = etfCfg.start_date || '';
+    $('etfEnd').value = etfCfg.end_date || '';
+    $('etfDays').value = etfCfg.default_trade_days || 20;
+  } catch (e) {
+    $('etfChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
+    console.error(e);
+  }
+}
+
+function renderEtfChips() {
+  const wrap = $('etfChips');
+  if (!etfCfg || !etfCfg.items.length) {
+    wrap.innerHTML = '<div class="empty">尚未配置 ETF 标的，请在上方输入基金代码添加。</div>';
+    return;
+  }
+  wrap.innerHTML = etfCfg.items.map(it => {
+    const listing = it.listing_date
+      ? `<span class="chip-listing">上市 ${esc(it.listing_date)}</span>`
+      : '<span class="chip-listing pending">上市日待采集</span>';
+    return `<div class="etf-chip">
+      <div class="chip-top">
+        <span class="chip-code">${esc(it.code)}</span>
+        <button class="chip-remove" data-code="${esc(it.code)}" title="移除该标的">×</button>
+      </div>
+      <span class="chip-name">${esc(it.name || '—')}</span>
+      ${listing}
+    </div>`;
+  }).join('');
+  wrap.querySelectorAll('.chip-remove').forEach(btn => {
+    btn.addEventListener('click', () => removeEtfCode(btn.dataset.code));
+  });
+}
+
+function etfPayload() {
+  return {
+    codes: etfCfg ? etfCfg.items.map(x => x.code) : [],
+    start_date: $('etfStart').value.trim(),
+    end_date: $('etfEnd').value.trim(),
+    default_trade_days: $('etfDays').value.trim(),
+  };
+}
+
+async function saveEtfConfig(quiet = false) {
+  const payload = etfPayload();
+  payload.default_trade_days = payload.default_trade_days ? parseInt(payload.default_trade_days, 10) : 20;
+  try {
+    const res = await api('/api/etf/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    etfCfg = res.config;
+    renderEtfChips();
+    await loadCatalog();  // 同步精确采集下拉
+    if (!quiet) flashLog('ETF 配置已保存', 'INFO');
+    return true;
+  } catch (e) {
+    if (!quiet) alert('保存失败：' + e.message);
+    return false;
+  }
+}
+
+async function addEtfCode() {
+  const input = $('etfNewCode');
+  const code = input.value.trim();
+  if (!/^\d{1,6}$/.test(code)) { alert('请输入 1~6 位数字基金代码'); return; }
+  const full = code.padStart(6, '0');
+  if (!etfCfg) etfCfg = { items: [] };
+  if (etfCfg.items.some(x => x.code === full)) { alert('该标的已在列表中'); return; }
+  etfCfg.items.push({ code: full, name: '', listing_date: '' });
+  renderEtfChips();
+  input.value = '';
+  await saveEtfConfig(true);
+  flashLog(`已添加 ETF ${full}，上市日将在下次采集时自动解析`, 'INFO');
+}
+
+async function removeEtfCode(code) {
+  if (!etfCfg) return;
+  etfCfg.items = etfCfg.items.filter(x => x.code !== code);
+  renderEtfChips();
+  await saveEtfConfig(true);
+  flashLog(`已移除 ETF ${code}`, 'INFO');
+}
+
+$('etfAddBtn').addEventListener('click', addEtfCode);
+$('etfNewCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEtfCode(); });
+$('etfSaveBtn').addEventListener('click', () => saveEtfConfig(false));
+
 /* ---------- 监控看板 ---------- */
 async function loadMonitor() {
   try {
@@ -141,8 +316,19 @@ async function loadMonitor() {
     const count = fails.length && fails[0]['提示'] ? 0 : fails.length;
     $('failCount').textContent = count;
     $('failCount').className = 'badge ' + (count ? '' : 'zero');
+    buildMonitorOptions();
     renderMonitor();
   } catch (e) { console.error(e); }
+}
+
+// 用「接口健康度」的接口名填充关键词 datalist（去重、无日期后缀，可选可输入）
+function buildMonitorOptions() {
+  const names = new Set();
+  (monitorData?.['接口健康度'] || []).forEach(r => {
+    const n = r['接口名称'] || r['接口键'];
+    if (n) names.add(String(n));
+  });
+  $('monKeywordOptions').innerHTML = [...names].sort().map(n => `<option value="${esc(n)}"></option>`).join('');
 }
 
 document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
@@ -153,13 +339,71 @@ document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
     renderMonitor();
   });
 });
+$('monFilterBtn').addEventListener('click', renderMonitor);
+$('monResetBtn').addEventListener('click', () => {
+  ['monKeyword','monStart','monEnd'].forEach(id => $(id).value = '');
+  $('monRunType').value = ''; $('monCategory').value = ''; $('monStatus').value = '';
+  renderMonitor();
+});
+
+// 监控看板默认日期：最近一周（按系统时间，监控记录均为运行当天）
+function monitorRecentWeek() {
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const now = new Date();
+  const back = new Date(now.getTime() - 7 * 86400 * 1000);
+  $('monStart').value = fmt(back);
+  $('monEnd').value = fmt(now);
+}
+
+// 从一行里按字段名取值（各 sheet 字段名不同，做兼容映射）
+function monField(row, candidates) {
+  for (const c of candidates) if (row[c] != null && row[c] !== '') return String(row[c]);
+  return '';
+}
+
+function filterMonitorRows(rows) {
+  const kw = $('monKeyword').value.trim().toLowerCase();
+  const runType = $('monRunType').value;
+  const category = $('monCategory').value;
+  const status = $('monStatus').value;
+  const start = $('monStart').value;
+  const end = $('monEnd').value;
+  return rows.filter(r => {
+    // 关键词：匹配整行任意单元格
+    if (kw && !Object.values(r).some(v => String(v ?? '').toLowerCase().includes(kw))) return false;
+    // 运行类型（各 sheet 字段名不同）
+    if (runType && monField(r, ['运行类型']) && monField(r, ['运行类型']) !== runType) return false;
+    // 类别
+    if (category && monField(r, ['类别']) !== category) return false;
+    // 状态：成功/失败；失败明细无状态列，按"失败原因"存在视为失败
+    if (status) {
+      const st = monField(r, ['状态']);
+      if (st) {
+        if (st !== status) return false;
+      } else if (sheetIsFailureView()) {
+        if (status !== 'failed') return false;
+      }
+    }
+    // 日期范围：取行内第一个日期字段
+    const date = monField(r, ['运行日期', '失败日期', '最近失败日期', '运行时间']).slice(0, 10);
+    if (start && date && date < start) return false;
+    if (end && date && date > end) return false;
+    return true;
+  });
+}
+
+function sheetIsFailureView() { return monitorTab === 'failures'; }
 
 function renderMonitor() {
   const map = { overview: '运行总览', failures: '失败明细', health: '接口健康度', detail: '调用明细' };
-  const rows = (monitorData && monitorData[map[monitorTab]]) || [];
+  let rows = (monitorData && monitorData[map[monitorTab]]) || [];
+  if (rows.length && !rows[0]['提示']) rows = filterMonitorRows(rows);
   const el = $('monitorTable');
+  const filterActive = ['monKeyword','monStart','monEnd'].some(id => $(id).value.trim()) ||
+    !!$('monRunType').value || !!$('monCategory').value || !!$('monStatus').value;
+  $('monFilterHint').textContent = filterActive ? `筛选后 ${rows.length} 行` : '';
   if (!rows.length || (rows[0]['提示'])) {
-    el.innerHTML = `<div class="empty">${rows[0]?.['提示'] || '暂无数据'}</div>`;
+    el.innerHTML = `<div class="empty">${rows[0]?.['提示'] || '无匹配记录'}</div>`;
     return;
   }
   const cols = Object.keys(rows[0]);
@@ -184,29 +428,122 @@ function renderMonitor() {
 }
 
 /* ---------- 数据浏览 ---------- */
+// 数据实际最新日期（从目录各指标的 last_date 取最大值），避免按系统时间取到空区间
+function dataLatestDate() {
+  const items = catalogData?.[dataTab] || [];
+  const dates = items.map(x => x.last_date).filter(Boolean).sort();
+  return dates.length ? dates[dates.length - 1] : '';
+}
+
+// 默认日期：以数据最新日为基准回退一周；宏观按月则回退约 1 个月，保证默认有数据
+function defaultWeekRange() {
+  const macro = dataTab === 'macro';
+  const latest = dataLatestDate();
+  if (!latest) {
+    const now = new Date();
+    const f = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    return { start: f(now), end: f(now) };
+  }
+  if (macro) {
+    // 最新月往前 1 个月 -> 最新月（覆盖最近两个月，月度粒度近似"最近一周"）
+    const [y, m] = latest.split('-').map(Number);
+    const d = new Date(y, m - 2, 1);
+    const start = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    return { start, end: latest };
+  }
+  // ETF 日频：最新日往前 7 天
+  const dt = new Date(latest + 'T00:00:00');
+  dt.setDate(dt.getDate() - 7);
+  const start = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  return { start, end: latest };
+}
+
+function applyDateControl() {
+  const t = dataTab === 'macro' ? 'month' : 'date';
+  $('filterStart').type = t;
+  $('filterEnd').type = t;
+}
+
+function fillCodeOptions() {
+  if (!catalogData) return;
+  const items = catalogData[dataTab] || [];
+  $('filterCodeOptions').innerHTML = items.map(it => {
+    const label = it.name ? `${it.code} - ${it.name}` : it.code;
+    return `<option value="${esc(it.code)}" label="${esc(label)}"></option>`;
+  }).join('');
+}
+
 document.querySelectorAll('#dataTabs .tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('#dataTabs .tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     dataTab = tab.dataset.tab;
     $('dataFilters').style.display = dataTab === 'files' ? 'none' : 'flex';
+    $('dataPager').style.display = dataTab === 'files' ? 'none' : 'flex';
+    if (dataTab !== 'files') {
+      applyDateControl();
+      fillCodeOptions();
+      resetToRecentWeek();  // 切换类别重置为最近一周
+    }
+    dataPage = 1;
     loadData();
   });
 });
-$('filterBtn').addEventListener('click', loadData);
+
+function resetToRecentWeek() {
+  const { start, end } = defaultWeekRange();
+  $('filterStart').value = start;
+  $('filterEnd').value = end;
+  $('filterCode').value = '';
+}
+
+$('filterBtn').addEventListener('click', () => { dataPage = 1; loadData(); });
+$('filterResetBtn').addEventListener('click', () => { resetToRecentWeek(); dataPage = 1; loadData(); });
+$('filterPageSize').addEventListener('change', () => { dataPage = 1; loadData(); });
 
 async function loadData() {
   const el = $('dataTable');
-  if (dataTab === 'files') return loadFiles(el);
+  if (dataTab === 'files') { $('dataPager').innerHTML = ''; return loadFiles(el); }
   const code = $('filterCode').value.trim();
   const start = $('filterStart').value.trim();
   const end = $('filterEnd').value.trim();
-  const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`;
+  const pageSize = Math.min(parseInt($('filterPageSize').value, 10) || 25, 100);
+  const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}`;
   try {
     const res = await api(url);
-    $('dataTotal').textContent = `共 ${res.total} 行（最多显示 5000 行）`;
+    dataPages = res.pages || 1;
+    dataTotalRows = res.total || 0;
+    if (dataPage > dataPages) { dataPage = dataPages; return loadData(); }
+    $('dataTotal').textContent = `共 ${res.total} 行 · 第 ${res.page}/${res.pages} 页`;
     renderTable(el, res.rows);
+    renderPager();
   } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
+}
+
+function renderPager() {
+  const el = $('dataPager');
+  if (dataPages <= 1 && dataTotalRows <= 20) { el.innerHTML = ''; return; }
+  const btn = (label, page, opts = {}) => {
+    const dis = opts.disabled ? 'disabled' : '';
+    const act = opts.active ? 'active' : '';
+    return `<button ${dis} class="${act}" data-page="${page}">${label}</button>`;
+  };
+  let html = btn('«', 1, { disabled: dataPage === 1 });
+  html += btn('‹', dataPage - 1, { disabled: dataPage === 1 });
+  // 页码窗口：当前页前后各 2 页
+  const from = Math.max(1, dataPage - 2);
+  const to = Math.min(dataPages, dataPage + 2);
+  for (let p = from; p <= to; p++) html += btn(String(p), p, { active: p === dataPage });
+  html += btn('›', dataPage + 1, { disabled: dataPage === dataPages });
+  html += btn('»', dataPages, { disabled: dataPage === dataPages });
+  html += `<span class="page-info">共 ${dataPages} 页 / ${dataTotalRows} 行</span>`;
+  el.innerHTML = html;
+  el.querySelectorAll('button[data-page]').forEach(b => {
+    b.addEventListener('click', () => {
+      const p = parseInt(b.dataset.page, 10);
+      if (p >= 1 && p <= dataPages && p !== dataPage) { dataPage = p; loadData(); }
+    });
+  });
 }
 
 async function loadFiles(el) {
@@ -242,6 +579,16 @@ function esc(s) {
 async function refresh() {
   await Promise.all([loadStatus(), loadMonitor()]);
 }
-refresh();
-loadData();
+
+async function init() {
+  applyDateControl();
+  // 并行加载目录/配置，再填充下拉并默认最近一周
+  await Promise.all([loadCatalog(), loadEtfConfig()]);
+  fillCodeOptions();
+  resetToRecentWeek();
+  monitorRecentWeek();   // 监控看板默认最近一周
+  await loadData();
+  await refresh();
+}
+init();
 setInterval(refresh, 30000);

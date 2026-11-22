@@ -6,9 +6,19 @@
       "510050",
       "510500",
       "159915",
-      "588000"
+      "588000",
+      "518880"
     ],
     "_codes_help": "ETF 代码清单（6 位数字）。当前为主流宽基示例，请替换为你的标的清单。",
+    "listing_dates": {
+      "510050": "2004-12-30",
+      "159915": "2011-09-20",
+      "510300": "2012-05-04",
+      "510500": "2013-02-06",
+      "588000": "2020-09-28",
+      "518880": "2013-07-18"
+    },
+    "_listing_dates_help": "各基金上市/成立日缓存 {代码: YYYY-MM-DD}，采集时自动解析并回写；早于该日的交易日数据自动忽略",
     "start_date": "",
     "end_date": "",
     "default_trade_days": 20,
@@ -25,7 +35,9 @@
       "csv",
       "excel"
     ],
-    "filename_prefix": "market_data"
+    "filename_prefix": "market_data",
+    "keep_snapshots": 3,
+    "_keep_snapshots_help": "每次采集导出的数据快照（宏观CSV/ETF CSV/主Excel/监控报告）只保留最近 N 份，更早的自动清理；接口调用历史 JSONL 永久保留"
   },
   "fetch": {
     "retry": 3,

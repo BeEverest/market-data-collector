@@ -47,6 +47,27 @@
           <span class="ico">⛏</span><span><b>重跑失败接口</b><small>最近失败批次</small></span>
         </button>
         <div class="divider"></div>
+        <div class="precision-box">
+          <div class="sched-title">精确采集 <span class="tag retry" style="margin-left:6px">按接口 / 指标 + 时间范围</span></div>
+          <label class="field-label">数据类型</label>
+          <div class="seg" id="precCategory">
+            <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
+            <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
+          </div>
+          <label class="field-label">选择指标 <span id="precItemCount" class="muted-inline"></span></label>
+          <select id="precCode" class="prec-input"><option value="">加载中…</option></select>
+          <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按月份</span></label>
+          <div class="prec-dates">
+            <input id="precStart" class="prec-input" type="month" title="起始日期，留空=默认">
+            <span class="date-sep">~</span>
+            <input id="precEnd" class="prec-input" type="month" title="结束日期，留空=默认">
+          </div>
+          <button class="btn primary prec-run" id="precRun">
+            <span class="ico">◎</span><span><b>采集所选范围</b><small>仅采此项并合并，不影响其它数据</small></span>
+          </button>
+          <div class="prec-note" id="precNote">—</div>
+        </div>
+        <div class="divider"></div>
         <div class="sched-box">
           <div class="sched-title">定时调度</div>
           <label class="switch-row">
@@ -77,6 +98,33 @@
     </div>
   </section>
 
+  <!-- ETF 标的配置 -->
+  <section class="card" id="etfConfigCard">
+    <div class="card-head">
+      <h2>ETF 标的配置</h2>
+      <span class="hint">灵活增删采集标的 · 自动解析基金上市日 · 早于上市日的数据自动忽略</span>
+    </div>
+    <div class="etf-config">
+      <div class="etf-left">
+        <div class="etf-add">
+          <input id="etfNewCode" class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" inputmode="numeric">
+          <button class="btn tiny" id="etfAddBtn">＋ 添加</button>
+        </div>
+        <div class="etf-chips" id="etfChips"><div class="empty">加载中…</div></div>
+        <div class="etf-range">
+          <label>默认采集区间</label>
+          <input id="etfStart" type="date" class="prec-input" title="留空=按默认交易日数">
+          <span class="date-sep">~</span>
+          <input id="etfEnd" type="date" class="prec-input" title="留空=今天">
+          <label>最近</label>
+          <input id="etfDays" type="number" min="1" max="500" class="prec-input etf-days" title="留空日期时默认采集最近 N 个交易日">
+          <label>个交易日</label>
+          <button class="btn tiny primary" id="etfSaveBtn">保存配置</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 监控看板 -->
   <section class="card">
     <div class="card-head">
@@ -87,6 +135,35 @@
         <button class="tab" data-tab="health">接口健康度</button>
         <button class="tab" data-tab="detail">调用明细</button>
       </div>
+    </div>
+    <div class="filters" id="monitorFilters">
+      <input id="monKeyword" list="monKeywordOptions" placeholder="接口名/接口键/失败原因 关键词" title="可直接输入或从下拉选择接口名">
+      <datalist id="monKeywordOptions"></datalist>
+      <select id="monRunType" class="filter-select" title="运行类型">
+        <option value="">全部运行类型</option>
+        <option value="full">全量 full</option>
+        <option value="macro">仅宏观 macro</option>
+        <option value="etf">仅ETF etf</option>
+        <option value="interface">精确采集 interface</option>
+        <option value="retry">重跑 retry</option>
+        <option value="scheduled">定时 scheduled</option>
+      </select>
+      <select id="monCategory" class="filter-select" title="类别">
+        <option value="">全部类别</option>
+        <option value="宏观">宏观</option>
+        <option value="ETF">ETF</option>
+      </select>
+      <select id="monStatus" class="filter-select" title="状态">
+        <option value="">全部状态</option>
+        <option value="success">成功</option>
+        <option value="failed">失败</option>
+      </select>
+      <input id="monStart" type="date" title="起始日期">
+      <span class="date-sep">~</span>
+      <input id="monEnd" type="date" title="结束日期">
+      <button class="btn tiny" id="monFilterBtn">筛选</button>
+      <button class="btn tiny" id="monResetBtn">重置</button>
+      <span class="hint" id="monFilterHint"></span>
     </div>
     <div class="table-wrap" id="monitorTable"><div class="empty">加载中…</div></div>
   </section>
@@ -102,13 +179,22 @@
       </div>
     </div>
     <div class="filters" id="dataFilters">
-      <input id="filterCode" placeholder="指标代码 / 基金代码，留空全部">
-      <input id="filterStart" placeholder="起始 YYYY-MM-DD 或 YYYY-MM">
-      <input id="filterEnd" placeholder="结束 YYYY-MM-DD 或 YYYY-MM">
-      <button class="btn tiny" id="filterBtn">筛选</button>
+      <input id="filterCode" list="filterCodeOptions" placeholder="选择或输入代码，留空全部" autocomplete="off">
+      <datalist id="filterCodeOptions"></datalist>
+      <input id="filterStart" type="month" title="起始日期">
+      <span class="date-sep">~</span>
+      <input id="filterEnd" type="month" title="结束日期">
+      <select id="filterPageSize" class="filter-select" title="每页行数（单页上限 100）">
+        <option value="25" selected>25 行/页</option>
+        <option value="50">50 行/页</option>
+        <option value="100">100 行/页</option>
+      </select>
+      <button class="btn tiny primary" id="filterBtn">筛选</button>
+      <button class="btn tiny" id="filterResetBtn">最近一周</button>
       <span class="hint" id="dataTotal"></span>
     </div>
     <div class="table-wrap tall" id="dataTable"><div class="empty">加载中…</div></div>
+    <div class="pager" id="dataPager"></div>
   </section>
 </main>
 

@@ -49,6 +49,35 @@ IFACE_NAMES = {
     "macro_china_foreign_exchange_gold": "央行黄金储备",
 }
 
+# 权威指标目录：供 Web 精确采集下拉与代码→接口推导使用。
+# 一个接口可产出多个指标（如 money_supply -> M0/M1/M2），按 code 过滤输出行。
+CATALOG: list[dict] = [
+    {"code": "M2", "name": "广义货币(M2)", "iface": "macro_china_money_supply", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "M1", "name": "狭义货币(M1)", "iface": "macro_china_money_supply", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "M0", "name": "流通中货币(M0)", "iface": "macro_china_money_supply", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "HH_DEPOSIT", "name": "居民储蓄存款余额", "iface": "macro_rmb_deposit", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "RMB_DEPOSIT", "name": "人民币存款余额", "iface": "macro_rmb_deposit", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "RMB_LOAN", "name": "人民币贷款余额", "iface": "macro_rmb_loan", "unit": "亿元", "granularity": "月度", "source": PBC},
+    {"code": "SFR_STOCK", "name": "社会融资规模存量", "iface": "macro_china_shrzgm", "unit": "亿元", "granularity": "月度", "source": "央行锚点+社融增量插值"},
+    {"code": "EXPORT", "name": "出口额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
+    {"code": "IMPORT", "name": "进口额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
+    {"code": "TRADE_TOTAL", "name": "进出口总额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
+    {"code": "RETAIL_SALES", "name": "社会消费品零售总额(当月)", "iface": "macro_china_consumer_goods_retail", "unit": "亿元", "granularity": "月度", "source": NBS},
+    {"code": "CPI", "name": "居民消费价格指数CPI", "iface": "macro_china_cpi", "unit": "上年同月=100", "granularity": "月度", "source": NBS},
+    {"code": "PPI", "name": "工业生产者出厂价格指数PPI", "iface": "macro_china_ppi", "unit": "上年同月=100", "granularity": "月度", "source": NBS},
+    {"code": "PMI_MFG", "name": "制造业PMI", "iface": "macro_china_pmi", "unit": "指数", "granularity": "月度", "source": NBS},
+    {"code": "PMI_NONMFG", "name": "非制造业PMI", "iface": "macro_china_pmi", "unit": "指数", "granularity": "月度", "source": NBS},
+    {"code": "A_SHARE_MC", "name": "A股总市值(沪深)", "iface": "macro_china_stock_market_cap", "unit": "亿元", "granularity": "月度", "source": EXCHANGE},
+    {"code": "GOLD_RESERVE", "name": "央行黄金储备", "iface": "macro_china_foreign_exchange_gold", "unit": "万盎司", "granularity": "月度", "source": "国家外汇管理局（akshare 封装）"},
+]
+
+CODE_TO_IFACE: dict[str, str] = {item["code"]: item["iface"] for item in CATALOG}
+
+
+def catalog() -> list[dict]:
+    """返回宏观指标目录（含接口名，供监控展示）。"""
+    return [dict(item) for item in CATALOG]
+
 
 def _normalize_month(value) -> str:
     """把 2026年10月份 / 2026-10 / 2026.10 / 201610 统一成 2026-10。"""
@@ -78,10 +107,12 @@ def _to_float(value):
 
 
 def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
-           retry_interval: float = 0.0, only: set[str] | None = None) -> pd.DataFrame:
+           retry_interval: float = 0.0, only: set[str] | None = None,
+           params: dict | None = None) -> pd.DataFrame:
     """调用一个宏观接口，记录每次调用状态并支持重试。
 
     only 非空时仅调用集合内的接口（用于失败接口重跑），其余返回空表且不记录。
+    params 写入监控记录，标注本次调用的时间范围/指标代码。
     """
     if only is not None and fn_name not in only:
         return pd.DataFrame()
@@ -99,7 +130,7 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
                         category="宏观", interface_key=f"macro.{fn_name}",
                         interface_name=IFACE_NAMES.get(fn_name, fn_name),
                         status="success", attempts=attempt, rows=len(df),
-                        duration_sec=time.time() - started,
+                        params=params, duration_sec=time.time() - started,
                     )
                 return df
             last_exc = None  # 空表属于无数据，非异常
@@ -116,7 +147,7 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
             category="宏观", interface_key=f"macro.{fn_name}",
             interface_name=IFACE_NAMES.get(fn_name, fn_name),
             status="failed", attempts=attempts, rows=0, error=reason,
-            duration_sec=time.time() - started,
+            params=params, duration_sec=time.time() - started,
         )
     logger.error("宏观接口 %s 调用失败：%s", fn_name, reason)
     return pd.DataFrame()
@@ -124,28 +155,40 @@ def _fetch(ak, fn_name: str, *, monitor=None, retries: int = 1,
 
 def collect_macro(
     start_date: str | None = None,
+    end_date: str | None = None,
     *,
     monitor=None,
     only: set[str] | None = None,
+    codes: set[str] | None = None,
     retries: int = 1,
     retry_interval: float = 0.0,
 ) -> pd.DataFrame:
     """采集月度宏观指标，返回统一 schema 的 DataFrame。
 
     only 为接口函数名集合时，仅采集这些接口（失败接口重跑用）。
+    codes 为指标代码集合时，仅输出这些指标（精确采集用；仍按接口抓取再一次过滤）。
+    end_date 为结束月份 YYYY-MM，含端点；与 start_date 共同限定采集区间。
     """
     import akshare as ak
 
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows: list[dict] = []
+    call_params = {
+        "start": start_date or "", "end": end_date or "",
+        "codes": ",".join(sorted(codes)) if codes else "",
+    }
 
     def fetch(fn_name: str) -> pd.DataFrame:
         return _fetch(ak, fn_name, monitor=monitor, retries=retries,
-                      retry_interval=retry_interval, only=only)
+                      retry_interval=retry_interval, only=only, params=call_params)
 
     def add(code, name, date, value, unit, yoy=None, mom=None, source=PBC):
         date = _normalize_month(date)
         if start_date and date < start_date:
+            return
+        if end_date and date > end_date:
+            return
+        if codes is not None and code not in codes:
             return
         num = _to_float(value)
         if num is None:  # 跳过数据源本身缺失的月份（如统计局1-2月社零合并统计）

@@ -1,7 +1,8 @@
-"""结果导出：CSV 与 Excel（含字段口径说明）。"""
+"""结果导出：CSV 与 Excel（含字段口径说明），及历史快照保留策略。"""
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -92,3 +93,56 @@ def export_results(
         logger.info("Excel 导出完成：%s", xlsx)
 
     return files
+
+
+# 批次时间戳：run_ts 形如 20261122_180123_full，用前两段识别同一批次
+_BATCH_RE = re.compile(r"(\d{8}_\d{6})")
+
+
+def prune_snapshots(base_dir: Path, config: dict) -> list[str]:
+    """只保留最近 N 份数据快照，清理更早批次的文件。
+
+    快照 = 每批次导出的宏观 CSV / ETF CSV / 主 Excel / 运维监控报告 Excel。
+    接口调用历史 interface_runs.jsonl 不属于快照，永不清理（重跑依赖它）。
+    N 由 output.keep_snapshots 配置，默认 3。返回被删除的文件路径列表。
+    """
+    output_cfg = config.get("output", {})
+    out_dir = base_dir / output_cfg.get("dir", "output")
+    if not out_dir.exists():
+        return []
+    prefix = output_cfg.get("filename_prefix", "market_data")
+    keep = max(1, int(output_cfg.get("keep_snapshots", 3)))
+
+    # 收集所有快照文件（CSV/Excel），按批次时间戳归组；排除 monitor 下的 jsonl
+    batches: dict[str, list[Path]] = {}
+    patterns = [
+        f"{prefix}_宏观数据_*.csv", f"{prefix}_ETF规模_*.csv", f"{prefix}_*.xlsx",
+    ]
+    candidates: list[Path] = []
+    for pattern in patterns:
+        candidates.extend(out_dir.glob(pattern))
+    candidates.extend((out_dir / "monitor").glob("运维监控报告_*.xlsx"))
+
+    for path in candidates:
+        match = _BATCH_RE.search(path.name)
+        if not match:
+            continue
+        batches.setdefault(match.group(1), []).append(path)
+
+    if len(batches) <= keep:
+        logger.info("快照清理：当前 %d 个批次，未超过保留上限 %d", len(batches), keep)
+        return []
+
+    ordered = sorted(batches)  # 时间戳字符串按字典序即时间顺序
+    to_remove = ordered[:-keep]
+    removed: list[str] = []
+    for batch in to_remove:
+        for path in batches[batch]:
+            try:
+                path.unlink()
+                removed.append(str(path))
+                logger.info("清理旧快照：%s", path)
+            except OSError as exc:
+                logger.warning("清理快照失败 %s：%s", path, exc)
+    logger.info("快照清理完成：删除 %d 个批次的文件，保留最近 %d 份", len(to_remove), keep)
+    return removed

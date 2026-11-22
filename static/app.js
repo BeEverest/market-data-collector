@@ -130,12 +130,30 @@ document.querySelectorAll('button[data-action]').forEach(btn => {
 $('fullRangeReset').addEventListener('click', () => applyDefaultRange('fullStart', 'fullEnd'));
 
 /* ---------- 文件导入（Choice 份额与规模） ---------- */
+const MAX_IMPORT_FILES = 10;
+$('importFiles').addEventListener('change', () => {
+  const n = $('importFiles').files.length;
+  const result = $('importResult');
+  if (n > MAX_IMPORT_FILES) {
+    $('importFiles').value = '';
+    result.textContent = `单次最多导入 ${MAX_IMPORT_FILES} 个文件，当前选择了 ${n} 个，请分批导入`;
+    result.className = 'import-result err';
+  } else {
+    result.textContent = n ? `已选择 ${n} 个文件` : '—';
+    result.className = 'import-result';
+  }
+});
 $('importBtn').addEventListener('click', async () => {
   const input = $('importFiles');
   const files = input.files;
   const result = $('importResult');
   if (!files || files.length === 0) {
     result.textContent = '请先选择要导入的 .xlsx 文件';
+    result.className = 'import-result err';
+    return;
+  }
+  if (files.length > MAX_IMPORT_FILES) {
+    result.textContent = `单次最多导入 ${MAX_IMPORT_FILES} 个文件，当前 ${files.length} 个，请分批导入`;
     result.className = 'import-result err';
     return;
   }
@@ -147,11 +165,14 @@ $('importBtn').addEventListener('click', async () => {
   result.className = 'import-result';
   try {
     const res = await api('/api/import/etf', { method: 'POST', body: form });
+    // 逐文件打印日志，均带文件名称，便于批量导入时定位
+    res.imported.forEach(x => flashLog(`文件导入成功 [${x.file}]：标的 ${x.code}，${x.rows} 行（${x.start} ~ ${x.end}）`, 'INFO'));
+    res.errors.forEach(e => flashLog(`文件导入失败 [${e.file}]：${e.error}`, 'ERROR'));
     const parts = [`成功 ${res.imported.length} 个文件 / ${res.total_rows} 行`];
     if (res.errors.length) parts.push(`失败 ${res.errors.length} 个：${res.errors.map(e => e.file + '（' + e.error + '）').join('；')}`);
     result.textContent = parts.join(' · ');
     result.className = 'import-result ' + (res.ok ? 'ok' : 'err');
-    flashLog('文件导入：' + result.textContent, res.ok ? 'INFO' : 'WARN');
+    flashLog(`文件导入汇总：成功 ${res.imported.length} / 失败 ${res.errors.length} / 共 ${res.total_rows} 行`, res.ok ? 'INFO' : 'WARN');
     await Promise.all([loadStatus(), loadData()]);
     input.value = '';
   } catch (e) {

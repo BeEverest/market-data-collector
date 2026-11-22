@@ -97,3 +97,37 @@ def test_import_choice_paths_directory(tmp_path: Path, db_path: Path):
     assert {r["code"] for r in results} == {"159629", "510300"}
     assert storage.read_etf(db_path, "159629")[0] == 1
     assert storage.read_etf(db_path, "510300")[0] == 1
+
+
+def test_check_file_limit():
+    assert importer.MAX_FILES_PER_IMPORT == 10
+    importer.check_file_limit(list(range(10)))  # 恰好 10 个不抛错
+    with pytest.raises(ValueError, match="单次最多导入 10 个文件"):
+        importer.check_file_limit(list(range(11)))
+
+
+def test_import_paths_over_limit(tmp_path: Path, db_path: Path):
+    """超过 10 个文件时应拒绝，且不应写入任何数据。"""
+    files = []
+    for i in range(11):
+        code = str(150000 + i)
+        p = _make_choice_file(tmp_path / f"份额与规模_{code}.xlsx", [
+            ["2026-11-20", 100000000, 200000000, "2026-11-21"],
+        ])
+        files.append(p)
+    with pytest.raises(ValueError, match="单次最多导入 10 个文件"):
+        importer.import_choice_paths(files, db_path)
+    total, _ = storage.read_etf(db_path)
+    assert total == 0  # 校验发生在写入前
+
+
+def test_import_paths_error_includes_filename(tmp_path: Path, db_path: Path):
+    """单个文件解析失败时，异常信息应包含该文件名。"""
+    good = _make_choice_file(tmp_path / "份额与规模_159629.xlsx", [
+        ["2026-11-20", 100000000, 200000000, "2026-11-21"],
+    ])
+    bad = tmp_path / "份额与规模_000000.xlsx"
+    bad.write_bytes(b"not an excel file")
+    with pytest.raises(ValueError, match="份额与规模_000000.xlsx"):
+        importer.import_choice_paths([good, bad], db_path)
+

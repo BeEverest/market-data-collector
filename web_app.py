@@ -704,8 +704,12 @@ def api_catalog():
 @app.post("/api/import/etf")
 async def api_import_etf(files: list[UploadFile] = File(...)):
     """导入 Choice「份额与规模_<代码>.xlsx」文件，作为 ETF 采集数据写入 SQLite。"""
-    from importer import import_choice_file
+    from importer import check_file_limit, import_choice_file
 
+    try:
+        check_file_limit(files)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     cfg = _cfg()
     db_path = _db_path(cfg)
     if not db_path:
@@ -714,24 +718,32 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
     results: list[dict] = []
     errors: list[dict] = []
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S_import")
+    logger.info("ETF 文件导入开始：run_id=%s，共 %d 个文件", run_id, len(files))
     # 文件名是标的代码的来源（份额与规模_<代码>.xlsx），临时目录内必须保留原名
     tmp_dir = Path(tempfile.mkdtemp(prefix="etf_import_"))
     try:
         for upload in files:
             name = Path(upload.filename or "").name
             if not name.lower().endswith((".xlsx", ".xlsm")):
-                errors.append({"file": name, "error": "仅支持 .xlsx/.xlsm 文件"})
+                msg = "仅支持 .xlsx/.xlsm 文件"
+                logger.warning("ETF 文件导入跳过 [%s]：%s", name, msg)
+                errors.append({"file": name, "error": msg})
                 continue
             target = tmp_dir / name
             try:
                 with target.open("wb") as handle:
                     handle.write(await upload.read())
-                summary = import_choice_file(target, db_path, run_id=run_id)
+                summary = import_choice_file(target, db_path, run_id=run_id, display_name=name)
                 results.append(summary)
+                logger.info("ETF 文件导入成功 [%s]：标的 %s，%d 行（%s ~ %s）",
+                            name, summary["code"], summary["rows"], summary["start"], summary["end"])
             except Exception as exc:
+                logger.warning("ETF 文件导入失败 [%s]：%s", name, exc)
                 errors.append({"file": name, "error": str(exc)})
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    logger.info("ETF 文件导入结束：run_id=%s，成功 %d / 失败 %d / 共 %d 行",
+                run_id, len(results), len(errors), sum(r["rows"] for r in results))
 
     return {
         "ok": not errors,

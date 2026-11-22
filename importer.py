@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -24,11 +23,19 @@ import pandas as pd
 import storage
 from storage import ETF_COLUMNS
 
-logger = logging.getLogger(__name__)
-
 CODE_RE = re.compile(r"份额与规模[_\-\s]?(\d{6})")
 FOOTNOTE_MARKERS = ("数据来源", "来源：", "来源:", "备注", "说明：")
 DEFAULT_SOURCE = "妙想Choice"
+MAX_FILES_PER_IMPORT = 10  # 单次导入文件数上限（命令行/Web 统一）
+
+
+def check_file_limit(items) -> None:
+    """校验单次导入文件数不超过上限，超限抛 ValueError。"""
+    count = len(list(items))
+    if count > MAX_FILES_PER_IMPORT:
+        raise ValueError(
+            f"单次最多导入 {MAX_FILES_PER_IMPORT} 个文件，实际收到 {count} 个，请分批导入"
+        )
 
 
 def code_from_filename(path: str | Path) -> str:
@@ -142,23 +149,27 @@ def import_choice_file(
     run_id: str = "",
     source: str = DEFAULT_SOURCE,
     name: str = "",
+    display_name: str = "",
 ) -> dict:
-    """解析并写入 SQLite；返回本次导入的统计信息。"""
+    """解析并写入 SQLite；返回本次导入的统计信息。
+
+    display_name 仅用于日志/回执展示（如 Web 上传时的原始文件名）。
+    """
+    shown = display_name or Path(path).name
     df = parse_choice_file(path, source=source, name=name)
     code = df["基金代码"].iloc[0]
     db_path = Path(db_path)
     storage.init_schema(db_path)
     written = storage.upsert_etf(db_path, df, run_id)
     summary = {
-        "file": Path(path).name,
+        "file": shown,
         "code": code,
         "rows": written,
         "start": df["交易日期"].min(),
         "end": df["交易日期"].max(),
         "source": source,
     }
-    logger.info("Choice 文件导入完成：%s -> %s（%d 行，%s ~ %s）",
-                summary["file"], code, written, summary["start"], summary["end"])
+    # 逐文件日志由调用方（命令行 / Web）记录，统一带原始文件名，避免重复输出
     return summary
 
 
@@ -181,4 +192,12 @@ def import_choice_paths(
             raise FileNotFoundError(f"找不到文件或目录：{item}")
     if not files:
         raise ValueError("未找到可导入的「份额与规模_*.xlsx」文件")
-    return [import_choice_file(f, db_path, run_id=run_id, source=source) for f in files]
+    check_file_limit(files)
+    results: list[dict] = []
+    for f in files:
+        try:
+            results.append(import_choice_file(f, db_path, run_id=run_id, source=source))
+        except Exception as exc:
+            # 失败信息带上文件名，便于批量导入时定位到具体文件
+            raise ValueError(f"文件 [{f.name}] 导入失败：{exc}") from exc
+    return results

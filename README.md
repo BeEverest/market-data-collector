@@ -193,8 +193,8 @@ python3 web_app.py --port 9000     # 覆盖端口
 | 顶部状态栏 | 服务器时间、定时调度状态、采集任务是否运行中 |
 | 概览卡片 | 最近采集时间、宏观行数/指标数、ETF 行数/标的数、今日接口调用、历史失败累计（失败数红色高亮） |
 | 采集控制台 | 「全量 / 仅宏观 / 仅 ETF / 重跑失败接口」四个按钮 + 实时日志终端（任务异步执行，前端轮询进度） |
-| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab |
-| 采集数据 | 宏观 / ETF 日频 / 输出文件三个 Tab，支持代码与日期筛选、文件下载 |
+| 接口监控看板 | 运行总览 / 失败明细（失败行红色高亮 + 重跑结果）/ 接口健康度 / 调用明细四个 Tab；默认最近一周，支持关键词（可选可输入）、运行类型、类别、状态、日期组合筛选；四表统一分页默认 25 行/页、单页上限 100 行 |
+| 采集数据 | 宏观 / ETF 日频 / 输出文件三个 Tab，支持代码与日期筛选（下拉可选或输入、日期控件、默认最近一周）、文件下载；分页默认 25 行/页、单页上限 100 行 |
 | 定时调度 | 界面勾选启用、设置每日时刻与采集范围，保存到 config.json |
 
 ### 关键机制
@@ -206,5 +206,5 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 ### API 一览
 
-`GET /api/status`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
-`POST /api/collect`、`/api/retry`、`/api/scheduler`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。
+`GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/etf/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
+`POST /api/collect`、`/api/collect/interface`、`/api/retry`、`/api/scheduler`、`/api/etf/config`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。

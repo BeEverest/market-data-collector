@@ -21,6 +21,11 @@ let precCategory = 'macro';
 let dataPage = 1;
 let dataPages = 1;
 let dataTotalRows = 0;
+const MAX_PAGE_SIZE = 100;
+let monitorPage = 1;
+let monitorPages = 1;
+let monitorTotalRows = 0;
+let monitorPageSize = 25;
 
 /* ---------- 概览 ---------- */
 async function loadStatus() {
@@ -336,15 +341,18 @@ document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
     document.querySelectorAll('#monitorTabs .tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     monitorTab = tab.dataset.tab;
+    monitorPage = 1;  // 切换 Tab 重置到第一页
     renderMonitor();
   });
 });
-$('monFilterBtn').addEventListener('click', renderMonitor);
+$('monFilterBtn').addEventListener('click', () => { monitorPage = 1; renderMonitor(); });
 $('monResetBtn').addEventListener('click', () => {
   ['monKeyword','monStart','monEnd'].forEach(id => $(id).value = '');
   $('monRunType').value = ''; $('monCategory').value = ''; $('monStatus').value = '';
+  monitorPage = 1;
   renderMonitor();
 });
+$('monPageSize').addEventListener('change', () => { monitorPage = 1; renderMonitor(); });
 
 // 监控看板默认日期：最近一周（按系统时间，监控记录均为运行当天）
 function monitorRecentWeek() {
@@ -397,18 +405,29 @@ function sheetIsFailureView() { return monitorTab === 'failures'; }
 function renderMonitor() {
   const map = { overview: '运行总览', failures: '失败明细', health: '接口健康度', detail: '调用明细' };
   let rows = (monitorData && monitorData[map[monitorTab]]) || [];
-  if (rows.length && !rows[0]['提示']) rows = filterMonitorRows(rows);
+  const hasNotice = !!(rows.length && rows[0]['提示']);
+  if (!hasNotice) rows = filterMonitorRows(rows);
+
   const el = $('monitorTable');
   const filterActive = ['monKeyword','monStart','monEnd'].some(id => $(id).value.trim()) ||
     !!$('monRunType').value || !!$('monCategory').value || !!$('monStatus').value;
-  $('monFilterHint').textContent = filterActive ? `筛选后 ${rows.length} 行` : '';
-  if (!rows.length || (rows[0]['提示'])) {
+  monitorPageSize = Math.min(Math.max(parseInt($('monPageSize')?.value, 10) || 25, 1), MAX_PAGE_SIZE);
+  monitorTotalRows = rows.length;
+  monitorPages = Math.max(1, Math.ceil(monitorTotalRows / monitorPageSize));
+  if (monitorPage > monitorPages) monitorPage = monitorPages;
+  const start = (monitorPage - 1) * monitorPageSize;
+  const pageRows = hasNotice ? rows : rows.slice(start, start + monitorPageSize);
+
+  const prefix = filterActive ? '筛选后' : '共';
+  $('monFilterHint').textContent = `${prefix} ${monitorTotalRows} 行 · 第 ${monitorPage}/${monitorPages} 页`;
+  if (!pageRows.length) {
     el.innerHTML = `<div class="empty">${rows[0]?.['提示'] || '无匹配记录'}</div>`;
+    renderMonitorPager();
     return;
   }
-  const cols = Object.keys(rows[0]);
+  const cols = Object.keys(pageRows[0]);
   const head = '<thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
-  const body = '<tbody>' + rows.map(r => {
+  const body = '<tbody>' + pageRows.map(r => {
     const isFail = (r['状态'] === 'failed') || (r['失败原因'] && !r['重跑结果']);
     const cls = isFail ? 'row-fail' : '';
     return `<tr class="${cls}">` + cols.map(c => {
@@ -425,6 +444,14 @@ function renderMonitor() {
     }).join('') + '</tr>';
   }).join('') + '</tbody>';
   el.innerHTML = '<table>' + head + body + '</table>';
+  renderMonitorPager();
+}
+
+function renderMonitorPager() {
+  const el = $('monitorPager');
+  if (!monitorTotalRows || monitorPages <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = pagerButtons(monitorPage, monitorPages, monitorTotalRows);
+  bindPager(el, monitorPages, (p) => { monitorPage = p; renderMonitor(); });
 }
 
 /* ---------- 数据浏览 ---------- */
@@ -507,7 +534,7 @@ async function loadData() {
   const code = $('filterCode').value.trim();
   const start = $('filterStart').value.trim();
   const end = $('filterEnd').value.trim();
-  const pageSize = Math.min(parseInt($('filterPageSize').value, 10) || 25, 100);
+  const pageSize = Math.min(Math.max(parseInt($('filterPageSize').value, 10) || 25, 1), MAX_PAGE_SIZE);
   const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}`;
   try {
     const res = await api(url);
@@ -520,29 +547,39 @@ async function loadData() {
   } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
 
-function renderPager() {
-  const el = $('dataPager');
-  if (dataPages <= 1 && dataTotalRows <= 20) { el.innerHTML = ''; return; }
-  const btn = (label, page, opts = {}) => {
+// 通用分页控件：监控看板与采集数据预览共用，默认 25 行/页、单页上限 100 行
+function pagerButtons(page, pages, total) {
+  const btn = (label, target, opts = {}) => {
     const dis = opts.disabled ? 'disabled' : '';
     const act = opts.active ? 'active' : '';
-    return `<button ${dis} class="${act}" data-page="${page}">${label}</button>`;
+    return `<button ${dis} class="${act}" data-page="${target}">${label}</button>`;
   };
-  let html = btn('«', 1, { disabled: dataPage === 1 });
-  html += btn('‹', dataPage - 1, { disabled: dataPage === 1 });
-  // 页码窗口：当前页前后各 2 页
-  const from = Math.max(1, dataPage - 2);
-  const to = Math.min(dataPages, dataPage + 2);
-  for (let p = from; p <= to; p++) html += btn(String(p), p, { active: p === dataPage });
-  html += btn('›', dataPage + 1, { disabled: dataPage === dataPages });
-  html += btn('»', dataPages, { disabled: dataPage === dataPages });
-  html += `<span class="page-info">共 ${dataPages} 页 / ${dataTotalRows} 行</span>`;
-  el.innerHTML = html;
+  let html = btn('«', 1, { disabled: page === 1 });
+  html += btn('‹', page - 1, { disabled: page === 1 });
+  const from = Math.max(1, page - 2);
+  const to = Math.min(pages, page + 2);
+  for (let p = from; p <= to; p++) html += btn(String(p), p, { active: p === page });
+  html += btn('›', page + 1, { disabled: page === pages });
+  html += btn('»', pages, { disabled: page === pages });
+  html += `<span class="page-info">共 ${pages} 页 / ${total} 行</span>`;
+  return html;
+}
+
+function bindPager(el, pages, onPage) {
   el.querySelectorAll('button[data-page]').forEach(b => {
     b.addEventListener('click', () => {
       const p = parseInt(b.dataset.page, 10);
-      if (p >= 1 && p <= dataPages && p !== dataPage) { dataPage = p; loadData(); }
+      if (p >= 1 && p <= pages) onPage(p);
     });
+  });
+}
+
+function renderPager() {
+  const el = $('dataPager');
+  if (dataPages <= 1) { el.innerHTML = ''; return; }
+  el.innerHTML = pagerButtons(dataPage, dataPages, dataTotalRows);
+  bindPager(el, dataPages, (p) => {
+    if (p !== dataPage) { dataPage = p; loadData(); }
   });
 }
 

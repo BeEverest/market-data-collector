@@ -161,11 +161,17 @@
       <input id="monStart" type="date" title="起始日期">
       <span class="date-sep">~</span>
       <input id="monEnd" type="date" title="结束日期">
+      <select id="monPageSize" class="filter-select" title="每页行数（单页上限 100）">
+        <option value="25" selected>25 行/页</option>
+        <option value="50">50 行/页</option>
+        <option value="100">100 行/页</option>
+      </select>
       <button class="btn tiny" id="monFilterBtn">筛选</button>
       <button class="btn tiny" id="monResetBtn">重置</button>
       <span class="hint" id="monFilterHint"></span>
     </div>
     <div class="table-wrap" id="monitorTable"><div class="empty">加载中…</div></div>
+    <div class="pager" id="monitorPager"></div>
   </section>
 
   <!-- 数据浏览 -->

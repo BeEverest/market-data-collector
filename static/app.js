@@ -1425,8 +1425,9 @@ function renderDashboardCharts(containerId, charts) {
           <div class="etc-v neutral">${c.etf_count} 只 · ${esc(c.range_label || '')}</div>
         </div>
       </div>` : '';
+    const cardClass = 'chart-card' + (c.group === 'huijin_detail' ? ' chart-card-wide' : '');
     return `
-    <div class="chart-card">
+    <div class="${cardClass}">
       <div class="chart-head">
         <h4>${esc(c.title)}</h4>
         <span>${esc(c.note || '')}</span>
@@ -1458,7 +1459,8 @@ async function loadDashboard() {
     dashboardData = res;
     // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
     renderDashboardTab();
-    const etfNote = etf.map(c => `${c.layout === 'etf_rank' ? '汇金净流入' : '黄金'} ${c.etf_count}只`).join(' · ');
+    const etfNote = etf.filter(c => c.group !== 'huijin_detail')
+      .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
     $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;

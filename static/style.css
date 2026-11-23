@@ -560,6 +560,8 @@ tr.row-ok td { }
 .chart-head span { font-size: 10.5px; color: var(--muted); }
 .chart-box { width: 100%; height: 320px; }
 .chart-box-tall { height: 400px; }
+/* 汇金净流入细分图独占一行，紧跟汇金原图下方 */
+.chart-card-wide { grid-column: 1 / -1; }
 
 /* 汇金净流入：独立合计数字卡片 */
 .etf-total-cards {

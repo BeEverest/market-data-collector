@@ -546,7 +546,13 @@
             <option value="0">全部</option>
           </select>
         </label>
-        <span class="hint">按汇金 / 黄金标签汇总较上一交易日的流通份额与申赎净流入</span>
+        <label class="prec-field">开始日期
+          <input id="dashboardEtfStart" class="prec-input" type="date" title="自定义起始日期，优先于快捷范围">
+        </label>
+        <label class="prec-field">结束日期
+          <input id="dashboardEtfEnd" class="prec-input" type="date" title="自定义结束日期，优先于快捷范围">
+        </label>
+        <span class="hint">按汇金 / 黄金标签汇总较上一交易日的流通份额与申赎净流入；自定义日期优先于快捷范围</span>
       </div>
       <div class="dashboard-grid" id="etfCharts"></div>
     </div>

@@ -251,6 +251,43 @@ class TestEtfDashboard:
         assert day["rows"][0]["name"] == "沪深300ETF"
         assert day["rows"][0]["share_rate"] == 6.0
 
+    def test_etf_custom_date_range_overrides_months(self):
+        """start/end 精确日期优先于 months，图表与按天明细同口径。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-10-15",
+             "份额变化(亿份)": 9.0, "规模变化(亿元)": 10.0},
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-10",
+             "份额变化(亿份)": 2.0, "规模变化(亿元)": 3.0},
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-18",
+             "份额变化(亿份)": 4.0, "规模变化(亿元)": 5.0},
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
+        ])
+        tag_map = {"510050": ["汇金"]}
+        # 指定 11-10 ~ 11-18，即使 months=1 也应以精确区间为准
+        charts = build_etf_charts(df, tag_map, months=1, start="2026-11-10", end="2026-11-18")
+        hj = charts[0]
+        assert hj["series"][0]["data"] == [["2026-11-10", 2.0], ["2026-11-18", 4.0]]
+        assert "2026-11-10 ~ 2026-11-18" in hj["note"]
+        detail = charts[1]
+        assert detail["detail_start"] == "2026-11-10"
+        assert detail["detail_end"] == "2026-11-18"
+        assert detail["range_label"] == "2026-11-10 ~ 2026-11-18"
+
+        # 单边：仅 start
+        hj2 = build_etf_charts(df, tag_map, months=12, start="2026-11-18")[0]
+        assert [d for d, _ in hj2["series"][0]["data"]] == ["2026-11-18", "2026-11-20"]
+        assert hj2["series"][1]["data"]  # 资金流线非空
+        # 仅 end
+        hj3 = build_etf_charts(df, tag_map, months=12, end="2026-11-10")[0]
+        assert [d for d, _ in hj3["series"][0]["data"]] == ["2026-10-15", "2026-11-10"]
+
+        # 按天明细同样按精确区间过滤并反映范围
+        daily = build_etf_daily_detail(df, tag_map, months=1, start="2026-11-10", end="2026-11-18")
+        assert [r["date"] for r in daily["rows"]] == ["2026-11-18", "2026-11-10"]
+        assert daily["range"] == "2026-11-10 ~ 2026-11-18"
+        assert daily["total"]["share"] == 6.0  # 2 + 4
+
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([
             {"基金代码": "510050", "交易日期": "2026-11-20",
@@ -278,6 +315,23 @@ class TestDashboardApi:
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
         assert "generated_at" in data
+
+    def test_dashboard_endpoint_etf_date_range(self, client):
+        data = client.get(
+            "/api/dashboard?months=12&etf_months=12"
+            "&etf_start=2026-11-10&etf_end=2026-11-20"
+        ).json()
+        assert data["etf_start"] == "2026-11-10"
+        assert data["etf_end"] == "2026-11-20"
+        assert len(data["etf"]["charts"]) == 3
+
+    def test_etf_daily_endpoint_date_range(self, client):
+        data = client.get(
+            "/api/dashboard/etf-daily?months=12"
+            "&start=2026-11-10&end=2026-11-20"
+        ).json()
+        assert "rows" in data and "total" in data
+        assert "2026-11-10" in data["range"]
 
     def test_etf_daily_endpoint(self, client, db_path, config):
         etf_cfg = dict(config["etf"])

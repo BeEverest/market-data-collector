@@ -732,10 +732,12 @@ def api_derived_export(month: str | None = None):
 
 
 @app.get("/api/dashboard")
-def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None):
+def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None,
+                  etf_start: str | None = None, etf_end: str | None = None):
     """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。
 
     months/etf_months 均为月份范围（0=全部），默认近一年；days 为兼容旧前端的别名。
+    etf_start/etf_end 为 YYYY-MM-DD 精确日期区间，优先于 etf_months。
     """
     cfg = _cfg()
     db = _require_db(cfg)
@@ -754,20 +756,26 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "months": months,
         "etf_months": etf_months,
+        "etf_start": etf_start or "",
+        "etf_end": etf_end or "",
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
-        "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months)},
+        "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
+                                           etf_start, etf_end)},
     }
 
 
 @app.get("/api/dashboard/etf-daily")
-def api_dashboard_etf_daily(months: int = 12, date: str | None = None):
-    """汇金维度按天明细：不带 date 返回每日汇总+区间合计；带 date 返回当日各 ETF 明细。"""
+def api_dashboard_etf_daily(months: int = 12, date: str | None = None,
+                            start: str | None = None, end: str | None = None):
+    """汇金维度按天明细：不带 date 返回每日汇总+区间合计；带 date 返回当日各 ETF 明细。
+    start/end 为 YYYY-MM-DD 精确日期区间，优先于 months。
+    """
     cfg = _cfg()
     db = _require_db(cfg)
     months = max(0, min(int(months or 0), 240))
     _, etf_df = storage.read_etf_with_changes(db, limit=None)
     etf_cfg = storage.get_etf_config(db, cfg.get("etf", {}))
-    return build_etf_daily_detail(etf_df, etf_cfg.get("tags", {}), months, date)
+    return build_etf_daily_detail(etf_df, etf_cfg.get("tags", {}), months, date, start, end)
 
 
 @app.get("/api/files")

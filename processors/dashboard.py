@@ -132,6 +132,37 @@ def _index_monthly(df: pd.DataFrame, code: str = "000001") -> list[list]:
     return [[m, monthly[m]] for m in sorted(monthly)]
 
 
+def _etf_window(df, months: int, start: str | None, end: str | None):
+    """按精确日期区间(start/end)或近 N 个月截取 ETF 数据。
+
+    - start/end 为 YYYY-MM-DD，任一给出则按精确区间过滤，优先于 months。
+    - 否则按近 months 个月（基于数据最大交易日回推，0=全部）。
+    返回 (过滤后df, 范围描述, low, high)：low/high 为精确起止日（精确模式），
+    月份模式下 low 为起始月 YYYY-MM、high 为空。供细分图每日明细沿用同口径。
+    """
+    start = str(start).strip()[:10] if start else ""
+    end = str(end).strip()[:10] if end else ""
+    default_scope = "全部" if not months else "近 %d 个月" % months
+    if df is None or getattr(df, "empty", True):
+        return df, default_scope, start, end
+    if start or end:
+        dates = df["交易日期"].astype(str).str[:10]
+        mask = pd.Series(True, index=df.index)
+        if start:
+            mask &= dates >= start
+        if end:
+            mask &= dates <= end
+        return df[mask], f"{start or '最早'} ~ {end or '最新'}", start, end
+    cutoff = ""
+    if months:
+        valid = sorted(d for d in df["交易日期"].astype(str).str[:10] if d >= "2000-01-01")
+        if valid:
+            cutoff = _shift_month(valid[-1][:7], -(int(months) - 1))
+    if cutoff:
+        df = df[df["交易日期"].astype(str).str[:7] >= cutoff]
+    return df, default_scope, cutoff, ""
+
+
 def _cutoff_date(series_list: list[list[list]], months: int | None) -> str:
     """根据所有序列的最大月份，回推 months 个月得到起始月；months<=0 表示全部。"""
     if not months or months <= 0:
@@ -208,19 +239,17 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
 
 
 def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
-                     months: int = 12) -> list[dict]:
+                     months: int = 12, start: str | None = None,
+                     end: str | None = None) -> list[dict]:
     """按标签汇总 ETF 较上一交易日的份额变化/申赎净流入；months 控制展示最近 N 个月（0 为全部）。
 
     与宏观图保持一致的「近一年/近6个月/近3年/近5年/全部」口径。变化值已在
     read_etf_with_changes 中基于全量历史算好，这里只按日期截取展示窗口。
+    start/end 为 YYYY-MM-DD 精确日期区间，优先于 months（任一给出即生效）。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
-    cutoff = ""
-    if months and etf_df is not None and not etf_df.empty and "交易日期" in etf_df.columns:
-        all_dates = sorted(str(d)[:10] for d in etf_df["交易日期"] if str(d)[:10] >= "2000-01-01")
-        if all_dates:
-            cutoff = _shift_month(all_dates[-1][:7], -(months - 1))
+    etf_df, scope, low, high = _etf_window(etf_df, months, start, end)
     charts = []
     for tag in ETF_DASHBOARD_TAGS:
         codes = {str(c).zfill(6) for c, tags in tag_map.items()
@@ -229,8 +258,6 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         required = {"基金代码", "交易日期", "份额变化(亿份)", "规模变化(亿元)"}
         if etf_df is not None and not etf_df.empty and codes and required.issubset(etf_df.columns):
             sub = etf_df[etf_df["基金代码"].isin(codes)]
-        if not sub.empty and cutoff:
-            sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
 
         # 按交易日汇总的时间序列（汇金原图 / 黄金图共用）
         if not sub.empty:
@@ -249,7 +276,6 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 v = _net_inflow_sum(grp)
                 if v is not None:
                     flow_data.append([str(d)[:10], v])
-        scope = '全部' if not months else '近 %d 个月' % months
         charts.append({
             "id": f"etf_{'huijin' if tag == '汇金' else 'gold'}",
             "title": f"{tag}维度 · 流通份额变化 / 申赎净流入",
@@ -297,7 +323,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 "etf_count": len(codes),
                 "codes": sorted(codes),
                 "rank_meta": rank_meta,     # 与 series data 同序：{code,name}
-                "detail_start": cutoff,     # 与图表同口径的起始月份（YYYY-MM），空=全部
+                "detail_start": low,        # 与图表同口径的起始日期（精确模式 YYYY-MM-DD / 月份模式 YYYY-MM）
+                "detail_end": high,         # 精确模式结束日期（YYYY-MM-DD），空=不限
                 "range_label": scope,
                 "total_cap_change": total_cap_change,   # 实为合计净流入（申赎资金）
                 "total_share_change": total_share_change,
@@ -310,18 +337,20 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
     return charts
 
 
-def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None = None) -> dict:
+def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None = None,
+                           start: str | None = None, end: str | None = None) -> dict:
     """汇金维度按天流通份额/申赎净流入明细。
 
     - date 为空：按交易日倒序返回每日汇总（含当日各 ETF 只数）与区间合计。
     - date 给定：返回该交易日各汇金 ETF 的份额变化/申赎净流入明细，按申赎净流入降序。
     口径与 build_etf_charts 一致：变化基准来自全量历史，此处仅按窗口截取。
+    start/end 为 YYYY-MM-DD 精确日期区间，优先于 months（任一给出即生效）。
     注：返回字段中的 cap（规模变化）仅为兼容旧调用保留，前端展示统一使用 net（申赎净流入）。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
     codes = {str(c).zfill(6) for c, tags in tag_map.items() if "汇金" in (tags or [])}
-    scope = "全部" if not months else "近 %d 个月" % months
+    etf_df, scope, low, high = _etf_window(etf_df, months, start, end)
 
     if etf_df is None or etf_df.empty or not codes:
         if date:
@@ -330,11 +359,6 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
                                        "net": 0.0, "days": 0}, "range": scope}
 
     sub = etf_df[etf_df["基金代码"].astype(str).str.zfill(6).isin(codes)].copy()
-    if months:
-        all_dates = sorted(str(d)[:10] for d in sub["交易日期"] if str(d)[:10] >= "2000-01-01")
-        if all_dates:
-            cutoff = _shift_month(all_dates[-1][:7], -(months - 1))
-            sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
 
     if date:
         target = str(date)[:10]

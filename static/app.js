@@ -1324,7 +1324,15 @@ async function loadDerivedScheduler() {
 const dashboardInstances = {};  // containerId -> [{ id, inst }]
 let dashboardTab = 'macro';
 let dashboardData = null;
-const etfDetailState = { code: '', page: 1, start: '' };  // 当前展开的 ETF 每日明细
+const etfDetailState = { code: '', page: 1, start: '', end: '' };  // 当前展开的 ETF 每日明细
+
+/* ETF 维度自定义日期区间（YYYY-MM-DD），任一非空即优先于快捷月份范围 */
+function etfDateRange() {
+  return {
+    start: ($('dashboardEtfStart')?.value || '').trim(),
+    end: ($('dashboardEtfEnd')?.value || '').trim(),
+  };
+}
 const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
 
 function disposeDashboardCharts(containerId) {
@@ -1362,6 +1370,8 @@ function dashboardChartOption(chart) {
     },
     xAxis: {
       type: 'category', data: categories, boundaryGap: hasBar,
+      // ETF 时间序列图增加浅色竖向网格线，便于对齐交易日；细分图/宏观图保持简洁
+      splitLine: { show: isEtfTime, lineStyle: { color: '#eef1f6', type: 'dashed' } },
       axisLabel: {
         fontSize: isEtfTime ? 10 : 10, hideOverlap: !isRank,
         rotate: isRank ? 42 : (isEtfTime ? 30 : (categories.length > 36 ? 30 : 0)),
@@ -1374,7 +1384,10 @@ function dashboardChartOption(chart) {
       offset: a.offset || 0,
       nameTextStyle: { fontSize: 10, padding: [0, 0, 0, a.offset ? 32 : 0] },
       axisLabel: { fontSize: 10 },
-      splitLine: { show: i === 0 },
+      // 主轴实线、次轴浅虚线，双轴图读数更清晰且主次分明
+      splitLine: i === 0
+        ? { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } }
+        : { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
     })),
     dataZoom: [
       { type: 'inside' },
@@ -1491,8 +1504,12 @@ async function loadEtfDailyDetail() {
   const totalBox = document.getElementById('etfDailyTotal');
   if (!tableBox || !totalBox) return;
   const months = $('dashboardEtfMonths')?.value || '12';
+  const { start, end } = etfDateRange();
   try {
-    const res = await api(`/api/dashboard/etf-daily?months=${encodeURIComponent(months)}`);
+    const qs = new URLSearchParams({ months });
+    if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
+    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
     const t = res.total || { share: 0, cap: 0, net: 0, days: 0 };
     totalBox.innerHTML = `
       <div class="etf-daily-total-card"><span>区间合计申赎净流入</span>
@@ -1537,7 +1554,10 @@ async function toggleEtfDayDetail(date) {
   cell.innerHTML = '<div class="empty">加载当日明细…</div>';
   try {
     const months = $('dashboardEtfMonths')?.value || '12';
+    const { start, end } = etfDateRange();
     const qs = new URLSearchParams({ months, date });
+    if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
     const res = await api('/api/dashboard/etf-daily?' + qs.toString());
     const rows = res.rows || [];
     cell.innerHTML = `
@@ -1568,6 +1588,7 @@ async function openEtfDailyDetail(chart, meta, netValue) {
   etfDetailState.code = meta.code;
   etfDetailState.page = 1;
   etfDetailState.start = chart.detail_start || '';
+  etfDetailState.end = chart.detail_end || '';
   panel.hidden = false;
   panel.innerHTML = '<div class="empty">加载每日明细…</div>';
   await renderEtfDetailPage(panel, chart, meta, netValue);
@@ -1578,6 +1599,7 @@ async function renderEtfDetailPage(panel, chart, meta, netValue) {
     code: meta.code, page: String(etfDetailState.page), page_size: '100', order: 'desc',
   });
   if (etfDetailState.start) qs.set('start', etfDetailState.start);
+  if (etfDetailState.end) qs.set('end', etfDetailState.end);
   try {
     const res = await api('/api/data/etf?' + qs.toString());
     if (etfDetailState.code !== meta.code) return;  // 已切到其他 ETF，丢弃过期响应
@@ -1632,7 +1654,11 @@ async function loadDashboard() {
   try {
     const months = $('dashboardMonths').value || '12';
     const etfMonths = $('dashboardEtfMonths').value || '12';
-    const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&etf_months=${encodeURIComponent(etfMonths)}`);
+    const { start, end } = etfDateRange();
+    const qs = new URLSearchParams({ months, etf_months: etfMonths });
+    if (start) qs.set('etf_start', start);
+    if (end) qs.set('etf_end', end);
+    const res = await api('/api/dashboard?' + qs.toString());
     const macro = (res.macro && res.macro.charts) || [];
     const etf = (res.etf && res.etf.charts) || [];
     dashboardData = res;
@@ -1640,7 +1666,8 @@ async function loadDashboard() {
     renderDashboardTab();
     const etfNote = etf.filter(c => c.group !== 'huijin_detail')
       .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
-    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}`;
+    const etfRange = (start || end) ? ` · ETF ${start || '最早'}~${end || '最新'}` : '';
+    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${etfRange}`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
     flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
@@ -1671,6 +1698,8 @@ document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
 window.addEventListener('resize', resizeDashboardCharts);
 $('dashboardMonths').addEventListener('change', loadDashboard);
 $('dashboardEtfMonths').addEventListener('change', loadDashboard);
+$('dashboardEtfStart').addEventListener('change', loadDashboard);
+$('dashboardEtfEnd').addEventListener('change', loadDashboard);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
 
 /* ---------- 定时刷新 ---------- */

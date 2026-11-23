@@ -1350,8 +1350,8 @@ function renderDashboardCharts(containerId, charts) {
 async function loadDashboard() {
   try {
     const months = $('dashboardMonths').value || '12';
-    const days = $('dashboardDays').value || '30';
-    const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&days=${encodeURIComponent(days)}`);
+    const etfMonths = $('dashboardEtfMonths').value || '12';
+    const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&etf_months=${encodeURIComponent(etfMonths)}`);
     const macro = (res.macro && res.macro.charts) || [];
     const etf = (res.etf && res.etf.charts) || [];
     dashboardData = res;
@@ -1388,7 +1388,7 @@ document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
 
 window.addEventListener('resize', resizeDashboardCharts);
 $('dashboardMonths').addEventListener('change', loadDashboard);
-$('dashboardDays').addEventListener('change', loadDashboard);
+$('dashboardEtfMonths').addEventListener('change', loadDashboard);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
 
 /* ---------- 定时刷新 ---------- */

@@ -124,33 +124,37 @@ class TestMacroDashboard:
 
 
 class TestEtfDashboard:
-    def test_aggregates_by_tag_and_days(self):
+    def test_aggregates_by_tag_and_months(self):
         df = pd.DataFrame([
+            {"基金代码": "510050", "交易日期": "2026-10-15", "份额变化(亿份)": 9.0, "规模变化(亿元)": 10.0},
             {"基金代码": "510050", "交易日期": "2026-11-18", "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0},
             {"基金代码": "510300", "交易日期": "2026-11-18", "份额变化(亿份)": 3.0, "规模变化(亿元)": 4.0},
             {"基金代码": "510050", "交易日期": "2026-11-19", "份额变化(亿份)": 5.0, "规模变化(亿元)": 6.0},
             {"基金代码": "518880", "交易日期": "2026-11-19", "份额变化(亿份)": -0.5, "规模变化(亿元)": -1.5},
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
-        charts = build_etf_charts(df, {
-            "510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"],
-        }, days=2)
+        tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
+        # 近一年（months=12）覆盖全部；近 1 个月只保留 2026-11
+        charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == ["etf_huijin", "etf_gold"]
         hj = charts[0]
         assert hj["etf_count"] == 2
         assert hj["series"][0]["data"] == [
-            ["2026-11-19", 5.0], ["2026-11-20", 7.0]]
+            ["2026-11-18", 4.0], ["2026-11-19", 5.0], ["2026-11-20", 7.0]]
         assert hj["series"][1]["data"] == [
-            ["2026-11-19", 6.0], ["2026-11-20", 8.0]]
+            ["2026-11-18", 6.0], ["2026-11-19", 6.0], ["2026-11-20", 8.0]]
         gold = charts[1]
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
+
+        full = build_etf_charts(df, tag_map, months=0)
+        assert full[0]["series"][0]["data"][0] == ["2026-10-15", 9.0]
 
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([
             {"基金代码": "510050", "交易日期": "2026-11-20",
              "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0},
         ])
-        charts = build_etf_charts(df, {}, days=5)
+        charts = build_etf_charts(df, {}, months=12)
         assert len(charts) == 2
         assert all(c["etf_count"] == 0 for c in charts)
         assert all(not s["data"] for c in charts for s in c["series"])
@@ -164,8 +168,8 @@ class TestDashboardApi:
         etf_cfg["tags"] = {"510050": ["汇金"], "159915": ["黄金"]}
         storage.save_etf_config(db_path, etf_cfg)
 
-        data = client.get("/api/dashboard?months=12&days=5").json()
-        assert data["months"] == 12 and data["days"] == 5
+        data = client.get("/api/dashboard?months=12&etf_months=12").json()
+        assert data["months"] == 12 and data["etf_months"] == 12
         assert len(data["macro"]["charts"]) == 7
         assert len(data["etf"]["charts"]) == 2
         assert data["etf"]["charts"][0]["etf_count"] == 1

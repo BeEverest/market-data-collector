@@ -198,10 +198,19 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
 
 
 def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
-                     days: int = 30) -> list[dict]:
-    """按标签汇总 ETF 较上一交易日的份额/规模变化；days 控制展示最近 N 个交易日。"""
+                     months: int = 12) -> list[dict]:
+    """按标签汇总 ETF 较上一交易日的份额/规模变化；months 控制展示最近 N 个月（0 为全部）。
+
+    与宏观图保持一致的「近一年/近6个月/近3年/近5年/全部」口径。变化值已在
+    read_etf_with_changes 中基于全量历史算好，这里只按日期截取展示窗口。
+    """
     tag_map = tag_map or {}
-    days = max(1, int(days or 30))
+    months = max(0, int(months or 0))
+    cutoff = ""
+    if months and etf_df is not None and not etf_df.empty and "交易日期" in etf_df.columns:
+        all_dates = sorted(str(d)[:10] for d in etf_df["交易日期"] if str(d)[:10] >= "2000-01-01")
+        if all_dates:
+            cutoff = _shift_month(all_dates[-1][:7], -(months - 1))
     charts = []
     for tag in ETF_DASHBOARD_TAGS:
         codes = {str(c).zfill(6) for c, tags in tag_map.items()
@@ -211,8 +220,10 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         if etf_df is not None and not etf_df.empty and codes and required.issubset(etf_df.columns):
             sub = etf_df[etf_df["基金代码"].isin(codes)]
         if not sub.empty:
+            if cutoff:
+                sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
             agg = (sub.groupby("交易日期")[["份额变化(亿份)", "规模变化(亿元)"]]
-                   .sum().sort_index().tail(days))
+                   .sum().sort_index())
         else:
             agg = pd.DataFrame(columns=["份额变化(亿份)", "规模变化(亿元)"])
         share_data = [[str(d), _clean_number(row["份额变化(亿份)"])]
@@ -224,7 +235,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         charts.append({
             "id": f"etf_{'huijin' if tag == '汇金' else 'gold'}",
             "title": f"{tag}维度 · 流通份额变化 / 流通规模变化",
-            "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的变化；最近 {days} 个交易日",
+            "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的变化；"
+                    f"{'全部' if not months else '近 %d 个月' % months}",
             "etf_count": len(codes),
             "codes": sorted(codes),
             "y_axes": [

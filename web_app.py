@@ -693,12 +693,17 @@ def api_derived_export(month: str | None = None):
 
 
 @app.get("/api/dashboard")
-def api_dashboard(months: int = 60, days: int = 30):
-    """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。"""
+def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None):
+    """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。
+
+    months/etf_months 均为月份范围（0=全部），默认近一年；days 为兼容旧前端的别名。
+    """
     cfg = _cfg()
     db = _require_db(cfg)
     months = max(0, min(int(months or 0), 240))
-    days = max(1, min(int(days or 30), 250))
+    if days is not None:  # 兼容旧参数（原 days 表示交易日数，仅用于回退）
+        etf_months = int(days)
+    etf_months = max(0, min(int(etf_months or 0), 240))
 
     derived_df = storage.read_derived(db)
     _, macro_df = storage.read_macro(db, limit=None)
@@ -709,9 +714,9 @@ def api_dashboard(months: int = 60, days: int = 30):
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "months": months,
-        "days": days,
+        "etf_months": etf_months,
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
-        "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), days)},
+        "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months)},
     }
 
 

@@ -23,6 +23,10 @@ GROUPS = {
 # 1 万盎司 = 10^4 盎司 × 31.1034768 克/盎司 ÷ 10^6 克/吨 = 0.311034768 吨
 GOLD_TON_PER_WAN_OZ = 31.1034768 / 100
 
+# 央行黄金储备曾于 2015-06 一次性披露口径变更（3389→5332 万盎司），
+# 属于历史存量重述而非当月增持；差分超过该阈值视为口径跳变，不产出"当月新增"。
+GOLD_MAX_MONTHLY_ADD_TON = 100.0
+
 INDICATORS: dict[str, dict] = {
     "TRADE_YOY": {
         "name": "进出口同比", "group": "A", "unit": "%",
@@ -211,6 +215,9 @@ def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None) -> p
         if d in new_loan:
             emit("RMB_LOAN_NEW", d, new_loan[d])
         if d in raw["gold"] and prev_m in raw["gold"]:
-            emit("GOLD_NEW_TON", d, (raw["gold"][d] - raw["gold"][prev_m]) * GOLD_TON_PER_WAN_OZ)
+            gold_add_ton = (raw["gold"][d] - raw["gold"][prev_m]) * GOLD_TON_PER_WAN_OZ
+            # 过滤一次性口径重述（2015-06 等），避免把存量重估当成当月增持
+            if abs(gold_add_ton) < GOLD_MAX_MONTHLY_ADD_TON:
+                emit("GOLD_NEW_TON", d, gold_add_ton)
 
     return pd.DataFrame(rows)

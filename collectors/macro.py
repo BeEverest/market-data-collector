@@ -574,6 +574,42 @@ def collect_macro(
     add_fred_monthly_latest(
         "US_RATE_LOWER", "美国联邦基金目标利率下限", "fred_DFEDTARL", "%", FRED)
 
+    # ============ 长周期历史补全：存贷款余额 / 社零1-2月 ============
+    # 仅当对应接口在采集范围内时补全；重建结果用同 biz_key 覆盖，与近期真实余额拼接。
+    logger.info("  ├ 长周期历史补全：贷款余额 / 居民存款 / 社零1-2月")
+    try:
+        from collectors.macro_long_history import (
+            LONG_DEPOSIT_IFACE, LONG_LOAN_IFACE, RETAIL_IFACE,
+            build_long_loan_balance, build_long_hh_deposit, build_retail_jan_feb,
+        )
+        def fetch_helper(fn_name: str) -> pd.DataFrame:
+            """补全用的内部接口不受 only 限制（它们是补全逻辑的一部分，非独立重跑标的）。"""
+            return _fetch(ak, fn_name, monitor=monitor, retries=retries,
+                          retry_interval=retry_interval, only=None, params=call_params)
+
+        extra: list[pd.DataFrame] = []
+        if only is None or "macro_rmb_loan" in only or LONG_LOAN_IFACE in only:
+            d = build_long_loan_balance(fetch_helper, fetch_time)
+            if not d.empty:
+                extra.append(d)
+        if only is None or "macro_rmb_deposit" in only or LONG_DEPOSIT_IFACE in only:
+            d = build_long_hh_deposit(fetch_helper, fetch_time)
+            if not d.empty:
+                extra.append(d)
+        if only is None or RETAIL_IFACE in only:
+            d = build_retail_jan_feb(fetch_helper, fetch_time)
+            if not d.empty:
+                extra.append(d)
+        if extra:
+            base = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+            merged = pd.concat([base] + extra, ignore_index=True)
+            # 长周期重建行覆盖同代码+日期的短周期行（以补全来源为准）
+            merged = merged.drop_duplicates(subset=["指标代码", "日期"], keep="last")
+            rows = merged[OUTPUT_COLUMNS].to_dict("records")
+            logger.info("  └ 长周期补全完成：合并后 %d 行", len(rows))
+    except Exception as exc:
+        logger.warning("  └ 长周期历史补全失败，保留原始采集结果：%s", exc)
+
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
 
     # ============ 社零环比口径校正：用统计局官方「季调后环比」覆盖未季调名义环比 ============

@@ -254,8 +254,8 @@ def _recompute_derived(config: dict, trigger: str = "手动") -> int:
         return 0
     _, macro_df = storage.read_macro(db, limit=None)
     result = compute_derived(macro_df)
-    n = storage.upsert_derived(db, result)
-    logger.info("【数据处理】%s触发派生指标重算：%d 行", trigger, n)
+    n = storage.replace_derived(db, result)
+    logger.info("【数据处理】%s触发派生指标重算：%d 行（全量替换，已清理陈旧口径行）", trigger, n)
     return n
 
 

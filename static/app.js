@@ -1205,7 +1205,7 @@ function switchModule(name) {
   $('collectModule').hidden = name !== 'collect';
   $('derivedModule').hidden = name !== 'derived';
   $('dashboardModule').hidden = name !== 'dashboard';
-  if (name === 'derived') loadDerived();
+  if (name === 'derived') { loadDerived(); loadDerivedScheduler(); }
   if (name === 'dashboard') {
     loadDashboard().then(() => setTimeout(resizeDashboardCharts, 60));
   }
@@ -1264,6 +1264,28 @@ $('derivedExportBtn').addEventListener('click', () => {
   window.location.href = '/api/derived/export' + (month ? '?month=' + encodeURIComponent(month) : '');
 });
 
+async function loadDerivedScheduler() {
+  try {
+    const res = await api('/api/scheduler');
+    const badge = $('derivedSchedBadge');
+    badge.textContent = res.enabled ? '已启用' : '未启用';
+    badge.className = 'pill ' + (res.enabled ? 'ok' : 'ghost');
+    const runTypeMap = { full: '全量（宏观+ETF+指数）', macro: '仅宏观', etf: '仅ETF', index: '仅指数' };
+    const items = [
+      ['启用状态', res.enabled ? '已启用 · 每日自动' : '未启用 · 仅手动'],
+      ['触发时刻', res.time || '08:30'],
+      ['采集范围', runTypeMap[res.run_type] || res.run_type || '全量'],
+      ['下次运行', res.next_run || '—'],
+      ['派生触发', res.enabled ? '采集完成后自动重算（步骤6/6）' : '仅「重新计算」按钮手动兜底'],
+      ['重算范围', '14 项派生指标 · 全量替换'],
+    ];
+    $('derivedSchedGrid').innerHTML = items.map(([k, v]) =>
+      `<div class="ds-item"><div class="ds-k">${esc(k)}</div><div class="ds-v">${esc(v)}</div></div>`).join('');
+  } catch (e) {
+    $('derivedSchedGrid').innerHTML = `<div class="empty">调度配置加载失败：${esc(e.message)}</div>`;
+  }
+}
+
 /* ---------- 数据看板模块 ---------- */
 const dashboardInstances = {};  // containerId -> [{ id, inst }]
 let dashboardTab = 'macro';
@@ -1311,7 +1333,10 @@ function dashboardChartOption(chart) {
       return {
         name: s.name, type: s.type || 'line', yAxisIndex: s.y_axis_index || 0,
         data: categories.map(c => lookup.has(c) ? lookup.get(c) : null),
-        smooth: s.type !== 'bar', showSymbol: false, symbolSize: 5,
+        smooth: s.type !== 'bar',
+        // 稀疏序列（如季度GDP）点少且被空值隔开，需显示圆点+连线才能看见
+        showSymbol: s.type !== 'bar' && (s.data || []).length <= 24,
+        symbolSize: 6, connectNulls: s.type !== 'bar',
         lineStyle: { width: 2 }, barMaxWidth: 20, barGap: '20%',
         itemStyle: { color: DASH_PALETTE[idx % DASH_PALETTE.length] },
       };

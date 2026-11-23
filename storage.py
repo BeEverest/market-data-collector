@@ -317,6 +317,14 @@ def upsert_derived(path: str | Path, df: pd.DataFrame) -> int:
     return len(records)
 
 
+def replace_derived(path: str | Path, df: pd.DataFrame) -> int:
+    """全量替换派生指标表（用于规则变更后重算，清理不再产出的陈旧行）。"""
+    init_schema(path)
+    with connect(path) as conn:
+        conn.execute("DELETE FROM derived_indicator")
+    return upsert_derived(path, df)
+
+
 def read_derived(path: str | Path, month: str | None = None) -> pd.DataFrame:
     """读取派生指标；month 为 YYYY-MM，留空返回全部。"""
     init_schema(path)

@@ -478,6 +478,27 @@ tr.row-ok td { }
   .s-row-name small { display: none; }
 }
 
+/* 数据处理 · 调度说明 */
+.derived-scheduler {
+  border: 1px solid var(--line); border-radius: 10px; background: #fbfcff;
+  padding: 14px 16px; margin-top: 6px;
+}
+.ds-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.ds-head h3 { margin: 0; font-size: 13px; }
+.ds-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px; margin-bottom: 10px;
+}
+.ds-item {
+  border: 1px solid var(--line); border-radius: 8px; background: #fff;
+  padding: 8px 10px; font-size: 12px;
+}
+.ds-item .ds-k { color: var(--muted); font-size: 11px; }
+.ds-item .ds-v { font-weight: 700; margin-top: 2px; }
+.ds-steps { margin: 6px 0 0; padding-left: 20px; font-size: 12px; color: #4a5470; line-height: 1.75; }
+.ds-steps li { margin-bottom: 3px; }
+.ds-steps code { background: #eef1f8; padding: 1px 4px; border-radius: 4px; font-size: 11px; }
+
 /* 数据看板 */
 .module-dashboard { display: grid; gap: 14px; }
 /* hidden 优先级需高于类选择器的 display:grid，否则切换到其它模块时看板仍显示 */

@@ -38,12 +38,17 @@ NBS = "国家统计局（akshare 封装）"
 EXCHANGE = "交易所/第三方（akshare 封装）"
 FRED = "FRED（美联储 / BLS / BEA）"
 
+# 社融存量改由央行《社会融资规模存量统计表》官方接口提供，不再走锚点+增量插值
+SFR_STOCK_IFACE = "sfr_stock_official"
+SFR_STOCK_SOURCE = "中国人民银行（调查统计司·社会融资规模存量统计表）"
+
 # 接口键 -> 中文名称，用于监控报告
 IFACE_NAMES = {
     "macro_china_money_supply": "货币供应量 M0/M1/M2",
     "macro_rmb_deposit": "人民币存款（含居民储蓄）",
     "macro_rmb_loan": "人民币贷款余额",
-    "macro_china_shrzgm": "社会融资规模增量",
+    "macro_china_shrzgm": "社会融资规模增量（旧插值口径，已停用）",
+    SFR_STOCK_IFACE: "社会融资规模存量（央行官方统计表）",
     "macro_china_hgjck": "海关进出口",
     "macro_china_consumer_goods_retail": "社会消费品零售总额",
     "macro_china_cpi": "CPI 居民消费价格指数",
@@ -70,7 +75,7 @@ CATALOG: list[dict] = [
     {"code": "HH_DEPOSIT", "name": "居民储蓄存款余额", "iface": "macro_rmb_deposit", "unit": "亿元", "granularity": "月度", "source": PBC},
     {"code": "RMB_DEPOSIT", "name": "人民币存款余额", "iface": "macro_rmb_deposit", "unit": "亿元", "granularity": "月度", "source": PBC},
     {"code": "RMB_LOAN", "name": "人民币贷款余额", "iface": "macro_rmb_loan", "unit": "亿元", "granularity": "月度", "source": PBC},
-    {"code": "SFR_STOCK", "name": "社会融资规模存量", "iface": "macro_china_shrzgm", "unit": "亿元", "granularity": "月度", "source": "央行锚点+社融增量插值"},
+    {"code": "SFR_STOCK", "name": "社会融资规模存量", "iface": SFR_STOCK_IFACE, "unit": "亿元", "granularity": "月度", "source": SFR_STOCK_SOURCE},
     {"code": "EXPORT", "name": "出口额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
     {"code": "IMPORT", "name": "进口额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
     {"code": "TRADE_TOTAL", "name": "进出口总额", "iface": "macro_china_hgjck", "unit": "亿美元", "granularity": "月度", "source": "海关总署（akshare 封装）"},
@@ -257,6 +262,8 @@ def collect_macro(
     retry_interval: float = 0.0,
     sa_mom_map: dict[str, float] | None = None,
     sa_mom_url: str = "",
+    sfr_stock_map: dict[str, tuple[float, float]] | None = None,
+    sfr_stock_url: str = "",
 ) -> pd.DataFrame:
     """采集月度宏观指标，返回统一 schema 的 DataFrame。
 
@@ -267,6 +274,9 @@ def collect_macro(
     sa_mom_map：社零「季调后环比」{YYYY-MM: %}；传入时直接用于覆盖，
         为 None 时自动抓取统计局最新一期（失败则降级保留接口原值）。
         传空 dict {} 可显式禁用覆盖（测试/离线用）。
+    sfr_stock_map：社融存量 {YYYY-MM: (存量万亿, 官方增速%)}；传入时直接写入，
+        为 None 时自动抓取央行官方存量统计表；抓取失败或传空 dict {} 时本次不产出该指标，
+        不再回退到任何插值/估算口径。
     """
     import akshare as ak
 
@@ -394,35 +404,56 @@ def collect_macro(
             add("RMB_LOAN", "人民币贷款余额", r["月份"], r["累计人民币贷款-总额"], "亿元",
                 r.get("累计人民币贷款-同比"), source=PBC)
 
-    # ============ 央行：社会融资规模存量（锚点 + 增量插值） ============
-    SFR_ANCHORS = {
-        "2024-12": 408.30, "2025-03": 422.96, "2025-05": 426.16,
-        "2025-08": 433.66, "2025-12": 442.12, "2026-01": 449.11,
-        "2026-07": 463.27, "2026-10": 469.16,
-    }
-    sfr = fetch("macro_china_shrzgm")
-    if not sfr.empty and "社会融资规模增量" in sfr.columns:
-        sfr = sfr.copy()
-        sfr["_月"] = sfr["月份"].astype(str).str[:4] + "-" + sfr["月份"].astype(str).str[4:6]
-        sfr = sfr.sort_values("_月").reset_index(drop=True)
-        inc_by_month = dict(zip(sfr["_月"], sfr["社会融资规模增量"].map(_to_float)))
+    # ============ 央行：社会融资规模存量（仅央行官方统计表，无插值） ============
+    if only is None or SFR_STOCK_IFACE in only or "macro_china_shrzgm" in only:
+        started = time.time()
+        sfr_url_used = sfr_stock_url or ""
+        sfr_label = IFACE_NAMES[SFR_STOCK_IFACE]
+        sfr_params = {
+            **call_params,
+            "interface": SFR_STOCK_IFACE,
+            "source": "中国人民银行调查统计司",
+            "url": sfr_url_used,
+            "受影响标的": "社会融资规模存量（央行官方统计表）",
+        }
+        try:
+            from collectors.macro_sfr_stock import fetch_sfr_stock
 
-        anchor_months = sorted(SFR_ANCHORS)
-        for i in range(len(anchor_months) - 1):
-            m0, m1 = anchor_months[i], anchor_months[i + 1]
-            v0, v1 = SFR_ANCHORS[m0], SFR_ANCHORS[m1]
-            months_between = [m for m in sfr["_月"] if m0 < m < m1]
-            total_inc = sum(inc_by_month.get(m) or 0 for m in months_between + [m1])
-            inc_map = {m: (inc_by_month.get(m) or 0) for m in months_between}
-            running = v0
-            for m in months_between:
-                if total_inc:
-                    running += (v1 - v0) * (inc_map[m] / total_inc)
-                add("SFR_STOCK", "社会融资规模存量", m, running * 10000, "亿元",
-                    source="央行公布值锚点 + 社融增量插值")
-        for m, v in SFR_ANCHORS.items():
-            add("SFR_STOCK", "社会融资规模存量", m, v * 10000, "亿元",
-                source="中国人民银行（金融统计数据报告）")
+            if sfr_stock_map is None:
+                sfr_official, sfr_url_used = fetch_sfr_stock(url=sfr_stock_url or None)
+                sfr_params["url"] = sfr_url_used or ""
+            else:
+                sfr_official = sfr_stock_map
+                sfr_params["source"] = "调用方传入官方口径"
+
+            before = len(rows)
+            if sfr_official:
+                for m, (stock_wan, growth) in sorted(sfr_official.items()):
+                    add("SFR_STOCK", "社会融资规模存量", m,
+                        round(stock_wan * 10000, 4), "亿元", yoy=growth,
+                        source=SFR_STOCK_SOURCE)
+                logger.info("  │ [社融存量] 央行官方口径写入 %d 个月，来源 %s",
+                            len(rows) - before, sfr_url_used or "显式传入口径")
+            else:
+                logger.warning("  │ [社融存量] 无官方数据，本次不产出该指标（插值逻辑已删除）")
+
+            if monitor:
+                monitor.record(
+                    category="宏观", interface_key=f"macro.{SFR_STOCK_IFACE}",
+                    interface_name=sfr_label, status="success",
+                    attempts=1, rows=len(rows) - before, params=sfr_params,
+                    duration_sec=time.time() - started,
+                )
+        except Exception as exc:
+            reason = describe_failure(exc, url=sfr_url_used,
+                                      extra="受影响标的=社会融资规模存量（央行官方统计表）")
+            logger.error("  │ [社融存量] 官方统计表抓取失败，本次不产出该指标：%s", reason)
+            if monitor:
+                monitor.record(
+                    category="宏观", interface_key=f"macro.{SFR_STOCK_IFACE}",
+                    interface_name=sfr_label, status="failed", error=reason,
+                    params=sfr_params, duration_sec=time.time() - started,
+                )
 
     logger.info("  ├ 海关：进出口（出口 / 进口 / 进出口总额）")
     # ============ 海关：进出口 ============

@@ -8,6 +8,16 @@ from collectors import macro_sa_mom
 from collectors.macro_sa_mom import apply_sa_mom, parse_sa_mom
 
 
+@pytest.fixture(autouse=True)
+def _no_sfr_network(monkeypatch):
+    """本文件只测社零；禁用社融存量官方联网，避免额外网络依赖。"""
+    from collectors import macro_sfr_stock
+    monkeypatch.setattr(
+        macro_sfr_stock, "fetch_sfr_stock",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("tests: sfr network disabled")),
+    )
+
+
 SAMPLE_TEXT = (
     "社会消费品零售总额 附注 5.环比数据修订 根据季节调整模型自动修正的结果，"
     "对2025年10月份以来的社会消费品零售总额环比增速进行修订。修订结果及2026年10月份环比数据如下： "

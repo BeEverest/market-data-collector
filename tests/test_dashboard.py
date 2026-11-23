@@ -83,13 +83,19 @@ class TestMacroDashboard:
             _derived_rows(self.codes, self.dates), _macro_rows(), _index_rows(), months=3)
 
     def test_seven_charts_in_order(self):
-        assert len(self.charts) == 7
+        assert len(self.charts) == 8
         assert [c["id"] for c in self.charts] == [
             "gdp_trade", "price", "credit", "money_gap",
-            "m2_market", "hh_deposit", "gold",
+            "m2_market", "hh_deposit", "gold", "loan_new_chart",
         ]
         assert self.charts[0]["title"].startswith("图1")
-        assert self.charts[-1]["title"].startswith("图7")
+        assert self.charts[-1]["title"].startswith("图8")
+        # 新增图8：人民币贷款当月新增，柱状单轴
+        loan = self.charts[-1]
+        assert loan["title"].endswith("人民币贷款当月新增")
+        assert loan["series"][0]["name"] == "人民币贷款当月新增"
+        assert loan["series"][0]["type"] == "bar"
+        assert len(loan["y_axes"]) == 1 and loan["y_axes"][0]["name"] == "当月新增 (亿元)"
 
     def test_chart_series_and_axes(self):
         by_id = {c["id"]: c for c in self.charts}
@@ -146,7 +152,7 @@ class TestEtfDashboard:
         # 近1月只保留 2026-11；510050 规模变化 = 2+6+8 = 16，510300 = 4，合计 20
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == [
-            "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_huijin_cumulative"]
+            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
         assert hj["etf_count"] == 2
@@ -164,11 +170,12 @@ class TestEtfDashboard:
         assert detail["detail_start"] == "2026-11"
         assert detail["rank_meta"] == [
             {"code": "510050", "name": "510050"}, {"code": "510300", "name": "510300"}]
-        gold = charts[2]
-        assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
-        # 累计份额变化：从区间起始日逐日累加 4+5+7 = 16（末值=区间净变化）
-        cum = charts[3]
+        # 累计份额变化在细分图之后、黄金之前（索引2）：逐日累加 4+5+7 = 16
+        cum = charts[2]
         assert cum["id"] == "etf_huijin_cumulative"
+        gold = charts[3]
+        assert gold["id"] == "etf_gold"
+        assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
         assert cum["series"][0]["data"] == [
             ["2026-11-18", 4.0], ["2026-11-19", 9.0], ["2026-11-20", 16.0]]
         assert cum["total_cap_change"] == 16.0
@@ -382,18 +389,20 @@ class TestDashboardApi:
 
         data = client.get("/api/dashboard?months=12&etf_months=12").json()
         assert data["months"] == 12 and data["etf_months"] == 12
-        assert len(data["macro"]["charts"]) == 7
+        assert len(data["macro"]["charts"]) == 8
+        assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
         assert len(data["etf"]["charts"]) == 4
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
-        assert data["etf"]["charts"][3]["id"] == "etf_huijin_cumulative"
+        assert data["etf"]["charts"][2]["id"] == "etf_huijin_cumulative"
+        assert data["etf"]["charts"][3]["id"] == "etf_gold"
         assert "generated_at" in data
         # 接口透传指数数据：汇金原图叠加日线（上下双图）
         hj = data["etf"]["charts"][0]
         assert hj["layout"] == "etf_overlay"
         assert [d for d, _ in hj["index_data"]] == ["2026-10-30", "2026-10-31"]
-        assert data["etf"]["charts"][2].get("layout") is None
+        assert data["etf"]["charts"][3].get("layout") is None  # 黄金图为普通时间序列
         # 默认叠加指数为上证指数，并返回可用指数选项
         assert data["overlay_index"] == "000001"
         assert {o["code"]: o["name"] for o in data["index_options"]} == {"000001": "上证指数"}

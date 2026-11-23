@@ -255,12 +255,18 @@ def collect_macro(
     codes: set[str] | None = None,
     retries: int = 1,
     retry_interval: float = 0.0,
+    sa_mom_map: dict[str, float] | None = None,
+    sa_mom_url: str = "",
 ) -> pd.DataFrame:
     """采集月度宏观指标，返回统一 schema 的 DataFrame。
 
     only 为接口函数名集合时，仅采集这些接口（失败接口重跑用）。
     codes 为指标代码集合时，仅输出这些指标（精确采集用；仍按接口抓取再一次过滤）。
     start_date / end_date 支持 YYYY-MM 或 YYYY-MM-DD，内部统一按月比较（含端点）。
+
+    sa_mom_map：社零「季调后环比」{YYYY-MM: %}；传入时直接用于覆盖，
+        为 None 时自动抓取统计局最新一期（失败则降级保留接口原值）。
+        传空 dict {} 可显式禁用覆盖（测试/离线用）。
     """
     import akshare as ak
 
@@ -526,8 +532,26 @@ def collect_macro(
         "US_RATE_LOWER", "美国联邦基金目标利率下限", "fred_DFEDTARL", "%", FRED)
 
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+
+    # ============ 社零环比口径校正：用统计局官方「季调后环比」覆盖未季调名义环比 ============
+    # akshare 的「环比增长」是当月/上月-1（±10%季节性波动），与官方季调口径（±1%）完全不同。
+    applied = 0
+    if not df.empty and (sa_mom_map is None or sa_mom_map):
+        try:
+            if sa_mom_map is None:
+                from collectors.macro_sa_mom import fetch_sa_mom
+                sa_mom_map, sa_mom_url = fetch_sa_mom()
+                logger.info("  ├ 社零季调环比：已获取统计局最新一期（%d 个月，%s）",
+                            len(sa_mom_map), sa_mom_url or "官网")
+            if sa_mom_map:
+                from collectors.macro_sa_mom import apply_sa_mom
+                df, applied = apply_sa_mom(df, sa_mom_map)
+                logger.info("  └ 社零环比口径已校正：覆盖 %d 个月为官方季调值", applied)
+        except Exception as exc:  # 抓取失败不能让整个宏观采集失败
+            logger.warning("  └ 社零季调环比获取失败，保留接口原环比（未季调口径）：%s", exc)
+
     if not df.empty:
         df = df.sort_values(["指标代码", "日期"], ascending=[True, False]).reset_index(drop=True)
-    logger.info("  └ [宏观采集] 合并完成：%d 行，%d 个指标（本次调用 %d 个接口）",
-                len(df), df["指标代码"].nunique() if not df.empty else 0, fetch_count)
+    logger.info("  └ [宏观采集] 合并完成：%d 行，%d 个指标（本次调用 %d 个接口，社零季调覆盖 %d 月）",
+                len(df), df["指标代码"].nunique() if not df.empty else 0, fetch_count, applied)
     return df

@@ -1204,7 +1204,11 @@ function switchModule(name) {
   document.querySelectorAll('.module-tab').forEach(b => b.classList.toggle('active', b.dataset.module === name));
   $('collectModule').hidden = name !== 'collect';
   $('derivedModule').hidden = name !== 'derived';
+  $('dashboardModule').hidden = name !== 'dashboard';
   if (name === 'derived') loadDerived();
+  if (name === 'dashboard') {
+    loadDashboard().then(() => setTimeout(resizeDashboardCharts, 60));
+  }
 }
 
 async function loadDerived() {
@@ -1259,6 +1263,109 @@ $('derivedExportBtn').addEventListener('click', () => {
   const month = $('derivedMonth').value || '';
   window.location.href = '/api/derived/export' + (month ? '?month=' + encodeURIComponent(month) : '');
 });
+
+/* ---------- 数据看板模块 ---------- */
+const dashboardInstances = {};  // containerId -> [{ id, inst }]
+const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
+
+function disposeDashboardCharts(containerId) {
+  (dashboardInstances[containerId] || []).forEach(x => {
+    try { x.inst.dispose(); } catch (_) {}
+  });
+  dashboardInstances[containerId] = [];
+}
+
+function resizeDashboardCharts() {
+  Object.values(dashboardInstances).forEach(list =>
+    list.forEach(x => { try { x.inst.resize(); } catch (_) {} }));
+}
+
+function dashboardChartOption(chart) {
+  const categories = [...new Set((chart.series || []).flatMap(s => (s.data || []).map(p => p[0])))].sort();
+  const axisCount = (chart.y_axes || []).length || 1;
+  const hasBar = (chart.series || []).some(s => s.type === 'bar');
+  return {
+    animation: false,
+    grid: { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
+    legend: { top: 6, type: 'scroll', textStyle: { fontSize: 11 } },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
+    xAxis: {
+      type: 'category', data: categories, boundaryGap: hasBar,
+      axisLabel: { fontSize: 10, hideOverlap: true, rotate: categories.length > 36 ? 30 : 0 },
+    },
+    yAxis: (chart.y_axes || [{ name: '', position: 'left' }]).map((a, i) => ({
+      type: 'value', name: a.name || '', position: a.position || 'left',
+      offset: a.offset || 0,
+      nameTextStyle: { fontSize: 10, padding: [0, 0, 0, a.offset ? 32 : 0] },
+      axisLabel: { fontSize: 10 },
+      splitLine: { show: i === 0 },
+    })),
+    dataZoom: [
+      { type: 'inside' },
+      { type: 'slider', height: 14, bottom: 8, brushSelect: false },
+    ],
+    series: (chart.series || []).map((s, idx) => {
+      const lookup = new Map(s.data || []);
+      return {
+        name: s.name, type: s.type || 'line', yAxisIndex: s.y_axis_index || 0,
+        data: categories.map(c => lookup.has(c) ? lookup.get(c) : null),
+        smooth: s.type !== 'bar', showSymbol: false, symbolSize: 5,
+        lineStyle: { width: 2 }, barMaxWidth: 20, barGap: '20%',
+        itemStyle: { color: DASH_PALETTE[idx % DASH_PALETTE.length] },
+      };
+    }),
+  };
+}
+
+function renderDashboardCharts(containerId, charts) {
+  const el = $(containerId);
+  disposeDashboardCharts(containerId);
+  if (!charts || !charts.length) {
+    el.innerHTML = '<div class="empty">暂无图表数据</div>';
+    return;
+  }
+  el.innerHTML = charts.map(c => `
+    <div class="chart-card">
+      <div class="chart-head">
+        <h4>${esc(c.title)}</h4>
+        <span>${esc(c.note || '')}</span>
+      </div>
+      <div class="chart-box" data-chart-id="${esc(c.id)}"></div>
+    </div>`).join('');
+  charts.forEach(c => {
+    const box = el.querySelector(`[data-chart-id="${c.id}"]`);
+    if (!box) return;
+    if (!window.echarts) {
+      box.innerHTML = '<div class="empty">图表库未加载</div>';
+      return;
+    }
+    const inst = echarts.init(box);
+    inst.setOption(dashboardChartOption(c));
+    dashboardInstances[containerId].push({ id: c.id, inst });
+  });
+}
+
+async function loadDashboard() {
+  try {
+    const months = $('dashboardMonths').value || '60';
+    const days = $('dashboardDays').value || '30';
+    const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&days=${encodeURIComponent(days)}`);
+    const macro = (res.macro && res.macro.charts) || [];
+    const etf = (res.etf && res.etf.charts) || [];
+    renderDashboardCharts('macroCharts', macro);
+    renderDashboardCharts('etfCharts', etf);
+    const etfNote = etf.map(c => `${c.title.replace('维度 · 流通份额变化 / 流通规模变化', '')} ${c.etf_count}只`).join(' · ');
+    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}`;
+  } catch (e) {
+    $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
+    flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
+  }
+}
+
+window.addEventListener('resize', resizeDashboardCharts);
+$('dashboardMonths').addEventListener('change', loadDashboard);
+$('dashboardDays').addEventListener('change', loadDashboard);
+$('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
 
 /* ---------- 定时刷新 ---------- */
 async function refresh() {

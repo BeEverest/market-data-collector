@@ -46,6 +46,7 @@ from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
 from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
+from processors.dashboard import build_etf_charts, build_macro_charts
 from processors.etf_change import compute_etf_changes
 
 ETF_TAG_OPTIONS = ["宽基", "汇金", "黄金"]
@@ -689,6 +690,29 @@ def api_derived_export(month: str | None = None):
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="derived_{(target or "all").replace("-", "")}.csv"'},
     )
+
+
+@app.get("/api/dashboard")
+def api_dashboard(months: int = 60, days: int = 30):
+    """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。"""
+    cfg = _cfg()
+    db = _require_db(cfg)
+    months = max(0, min(int(months or 0), 240))
+    days = max(1, min(int(days or 30), 250))
+
+    derived_df = storage.read_derived(db)
+    _, macro_df = storage.read_macro(db, limit=None)
+    _, index_df = storage.read_index(db, code="000001", limit=None)
+    _, etf_df = storage.read_etf_with_changes(db, limit=None)
+    etf_cfg = storage.get_etf_config(db, cfg.get("etf", {}))
+
+    return {
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "months": months,
+        "days": days,
+        "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
+        "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), days)},
+    }
 
 
 @app.get("/api/files")

@@ -262,7 +262,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 | 区域 | 内容 |
 | --- | --- |
-| 顶部导航栏 | **采集系统 / 数据处理** 两个入口，共用同一套服务、SQLite、实时日志与通知；无需切换地址 |
+| 顶部导航栏 | **采集系统 / 数据处理 / 数据看板** 三个入口，共用同一套服务、SQLite、实时日志与通知；无需切换地址 |
 | 顶部状态栏 | 服务器时间、定时调度状态、采集任务是否运行中 |
 | 概览卡片 | 最近采集时间、宏观行数/指标数、ETF 行数/标的数、指数行数/个数、今日接口调用、历史失败累计（失败数红色高亮） |
 | 采集控制台 | 「全量采集 / 重跑失败接口」并列（标注**整体 / 运维**）；**全量采集支持起止日期选择**，统一作用于宏观、ETF、指数三类，留空则沿用各类别配置，可一键恢复默认当天；单类别/单指标采集改用下方「精确采集」（标注**部分**），定时调度标注「整体」；**文件导入**：上传「份额与规模_<代码>.xlsx」作为 ETF 数据入库，单次最多 10 个文件；单行滚动实时日志（可展开、自动滚动/暂停/回到底部） |
@@ -274,6 +274,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 | 数据清理 | 危险操作模块（红色）：按**类别**（宏观 / ETF / 指数）+ **细分口径**（具体指标 / 基金 / 指数代码，留空该类整体）+ **时间范围**删除观测数据；先「预览影响」显示匹配行数，再「执行清理」需二次确认（显式 `confirm`），仅删三类观测表，不动配置 / 监控 / 导出记录 |
 | 定时调度 | 界面勾选启用、设置每日时刻与采集范围（含仅指数），保存到 config.json；每日采集完成后自动触发派生指标重算 |
 | 数据处理（顶部导航切换） | 按月展示 **14 项派生指标**（A 价格与通胀 / B 货币与信用 / C 存贷款与储备）：进出口同比用**官方累计**口径；人民币贷款新增用 **RMB_LOAN 余额差分**；社融存量优先取央行官方增速；居民存款新增/同比多增与黄金新增用差分。支持月份切换（默认最近有数据月份）、导出 CSV、手动兜底重算 |
+| 数据看板（顶部导航切换） | 宏观 **7 张图**：①GDP与进出口同比 ②社零/CPI/PPI同比与CPI-PPI剪刀差 ③社融存量同比与人民币贷款当月新增（双轴）④M1/M2同比与M1-M2剪刀差 ⑤M2、A股总市值（万亿）+ 市值/M2、上证指数月末收盘（三轴）⑥居民存款同比多增 ⑦黄金当月新增/吨；ETF **2 张柱状图**：按**汇金 / 黄金**标签汇总较上一交易日的流通份额变化与流通规模变化。支持宏观近 12/24/60/120 月或全部、ETF 近 10/30/60/120 个交易日切换，手动刷新；ECharts 本地内置，无外网依赖 |
 
 各模块通过左侧彩色边框与标题标签区分：**采集控制台（蓝）/ ETF 配置（绿）/ 指数配置（紫）/ 接口监控（橙）/ 采集数据（灰）/ 数据清理（红）**；采集数据日期默认 **近一个月**（可切近1年/近5年），精确采集与其控件默认 **当天**，宏观指标在后端自动按月归并。
 
@@ -287,7 +288,8 @@ python3 web_app.py --port 9000     # 覆盖端口
 - **日期区间兼容**：采集数据默认近一个月（近1月/近1年/近5年快捷切换），其余日期控件默认当天；前端统一传 YYYY-MM-DD，宏观采集与查询自动按月截取为 YYYY-MM。
 - **交易日期排序**：采集数据的「日期 / 交易日期」表头可点击切换升序（▲）/降序（▼），默认降序（最新在前）；排序在后端分页层完成，`/api/data/{macro,etf,index}` 支持 `order=asc|desc` 参数。
 - **定时调度**：服务运行时按 `config.json` 的 `scheduler` 段每日指定时刻自动采集一次（同一天只触发一次），可在看板实时开关/改时间；采集完成后自动触发派生指标重算（步骤 6/6），任务与失败会在看板突出显示。
-- **数据处理模块**：派生结果写入 `derived_indicator` 表，`biz_key = derived_<code>+<YYYYMM>` 幂等 upsert；计算规则集中在 `processors/derived.py`，只读 `macro_observation`。主触发为**定时调度**，看板「重新计算」按钮仅为手动兜底。顶部导航切换「采集系统 / 数据处理」，两模块共用实时日志与存储。
+- **数据处理模块**：派生结果写入 `derived_indicator` 表，`biz_key = derived_<code>+<YYYYMM>` 幂等 upsert；计算规则集中在 `processors/derived.py`，只读 `macro_observation`。主触发为**定时调度**，看板「重新计算」按钮仅为手动兜底。顶部导航切换「采集系统 / 数据处理 / 数据看板」，三模块共用实时日志与存储。
+- **数据看板**：装配逻辑在 `processors/dashboard.py`，只读 `derived_indicator` / `macro_observation` / `index_observation` / `etf_observation`，不写业务表。指数为日频，图⑤自动取**月末最后一个交易日收盘**；ETF 变化先在全量历史上按基金代码计算环比，再按标签（汇金/黄金）与交易日窗口汇总，避免窗口首日被误判为无基准。前端使用本地 `static/echarts.min.js`，无需外网。
 - **SQLite 主存储**：业务数据、接口监控、ETF 配置与上市日期、指数配置均在 `output/market_data.db`；旧 CSV/JSONL 保留只读作为迁移与回滚基线。
 - **分类导出**：采集只写库不生成文件；按需导出宏观 / ETF / 指数 / 接口监控，每个 Excel 都含「口径说明」Sheet，CSV 同步生成独立口径说明文件；全量导出打包 ZIP（含宏观/ETF/监控三类，指数可单独导出）。
 - **口径化清理**：`POST /api/clean/preview` 只读预览将删除的行数（含样本）；`POST /api/clean` 必须携带 `confirm=true` 才执行，按类别 / 细分代码 / 时间范围精确删除 `*_observation` 表行（宏观按 YYYY-MM、ETF/指数按 YYYY-MM-DD 比较，代码自动补零至 6 位）。删除不可撤销，但**不触发采集、不影响配置 / 监控 / 导出记录**，服务启动/重启也不会调用。
@@ -296,7 +298,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 ### API 一览
 
-`GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/data/index`、`/api/derived`（`?month=YYYY-MM`）、`/api/derived/export`（`?month=YYYY-MM`）、`/api/etf/config`、`/api/index/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
+`GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/data/index`、`/api/derived`（`?month=YYYY-MM`）、`/api/derived/export`（`?month=YYYY-MM`）、`/api/dashboard`（`?months=60&days=30`，宏观 7 图 + ETF 2 图）、`/api/etf/config`、`/api/index/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
 `POST /api/collect`（支持 `index_only` + `start`/`end`）、`/api/collect/interface`（category 支持 `macro|etf|index`）、`/api/derived/recompute`（手动兜底重算）、`/api/clean/preview`（只读预览）、`/api/clean`（需 `confirm=true`）、`/api/monitor/clean/preview`（只读预览）、`/api/monitor/clean`（需 `confirm=true`）、`/api/retry`、`/api/scheduler`、`/api/etf/config`、`/api/index/config`；
 `POST /api/export/macro`、`/api/export/etf`、`/api/export/index`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。点击看板上的导出按钮后，浏览器会自动下载对应的 ZIP 包（含数据 CSV、口径说明 CSV、Excel）。
 

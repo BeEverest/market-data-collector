@@ -25,6 +25,7 @@
 <nav class="module-nav" aria-label="模块导航">
   <button type="button" class="module-tab active" data-module="collect">采集系统</button>
   <button type="button" class="module-tab" data-module="derived">数据处理</button>
+  <button type="button" class="module-tab" data-module="dashboard">数据看板</button>
 </nav>
 
 <main class="container">
@@ -431,6 +432,42 @@
     </div>
     <div class="derived-groups" id="derivedGroups"><div class="empty">加载中…</div></div>
   </section>
+
+  <!-- 数据看板：与采集系统共用本页，顶部导航切换 -->
+  <section class="card module-dashboard" id="dashboardModule" hidden>
+    <div class="card-head">
+      <div class="title-group">
+        <h2>数据看板</h2>
+        <span class="module-chip auto">宏观 7 图 · ETF 2 图</span>
+      </div>
+      <span class="hint">与采集系统共用数据源 · 图表随派生指标定时重算自动更新</span>
+    </div>
+    <div class="dashboard-controls">
+      <label class="prec-field">宏观范围
+        <select id="dashboardMonths" class="prec-input">
+          <option value="12">近 12 个月</option>
+          <option value="24">近 24 个月</option>
+          <option value="60" selected>近 60 个月</option>
+          <option value="120">近 120 个月</option>
+          <option value="0">全部</option>
+        </select>
+      </label>
+      <label class="prec-field">ETF 交易日
+        <select id="dashboardDays" class="prec-input">
+          <option value="10">近 10 个</option>
+          <option value="30" selected>近 30 个</option>
+          <option value="60">近 60 个</option>
+          <option value="120">近 120 个</option>
+        </select>
+      </label>
+      <button type="button" class="btn tiny" id="dashboardRefreshBtn">刷新图表</button>
+      <span class="hint" id="dashboardMeta">加载中…</span>
+    </div>
+    <div class="dashboard-section-title"><h3>宏观指标</h3><span>数据来源：派生指标 / 宏观观测 / 上交所日线</span></div>
+    <div class="dashboard-grid" id="macroCharts"></div>
+    <div class="dashboard-section-title"><h3>ETF 标签维度</h3><span>较上一交易日流通份额与规模变化</span></div>
+    <div class="dashboard-grid dashboard-grid-etf" id="etfCharts"></div>
+  </section>
 </main>
 
 <footer class="footer">
@@ -438,6 +475,7 @@
   存储：CSV / Excel / JSONL
 </footer>
 
+<script src="/static/echarts.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>

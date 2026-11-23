@@ -91,24 +91,24 @@
           <span class="s-extra" id="precDateHint" hidden></span>
         </div>
 
-        <!-- 行3：定时调度 -->
+        <!-- 行3：定时调度（只读展示；配置已集中到「数据处理」页的触发控制区） -->
         <div class="sampling-row">
           <div class="s-row-name">
             <span class="s-ico" style="background:#7048b6">◷</span>
-            <div><b>定时调度</b><small>每日到点自动采集</small></div>
+            <div><b>定时调度</b><small>配置已移至「数据处理」页</small></div>
           </div>
           <span class="scope auto">自动</span>
           <div class="s-params">
-            <input type="time" id="schedTime" value="08:30" class="prec-input s-time" title="每日触发时刻">
-            <select id="schedType" class="prec-input s-runType" title="采集范围">
+            <input type="time" id="schedTime" value="08:30" class="prec-input s-time" title="每日触发时刻" disabled>
+            <select id="schedType" class="prec-input s-runType" title="采集范围" disabled>
               <option value="full">全量</option>
               <option value="macro">仅宏观</option>
               <option value="etf">仅ETF</option>
               <option value="index">仅指数</option>
             </select>
-            <button class="btn tiny" id="schedSave">保存</button>
+            <span class="hint" style="font-size:10px">在数据处理页修改</span>
           </div>
-          <div style="text-align:center"><label class="switch-row"><input type="checkbox" id="schedEnabled" title="启用每日自动采集"></label></div>
+          <div style="text-align:center"><label class="switch-row"><input type="checkbox" id="schedEnabled" title="启用每日自动采集" disabled></label></div>
           <div><span class="s-next" id="schedNext">下次运行：--</span></div>
         </div>
 
@@ -421,27 +421,79 @@
       </div>
       <span class="hint">官方累计 / 余额差分 / 央行官方增速 · 定时调度自动重算，手动重算仅作兜底</span>
     </div>
+    <!-- 触发控制区：定时调度（主）+ 手动重算（兜底） -->
+    <div class="trigger-grid">
+      <div class="trigger-card">
+        <div class="tc-head">
+          <h3>⏰ 定时调度 <small>主触发</small></h3>
+          <label class="switch-row"><input type="checkbox" id="dpSchedEnabled" title="启用每日自动采集并触发派生重算"> <span>启用</span></label>
+        </div>
+        <div class="tc-body">
+          <div class="tc-row">
+            <label>触发时刻</label>
+            <input type="time" id="dpSchedTime" value="08:30" class="prec-input s-time" title="每日触发时刻">
+            <label>采集范围</label>
+            <select id="dpSchedType" class="prec-input s-runType" title="采集范围">
+              <option value="full">全量 (full)</option>
+              <option value="macro">仅宏观 (macro)</option>
+              <option value="etf">仅ETF (etf)</option>
+              <option value="index">仅指数 (index)</option>
+            </select>
+          </div>
+          <div class="tc-row tc-row-foot">
+            <span class="hint" id="dpSchedNext">下次运行：--</span>
+            <button type="button" class="btn tiny primary" id="dpSchedSave">保存调度配置</button>
+          </div>
+          <div class="tc-note">采集完成后自动执行步骤 6/6 全量重算 · 每天仅触发一次 · 忙时跳过不补跑</div>
+        </div>
+      </div>
+
+      <div class="trigger-card">
+        <div class="tc-head">
+          <h3>🔁 手动重算 <small>兜底</small></h3>
+          <span class="pill" id="derivedSchedBadge">--</span>
+        </div>
+        <div class="tc-body">
+          <div class="tc-row">
+            <button type="button" class="btn tiny primary" id="derivedRecomputeBtn">重新计算全部</button>
+            <button type="button" class="btn tiny" id="derivedExportBtn">导出 CSV</button>
+          </div>
+          <div class="tc-row">
+            <label class="prec-field">按月
+              <input id="dpRecalcMonth" class="prec-input" type="month" list="derivedMonthList">
+              <datalist id="derivedMonthList"></datalist>
+            </label>
+            <button type="button" class="btn tiny" id="dpRecalcMonthBtn">重算该月</button>
+          </div>
+          <div class="tc-row">
+            <label class="prec-field">按指标
+              <select id="dpRecalcCode" class="prec-input dp-code-select"></select>
+            </label>
+            <button type="button" class="btn tiny" id="dpRecalcCodeBtn">重算该指标</button>
+          </div>
+          <div class="tc-note">局部重算按业务键幂等覆盖，不影响其他月份/指标；全量重算才整表替换清理陈旧口径行</div>
+        </div>
+      </div>
+    </div>
+
     <div class="derived-controls">
-      <label class="prec-field">月份
+      <label class="prec-field">查看月份
         <input id="derivedMonth" class="prec-input" type="month" list="derivedMonthList">
-        <datalist id="derivedMonthList"></datalist>
       </label>
-      <button type="button" class="btn tiny" id="derivedRecomputeBtn">重新计算</button>
-      <button type="button" class="btn tiny" id="derivedExportBtn">导出 CSV</button>
       <span class="hint" id="derivedMeta">加载中…</span>
     </div>
     <div class="derived-groups" id="derivedGroups"><div class="empty">加载中…</div></div>
 
     <div class="derived-scheduler" id="derivedScheduler">
       <div class="ds-head">
-        <h3>定时调度 · 自动重算说明</h3>
-        <span class="pill" id="derivedSchedBadge">--</span>
+        <h3>触发逻辑说明</h3>
+        <span class="ds-subtle" id="derivedSchedGrid"></span>
       </div>
-      <div class="ds-grid" id="derivedSchedGrid"></div>
       <ol class="ds-steps">
-        <li><b>触发条件</b>：服务运行时按下方配置每日到点触发一次，同一天只触发一次；未启用/未到点/今日已触发/任务占用时不执行，日志中给出原因。</li>
+        <li><b>触发条件</b>：服务运行时按上方调度配置每日到点触发一次，同一天只触发一次；未启用/未到点/今日已触发/任务占用时不执行，日志中给出原因。</li>
         <li><b>步骤 1~5</b>：调度器依次完成 触发 → 提交采集任务 → 宏观/ETF/指数采集 → 写 SQLite 业务表（幂等 upsert）→ 采集完成统计，全程写入实时监控日志。</li>
         <li><b>步骤 6/6 派生重算</b>：采集完成后，全量读取 <code>macro_observation</code>，按确认口径重算 14 项派生指标，<b>全量替换</b> <code>derived_indicator</code>（清理陈旧口径行），写入 <code>biz_key=派生代码+YYYYMM</code>。</li>
+        <li><b>手动重算</b>：「全部」整表替换；「按月」「按指标」按业务键幂等覆盖只影响目标子集，差分/同比仍基于全量原始值计算，不会因单月缺分母算错。</li>
         <li><b>口径要点</b>：进出口同比用官方累计；人民币贷款当月新增为余额差分；居民存款新增/同比多增为余额一阶/二阶差分；黄金当月新增为储备差分×31.1034768÷100（万盎司→吨，口径跳变已剔除）；社零环比用统计局官方季调值；社融存量取央行官方增速。</li>
         <li><b>看板联动</b>：数据看板与各派生指标图直接读取 <code>derived_indicator</code>，重算完成后自动生效；看板支持按日期范围筛选，宏观与 ETF 口径一致。</li>
       </ol>

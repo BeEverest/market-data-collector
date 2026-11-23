@@ -246,16 +246,27 @@ def _submit(kind: str, func) -> str:
     return job_id
 
 
-def _recompute_derived(config: dict, trigger: str = "手动") -> int:
-    """按现有宏观观测重算 14 项派生指标并写入 SQLite。"""
+def _recompute_derived(config: dict, trigger: str = "手动",
+                       month: str | None = None, code: str | None = None) -> int:
+    """按现有宏观观测重算派生指标并写入 SQLite。
+
+    month/code 均为空时全量重算并整表替换（清理陈旧口径行）；
+    指定 month 或 code 时仅计算目标子集并按 biz_key 幂等覆盖，不影响其他数据。
+    """
     db = _db_path(config)
     if not db:
         logger.warning("【数据处理】未配置 SQLite，跳过派生指标重算")
         return 0
     _, macro_df = storage.read_macro(db, limit=None)
-    result = compute_derived(macro_df)
-    n = storage.replace_derived(db, result)
-    logger.info("【数据处理】%s触发派生指标重算：%d 行（全量替换，已清理陈旧口径行）", trigger, n)
+    partial = bool(month or code)
+    result = compute_derived(macro_df, month=month, only_code=code)
+    if partial:
+        n = storage.upsert_derived(db, result)
+        scope = f"月份={month or '全部'}/指标={code or '全部'}"
+        logger.info("【数据处理】%s触发派生指标局部重算（%s）：%d 行（按业务键覆盖）", trigger, scope, n)
+    else:
+        n = storage.replace_derived(db, result)
+        logger.info("【数据处理】%s触发派生指标重算：%d 行（全量替换，已清理陈旧口径行）", trigger, n)
     return n
 
 
@@ -670,10 +681,36 @@ def api_derived(month: str | None = None):
 
 
 @app.post("/api/derived/recompute")
-def api_derived_recompute():
-    """手动兜底重算；主触发方式为定时调度，见 Scheduler/_do_collect。"""
-    n = _recompute_derived(_cfg(), trigger="看板手动")
-    return {"ok": True, "rows": n}
+def api_derived_recompute(payload: dict | None = None):
+    """手动兜底重算；主触发方式为定时调度，见 Scheduler/_do_collect。
+
+    可选 body：{month: 'YYYY-MM', code: '指标代码'}。
+    两者均省略时全量重算；指定其一/两者则仅重算目标子集（幂等覆盖，不误删其他数据）。
+    """
+    payload = payload or {}
+    month = payload.get("month") or None
+    code = payload.get("code") or None
+    if month:
+        try:
+            datetime.strptime(str(month)[:7], "%Y-%m")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="month 格式应为 YYYY-MM")
+        month = str(month)[:7]
+    if code:
+        from processors.derived import INDICATORS
+        code = str(code).strip()
+        if code not in INDICATORS:
+            raise HTTPException(status_code=400, detail=f"未知指标代码：{code}")
+    trigger = "看板手动"
+    scope = []
+    if month:
+        scope.append(month)
+    if code:
+        scope.append(code)
+    if scope:
+        trigger += "（" + "/".join(scope) + "）"
+    n = _recompute_derived(_cfg(), trigger=trigger, month=month, code=code)
+    return {"ok": True, "rows": n, "month": month, "code": code}
 
 
 @app.get("/api/derived/export")

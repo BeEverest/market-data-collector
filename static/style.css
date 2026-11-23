@@ -478,6 +478,35 @@ tr.row-ok td { }
   .s-row-name small { display: none; }
 }
 
+/* 数据处理 · 触发控制区 */
+.trigger-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px; margin: 4px 0 14px;
+}
+.trigger-card {
+  border: 1px solid var(--line); border-radius: 10px; background: #fbfcff;
+  padding: 12px 14px; min-width: 0;
+}
+.tc-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 10px;
+}
+.tc-head h3 { margin: 0; font-size: 13px; }
+.tc-head h3 small { font-weight: 400; color: var(--muted); font-size: 11px; margin-left: 4px; }
+.tc-body { display: grid; gap: 8px; }
+.tc-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tc-row > label:not(.prec-field) { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tc-row .prec-field { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.tc-row .prec-input.s-time { width: 84px; }
+.tc-row .prec-input.s-runType { max-width: 128px; }
+.dp-code-select { max-width: 190px; }
+.tc-row-foot { justify-content: space-between; }
+.tc-note {
+  font-size: 11px; color: var(--muted); line-height: 1.5;
+  background: var(--brand-soft, #eef3ff); border-radius: 6px; padding: 6px 9px;
+}
+.ds-subtle { font-size: 11px; color: var(--muted); }
+
 /* 数据处理 · 调度说明 */
 .derived-scheduler {
   border: 1px solid var(--line); border-radius: 10px; background: #fbfcff;

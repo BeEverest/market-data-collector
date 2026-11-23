@@ -61,6 +61,26 @@ class TestComputeDerived:
         assert ("HH_DEPOSIT_NEW_YOY", "2025-11") not in got.index
         assert ("TRADE_YOY", "2025-10") not in got.index
 
+    def test_filter_by_month_and_code(self, macro_df):
+        """month/only_code 仅过滤输出，不参与计算；差分指标仍基于全量数据得出。"""
+        full = compute_derived(macro_df)
+        by_month = compute_derived(macro_df, month="2026-11")
+        assert not by_month.empty
+        assert set(by_month["date"]) == {"2026-11"}
+        assert set(by_month["code"]) == set(full[full["date"] == "2026-11"]["code"])
+
+        by_code = compute_derived(macro_df, only_code="RMB_LOAN_NEW")
+        assert set(by_code["code"]) == {"RMB_LOAN_NEW"}
+        # 差分依赖上月：单指标过滤仍须算出 2026-11 = 1200-1000
+        nov = by_code[by_code["date"] == "2026-11"]["value"].iloc[0]
+        assert nov == pytest.approx(200.0)
+
+        both = compute_derived(macro_df, month="2026-11", only_code="GOLD_NEW_TON")
+        assert len(both) <= 1
+        if not both.empty:
+            assert set(both["code"]) == {"GOLD_NEW_TON"}
+            assert set(both["date"]) == {"2026-11"}
+
     def test_metadata_complete(self, macro_df):
         df = compute_derived(macro_df)
         assert set(["code", "name", "date", "value", "unit", "formula", "grp", "source", "computed_at"]).issubset(df.columns)
@@ -84,3 +104,26 @@ class TestDerivedStorage:
         assert set(month["code"]) == set(out[out["date"] == "2026-11"]["code"])
         assert "2026-11" in storage.derived_months(db)
         assert storage.read_derived(db, "1999-01").empty
+
+    def test_partial_upsert_keeps_other_rows(self, tmp_path, macro_df):
+        """局部重算按业务键覆盖，只影响目标月份/指标，不误删其他数据。"""
+        db = tmp_path / "derived.db"
+        full = compute_derived(macro_df)
+        storage.replace_derived(db, full)
+        before = len(storage.read_derived(db))
+
+        nov_only = compute_derived(macro_df, month="2026-11")
+        storage.upsert_derived(db, nov_only)
+        assert len(storage.read_derived(db)) == before  # 行数不变，仅覆盖目标行
+
+        code_only = compute_derived(macro_df, only_code="RMB_LOAN_NEW")
+        changed = code_only[code_only["date"] == "2026-11"].copy()
+        changed["value"] = 999.0
+        storage.upsert_derived(db, changed)
+        after = storage.read_derived(db)
+        assert len(after) == before
+        got = after[(after["code"] == "RMB_LOAN_NEW") & (after["date"] == "2026-11")]
+        assert got["value"].iloc[0] == pytest.approx(999.0)
+        # 其他指标不受影响
+        gold = after[(after["code"] == "GOLD_NEW_TON") & (after["date"] == "2026-11")]
+        assert not gold.empty

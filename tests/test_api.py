@@ -54,6 +54,28 @@ class TestReadOnlyApis:
         csv = client.get("/api/derived/export")
         assert csv.status_code == 200 and "text/csv" in csv.headers["content-type"]
 
+    def test_derived_recompute_partial(self, client):
+        """局部重算接受 month/code，跳过非法参数，且不影响其他派生行。"""
+        client.post("/api/derived/recompute")  # 先全量建立基线
+        baseline = client.get("/api/derived").json()["count"]
+        assert baseline > 0
+
+        r = client.post("/api/derived/recompute", json={"month": "2026-10"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert r.json()["month"] == "2026-10"
+        assert client.get("/api/derived").json()["count"] == baseline
+
+        r = client.post("/api/derived/recompute", json={"code": "M2_YOY"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert r.json()["code"] == "M2_YOY"
+        assert client.get("/api/derived").json()["count"] == baseline
+
+        r = client.post("/api/derived/recompute", json={"month": "2026-10", "code": "M2_YOY"})
+        assert r.status_code == 200 and r.json()["ok"] is True
+
+        assert client.post("/api/derived/recompute", json={"month": "bad"}).status_code == 400
+        assert client.post("/api/derived/recompute", json={"code": "NOPE"}).status_code == 400
+
     def test_etf_tags_and_change_columns(self, client):
         cfg = client.get("/api/etf/config").json()
         assert cfg["tag_options"] == ["宽基", "汇金", "黄金"]

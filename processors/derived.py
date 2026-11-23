@@ -130,8 +130,14 @@ def _yoy(df: pd.DataFrame, code: str) -> dict[str, float]:
     return out
 
 
-def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None) -> pd.DataFrame:
-    """输入宏观观测 DataFrame，输出派生指标 DataFrame（缺失值不产出行）。"""
+def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None,
+                    month: str | None = None, only_code: str | None = None) -> pd.DataFrame:
+    """输入宏观观测 DataFrame，输出派生指标 DataFrame（缺失值不产出行）。
+
+    month 为 YYYY-MM 时仅输出该月结果；only_code 为指标代码时仅输出该指标结果。
+    注意：两者只过滤“输出”，计算仍基于全量 macro_df——差分/同比类指标依赖
+    上月或去年同月的原始值，仅算单月会丢失分母导致算错。
+    """
     if macro_df is None or macro_df.empty:
         return pd.DataFrame()
     if "日期" not in macro_df.columns:
@@ -220,4 +226,11 @@ def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None) -> p
             if abs(gold_add_ton) < GOLD_MAX_MONTHLY_ADD_TON:
                 emit("GOLD_NEW_TON", d, gold_add_ton)
 
-    return pd.DataFrame(rows)
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    if month:
+        out = out[out["date"] == str(month)[:7]]
+    if only_code:
+        out = out[out["code"] == str(only_code).strip()]
+    return out.reset_index(drop=True)

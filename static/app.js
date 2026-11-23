@@ -76,6 +76,13 @@ async function loadStatus() {
     $('schedTime').value = sched.time;
     $('schedType').value = sched.run_type;
     $('schedNext').textContent = '下次运行：' + sched.next_run;
+    // 数据处理页的触发控制区同步显示（采集页同名字段已只读，仅作展示）
+    if ($('dpSchedEnabled')) {
+      $('dpSchedEnabled').checked = sched.enabled;
+      $('dpSchedTime').value = sched.time;
+      $('dpSchedType').value = sched.run_type;
+      $('dpSchedNext').textContent = '下次运行：' + sched.next_run;
+    }
     const rb = $('runBadge');
     rb.textContent = s.running ? '采集中…' : '空闲';
     rb.className = 'pill ' + (s.running ? 'warn' : 'ghost');
@@ -110,12 +117,8 @@ function setButtons(enabled) {
 }
 
 /* ---------- 调度设置 ---------- */
-$('schedSave').addEventListener('click', async () => {
-  const payload = {
-    enabled: $('schedEnabled').checked,
-    time: $('schedTime').value,
-    run_type: $('schedType').value,
-  };
+async function saveScheduler(enabled, time, runType) {
+  const payload = { enabled, time, run_type: runType };
   try {
     await api('/api/scheduler', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
@@ -123,7 +126,16 @@ $('schedSave').addEventListener('click', async () => {
     await loadStatus();
     flashLog('调度配置已保存', 'INFO');
   } catch (e) { alert('保存失败：' + e.message); }
-});
+}
+// 采集页按钮已只读，保留监听以防旧 DOM；主入口在数据处理页 dpSchedSave
+if ($('schedSave')) {
+  $('schedSave').addEventListener('click', () =>
+    saveScheduler($('schedEnabled').checked, $('schedTime').value, $('schedType').value));
+}
+if ($('dpSchedSave')) {
+  $('dpSchedSave').addEventListener('click', () =>
+    saveScheduler($('dpSchedEnabled').checked, $('dpSchedTime').value, $('dpSchedType').value));
+}
 
 /* ---------- 采集 / 重跑 ---------- */
 document.querySelectorAll('button[data-action]').forEach(btn => {
@@ -1250,14 +1262,44 @@ async function loadDerived() {
 document.querySelectorAll('.module-tab').forEach(btn =>
   btn.addEventListener('click', () => switchModule(btn.dataset.module)));
 $('derivedMonth').addEventListener('change', loadDerived);
-$('derivedRecomputeBtn').addEventListener('click', async () => {
+
+// 派生指标代码与名称（与后端 INDICATORS 保持一致，用于「按指标重算」下拉）
+const DERIVED_CODES = [
+  ['TRADE_YOY', '进出口同比'], ['RETAIL_SALES_YOY', '社零同比'], ['CPI_YOY', 'CPI同比'],
+  ['PPI_YOY', 'PPI同比'], ['CPI_PPI_GAP', 'CPI-PPI剪刀差'], ['SFR_STOCK_YOY', '社融存量同比'],
+  ['M1_YOY', 'M1同比增速'], ['M2_YOY', 'M2同比增速'], ['M1_M2_GAP', 'M1-M2剪刀差'],
+  ['A_SHARE_MC_M2', 'A股总市值/M2'], ['HH_DEPOSIT_NEW', '居民存款新增'],
+  ['HH_DEPOSIT_NEW_YOY', '居民存款同比多增'], ['RMB_LOAN_NEW', '人民币贷款当月新增'],
+  ['GOLD_NEW_TON', '黄金当月新增'],
+];
+(function initDerivedCodes() {
+  const sel = $('dpRecalcCode');
+  if (sel) sel.innerHTML = DERIVED_CODES.map(([c, n]) => `<option value="${c}">${n} (${c})</option>`).join('');
+})();
+
+async function recomputeDerived(payload, label) {
   try {
-    const res = await api('/api/derived/recompute', { method: 'POST' });
-    flashLog(`派生指标重算完成：${res.rows} 行`, 'INFO');
+    const res = await api('/api/derived/recompute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    flashLog(`派生指标${label}重算完成：${res.rows} 行`, 'INFO');
+    if (payload.month) $('derivedMonth').value = payload.month;
     await loadDerived();
   } catch (e) {
-    alert(`派生指标重算失败：${e.message}`);
+    alert(`派生指标${label}重算失败：${e.message}`);
   }
+}
+
+$('derivedRecomputeBtn').addEventListener('click', () => recomputeDerived({}, '全量'));
+$('dpRecalcMonthBtn').addEventListener('click', () => {
+  const month = $('dpRecalcMonth').value;
+  if (!month) { alert('请先选择要重算的月份'); return; }
+  recomputeDerived({ month }, `月份 ${month}`);
+});
+$('dpRecalcCodeBtn').addEventListener('click', () => {
+  const code = $('dpRecalcCode').value;
+  if (!code) { alert('请先选择要重算的指标'); return; }
+  recomputeDerived({ code }, `指标 ${code}`);
 });
 $('derivedExportBtn').addEventListener('click', () => {
   const month = $('derivedMonth').value || '';
@@ -1270,17 +1312,9 @@ async function loadDerivedScheduler() {
     const badge = $('derivedSchedBadge');
     badge.textContent = res.enabled ? '已启用' : '未启用';
     badge.className = 'pill ' + (res.enabled ? 'ok' : 'ghost');
-    const runTypeMap = { full: '全量（宏观+ETF+指数）', macro: '仅宏观', etf: '仅ETF', index: '仅指数' };
-    const items = [
-      ['启用状态', res.enabled ? '已启用 · 每日自动' : '未启用 · 仅手动'],
-      ['触发时刻', res.time || '08:30'],
-      ['采集范围', runTypeMap[res.run_type] || res.run_type || '全量'],
-      ['下次运行', res.next_run || '—'],
-      ['派生触发', res.enabled ? '采集完成后自动重算（步骤6/6）' : '仅「重新计算」按钮手动兜底'],
-      ['重算范围', '14 项派生指标 · 全量替换'],
-    ];
-    $('derivedSchedGrid').innerHTML = items.map(([k, v]) =>
-      `<div class="ds-item"><div class="ds-k">${esc(k)}</div><div class="ds-v">${esc(v)}</div></div>`).join('');
+    const runTypeMap = { full: '全量', macro: '仅宏观', etf: '仅ETF', index: '仅指数' };
+    $('derivedSchedGrid').textContent =
+      `${res.enabled ? '每日 ' + (res.time || '08:30') : '未启用'} · ${runTypeMap[res.run_type] || res.run_type || '全量'} · 下次 ${res.next_run || '—'}`;
   } catch (e) {
     $('derivedSchedGrid').innerHTML = `<div class="empty">调度配置加载失败：${esc(e.message)}</div>`;
   }

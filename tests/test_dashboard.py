@@ -196,6 +196,34 @@ class TestEtfDashboard:
         assert detail["total_cap_change"] == 35.7  # 净流入而非规模变化 42.7
         assert detail["series"][0]["data"] == [["上证50ETF", 35.7]]
 
+    def test_etf_chart_flow_uses_net_inflow(self):
+        """原图第二条线统一为申赎净流入：有净流入列用申赎口径，标题/Y轴同步改名；无该列回退规模变化。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 10.0, "规模变化(亿元)": 42.7, "净流入(亿元)": 35.7},
+        ])
+        chart = build_etf_charts(df, {"510050": ["汇金"]}, months=1)[0]
+        assert "申赎净流入" in chart["title"]
+        assert chart["y_axes"][1]["name"] == "申赎净流入 (亿元)"
+        assert chart["series"][1]["name"] == "汇金·申赎净流入"
+        assert chart["series"][1]["data"] == [["2026-11-20", 35.7]]  # 净流入 35.7，非规模变化 42.7
+
+        # 折算日净流入为空：该日不出现在资金流序列
+        df2 = pd.DataFrame([
+            {"基金代码": "510050", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 10.0, "规模变化(亿元)": 42.7, "净流入(亿元)": None},
+        ])
+        chart2 = build_etf_charts(df2, {"510050": ["汇金"]}, months=1)[0]
+        assert chart2["series"][1]["data"] == []
+
+        # 旧数据无净流入列：回退规模变化以兼容
+        df3 = pd.DataFrame([
+            {"基金代码": "510050", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 10.0, "规模变化(亿元)": 42.7},
+        ])
+        chart3 = build_etf_charts(df3, {"510050": ["汇金"]}, months=1)[0]
+        assert chart3["series"][1]["data"] == [["2026-11-20", 42.7]]
+
     def test_daily_detail_summary_and_day(self):
         """按天汇总含区间合计；展开某天返回当日各 ETF 明细并按规模变化降序。"""
         df = pd.DataFrame([

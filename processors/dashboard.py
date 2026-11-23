@@ -9,7 +9,7 @@
   6 居民存款同比多增
   7 黄金当月新增/吨
 
-ETF 2 张柱状图：按标签（汇金/黄金）汇总当日较上一交易日的流通份额变化与流通规模变化。
+ETF 2 张柱状图：按标签（汇金/黄金）汇总当日较上一交易日的流通份额变化与申赎净流入。
 
 所有函数均返回前端可直接消费的 dict/list；数值为 float，日期为 YYYY-MM 或 YYYY-MM-DD。
 """
@@ -209,7 +209,7 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
 
 def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                      months: int = 12) -> list[dict]:
-    """按标签汇总 ETF 较上一交易日的份额/规模变化；months 控制展示最近 N 个月（0 为全部）。
+    """按标签汇总 ETF 较上一交易日的份额变化/申赎净流入；months 控制展示最近 N 个月（0 为全部）。
 
     与宏观图保持一致的「近一年/近6个月/近3年/近5年/全部」口径。变化值已在
     read_etf_with_changes 中基于全量历史算好，这里只按日期截取展示窗口。
@@ -240,25 +240,30 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
             agg = pd.DataFrame(columns=["份额变化(亿份)", "规模变化(亿元)"])
         share_data = [[str(d), _clean_number(row["份额变化(亿份)"])]
                       for d, row in agg.iterrows()]
-        cap_data = [[str(d), _clean_number(row["规模变化(亿元)"])]
-                    for d, row in agg.iterrows()]
         share_data = [[d, v] for d, v in share_data if v is not None]
-        cap_data = [[d, v] for d, v in cap_data if v is not None]
+        # 资金流统一用申赎净流入（份额变化×当日净值，剔除市值波动）。
+        # 按交易日汇总；复用 _net_inflow_sum 以兼容旧数据（无净流入列时回退规模变化）。
+        flow_data: list[list] = []
+        if "交易日期" in sub.columns:
+            for d, grp in sub.groupby("交易日期", sort=True):
+                v = _net_inflow_sum(grp)
+                if v is not None:
+                    flow_data.append([str(d)[:10], v])
         scope = '全部' if not months else '近 %d 个月' % months
         charts.append({
             "id": f"etf_{'huijin' if tag == '汇金' else 'gold'}",
-            "title": f"{tag}维度 · 流通份额变化 / 流通规模变化",
-            "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的变化；{scope}",
+            "title": f"{tag}维度 · 流通份额变化 / 申赎净流入",
+            "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的份额变化与申赎净流入；{scope}",
             "etf_count": len(codes),
             "codes": sorted(codes),
             "y_axes": [
                 {"name": "份额变化 (亿份)", "position": "left"},
-                {"name": "规模变化 (亿元)", "position": "right"},
+                {"name": "申赎净流入 (亿元)", "position": "right"},
             ],
             "series": [
                 {"name": f"{tag}·流通份额变化", "data": share_data,
                  "y_axis_index": 0, "type": "bar"},
-                {"name": f"{tag}·流通规模变化", "data": cap_data,
+                {"name": f"{tag}·申赎净流入", "data": flow_data,
                  "y_axis_index": 1, "type": "bar"},
             ],
         })
@@ -306,11 +311,12 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
 
 
 def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None = None) -> dict:
-    """汇金维度按天流通份额/规模变化明细。
+    """汇金维度按天流通份额/申赎净流入明细。
 
     - date 为空：按交易日倒序返回每日汇总（含当日各 ETF 只数）与区间合计。
-    - date 给定：返回该交易日各汇金 ETF 的份额/规模变化明细，按规模变化降序。
+    - date 给定：返回该交易日各汇金 ETF 的份额变化/申赎净流入明细，按申赎净流入降序。
     口径与 build_etf_charts 一致：变化基准来自全量历史，此处仅按窗口截取。
+    注：返回字段中的 cap（规模变化）仅为兼容旧调用保留，前端展示统一使用 net（申赎净流入）。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))

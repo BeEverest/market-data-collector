@@ -559,8 +559,26 @@ tr.row-ok td { }
 .chart-head h4 { margin: 0; font-size: 13px; font-weight: 700; }
 .chart-head span { font-size: 10.5px; color: var(--muted); }
 .chart-box { width: 100%; height: 320px; }
+.chart-box-tall { height: 400px; }
+
+/* 汇金净流入：独立合计数字卡片 */
+.etf-total-cards {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  padding: 8px 14px 4px;
+}
+.etf-total-card {
+  border: 1px solid var(--line); border-radius: 8px; background: #fbfcff;
+  padding: 8px 10px; text-align: center;
+}
+.etc-k { font-size: 10.5px; color: var(--muted); }
+.etc-v { font-size: 17px; font-weight: 700; margin-top: 3px; line-height: 1.2; }
+.etc-v small { font-size: 11px; font-weight: 400; }
+.etc-v.up { color: #c0392b; }
+.etc-v.down { color: #16855b; }
+.etc-v.neutral { font-size: 13px; color: var(--text); }
 
 @media (max-width: 860px) {
+  .etf-total-cards { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .chart-box { height: 280px; }
 }

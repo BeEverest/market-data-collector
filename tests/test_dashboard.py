@@ -134,20 +134,39 @@ class TestEtfDashboard:
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
         tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
-        # 近一年（months=12）覆盖全部；近 1 个月只保留 2026-11
+        # 汇金口径：按每只 ETF 累加区间内规模变化作为净流入，降序；近1月只保留 2026-11
+        # 510050 在 11 月规模变化 = 2+6+8 = 16；510300 = 4；合计 20
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == ["etf_huijin", "etf_gold"]
         hj = charts[0]
+        assert hj["layout"] == "etf_rank"
         assert hj["etf_count"] == 2
-        assert hj["series"][0]["data"] == [
-            ["2026-11-18", 4.0], ["2026-11-19", 5.0], ["2026-11-20", 7.0]]
-        assert hj["series"][1]["data"] == [
-            ["2026-11-18", 6.0], ["2026-11-19", 6.0], ["2026-11-20", 8.0]]
+        assert hj["total_cap_change"] == 20.0
+        assert hj["total_share_change"] == 16.0
+        assert hj["series"][0]["data"] == [["510050", 16.0], ["510300", 4.0]]  # 降序
         gold = charts[1]
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
 
         full = build_etf_charts(df, tag_map, months=0)
-        assert full[0]["series"][0]["data"][0] == ["2026-10-15", 9.0]
+        # 全量区间：510050 = 10+2+6+8 = 26；510300 = 4
+        assert full[0]["series"][0]["data"] == [["510050", 26.0], ["510300", 4.0]]
+        assert full[0]["total_cap_change"] == 30.0
+
+    def test_etf_rank_sort_with_negative_and_name(self):
+        """净流入有正有负时按降序，X 轴标签优先用基金简称。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-19",
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": -3.0},
+            {"基金代码": "510300", "基金简称": "沪深300ETF", "交易日期": "2026-11-19",
+             "份额变化(亿份)": 2.0, "规模变化(亿元)": 8.0},
+            {"基金代码": "159915", "基金简称": "创业板ETF", "交易日期": "2026-11-19",
+             "份额变化(亿份)": 0.5, "规模变化(亿元)": 5.0},
+        ])
+        tag_map = {c: ["汇金"] for c in ["510050", "510300", "159915"]}
+        hj = build_etf_charts(df, tag_map, months=1)[0]
+        data = hj["series"][0]["data"]
+        assert data == [["沪深300ETF", 8.0], ["创业板ETF", 5.0], ["上证50ETF", -3.0]]
+        assert hj["total_cap_change"] == 10.0  # 8+5-3
 
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([

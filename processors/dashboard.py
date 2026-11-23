@@ -219,9 +219,44 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         required = {"基金代码", "交易日期", "份额变化(亿份)", "规模变化(亿元)"}
         if etf_df is not None and not etf_df.empty and codes and required.issubset(etf_df.columns):
             sub = etf_df[etf_df["基金代码"].isin(codes)]
+        if not sub.empty and cutoff:
+            sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
+
+        if tag == "汇金":
+            # 汇金口径：按每只 ETF 累加所选区间内的规模变化作为「净流入」，降序排列；
+            # 变化基准来自全量历史（见 read_etf_with_changes），这里只按窗口截取再累加。
+            rank: dict[str, dict] = {}
+            if not sub.empty:
+                for code, grp in sub.groupby("基金代码", sort=False):
+                    name = str(grp["基金简称"].iloc[0]) if "基金简称" in grp.columns else str(code)
+                    net = _clean_number(grp["规模变化(亿元)"].sum())
+                    share = _clean_number(grp["份额变化(亿份)"].sum())
+                    rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
+            ordered = sorted(rank.items(), key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
+            rank_data = [[v["name"], v["net"]] for _, v in ordered if v["net"] is not None]
+            total_cap_change = _clean_number(sum(v["net"] for v in rank.values() if v["net"] is not None))
+            total_share_change = _clean_number(sum(v["share"] for v in rank.values() if v["share"] is not None))
+            scope = '全部' if not months else '近 %d 个月' % months
+            charts.append({
+                "id": "etf_huijin",
+                "title": "汇金维度 · 各 ETF 净流入（规模变化）",
+                "note": f"按规模变化(亿元)累计口径，{len(rank)} 只汇金 ETF 较上一交易日的变化求和；{scope}",
+                "layout": "etf_rank",
+                "etf_count": len(codes),
+                "codes": sorted(codes),
+                "range_label": scope,
+                "total_cap_change": total_cap_change,
+                "total_share_change": total_share_change,
+                "y_axes": [{"name": "净流入 / 规模变化 (亿元)", "position": "left"}],
+                "series": [
+                    {"name": "净流入(规模变化·亿元)", "data": rank_data,
+                     "y_axis_index": 0, "type": "bar"},
+                ],
+            })
+            continue
+
+        # 黄金口径：维持按交易日汇总的时间序列柱状图
         if not sub.empty:
-            if cutoff:
-                sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
             agg = (sub.groupby("交易日期")[["份额变化(亿份)", "规模变化(亿元)"]]
                    .sum().sort_index())
         else:
@@ -233,7 +268,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         share_data = [[d, v] for d, v in share_data if v is not None]
         cap_data = [[d, v] for d, v in cap_data if v is not None]
         charts.append({
-            "id": f"etf_{'huijin' if tag == '汇金' else 'gold'}",
+            "id": "etf_gold",
             "title": f"{tag}维度 · 流通份额变化 / 流通规模变化",
             "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的变化；"
                     f"{'全部' if not months else '近 %d 个月' % months}",

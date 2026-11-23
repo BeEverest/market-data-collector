@@ -1339,17 +1339,29 @@ function resizeDashboardCharts() {
 }
 
 function dashboardChartOption(chart) {
-  const categories = [...new Set((chart.series || []).flatMap(s => (s.data || []).map(p => p[0])))].sort();
+  // etf_rank 布局：X 轴为 ETF 简称，顺序由后端按净流入降序给出，不能再排序
+  const isRank = chart.layout === 'etf_rank';
+  const rawCategories = [...new Set((chart.series || []).flatMap(s => (s.data || []).map(p => p[0])))];
+  const categories = isRank ? rawCategories : rawCategories.sort();
   const axisCount = (chart.y_axes || []).length || 1;
   const hasBar = (chart.series || []).some(s => s.type === 'bar');
   return {
     animation: false,
-    grid: { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
-    legend: { top: 6, type: 'scroll', textStyle: { fontSize: 11 } },
-    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
+    grid: isRank
+      ? { left: 62, right: 24, top: 30, bottom: 82 }
+      : { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
+    legend: isRank ? { show: false } : { top: 6, type: 'scroll', textStyle: { fontSize: 11 } },
+    tooltip: {
+      trigger: 'axis', axisPointer: { type: isRank ? 'shadow' : 'cross' }, confine: true,
+      valueFormatter: isRank ? (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + ' 亿元') : undefined,
+    },
     xAxis: {
       type: 'category', data: categories, boundaryGap: hasBar,
-      axisLabel: { fontSize: 10, hideOverlap: true, rotate: categories.length > 36 ? 30 : 0 },
+      axisLabel: {
+        fontSize: isRank ? 10 : 10, hideOverlap: !isRank,
+        rotate: isRank ? 42 : (categories.length > 36 ? 30 : 0),
+        interval: isRank ? 0 : 'auto',
+      },
     },
     yAxis: (chart.y_axes || [{ name: '', position: 'left' }]).map((a, i) => ({
       type: 'value', name: a.name || '', position: a.position || 'left',
@@ -1364,9 +1376,10 @@ function dashboardChartOption(chart) {
     ],
     series: (chart.series || []).map((s, idx) => {
       const lookup = new Map(s.data || []);
-      return {
+      const values = categories.map(c => lookup.has(c) ? lookup.get(c) : null);
+      const base = {
         name: s.name, type: s.type || 'line', yAxisIndex: s.y_axis_index || 0,
-        data: categories.map(c => lookup.has(c) ? lookup.get(c) : null),
+        data: values,
         smooth: s.type !== 'bar',
         // 稀疏序列（如季度GDP）点少且被空值隔开，需显示圆点+连线才能看见
         showSymbol: s.type !== 'bar' && (s.data || []).length <= 24,
@@ -1374,6 +1387,16 @@ function dashboardChartOption(chart) {
         lineStyle: { width: 2 }, barMaxWidth: 20, barGap: '20%',
         itemStyle: { color: DASH_PALETTE[idx % DASH_PALETTE.length] },
       };
+      if (isRank) {
+        // 净流入：正为流入(红)、负为流出(绿)，并显示数值标签
+        base.barMaxWidth = 26;
+        base.itemStyle = { color: (p) => (p.value >= 0 ? '#c0392b' : '#16855b') };
+        base.label = {
+          show: true, position: 'top', fontSize: 9,
+          formatter: (p) => (p.value == null ? '' : Number(p.value).toFixed(1)),
+        };
+      }
+      return base;
     }),
   };
 }
@@ -1385,14 +1408,33 @@ function renderDashboardCharts(containerId, charts) {
     el.innerHTML = '<div class="empty">暂无图表数据</div>';
     return;
   }
-  el.innerHTML = charts.map(c => `
+  el.innerHTML = charts.map(c => {
+    // 汇金净流入图：独立合计数字卡片（合计流通规模变化 / 份额变化）
+    const totalCard = (c.layout === 'etf_rank' && c.total_cap_change != null) ? `
+      <div class="etf-total-cards">
+        <div class="etf-total-card">
+          <div class="etc-k">合计流通规模变化</div>
+          <div class="etc-v ${c.total_cap_change >= 0 ? 'up' : 'down'}">${c.total_cap_change >= 0 ? '+' : ''}${Number(c.total_cap_change).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} <small>亿元</small></div>
+        </div>
+        <div class="etf-total-card">
+          <div class="etc-k">合计流通份额变化</div>
+          <div class="etc-v ${c.total_share_change >= 0 ? 'up' : 'down'}">${c.total_share_change >= 0 ? '+' : ''}${Number(c.total_share_change).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} <small>亿份</small></div>
+        </div>
+        <div class="etf-total-card">
+          <div class="etc-k">统计范围</div>
+          <div class="etc-v neutral">${c.etf_count} 只 · ${esc(c.range_label || '')}</div>
+        </div>
+      </div>` : '';
+    return `
     <div class="chart-card">
       <div class="chart-head">
         <h4>${esc(c.title)}</h4>
         <span>${esc(c.note || '')}</span>
       </div>
-      <div class="chart-box" data-chart-id="${esc(c.id)}"></div>
-    </div>`).join('');
+      ${totalCard}
+      <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : ''}" data-chart-id="${esc(c.id)}"></div>
+    </div>`;
+  }).join('');
   charts.forEach(c => {
     const box = el.querySelector(`[data-chart-id="${c.id}"]`);
     if (!box) return;
@@ -1416,7 +1458,7 @@ async function loadDashboard() {
     dashboardData = res;
     // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
     renderDashboardTab();
-    const etfNote = etf.map(c => `${c.title.replace('维度 · 流通份额变化 / 流通规模变化', '')} ${c.etf_count}只`).join(' · ');
+    const etfNote = etf.map(c => `${c.layout === 'etf_rank' ? '汇金净流入' : '黄金'} ${c.etf_count}只`).join(' · ');
     $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;

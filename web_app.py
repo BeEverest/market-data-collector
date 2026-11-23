@@ -249,16 +249,57 @@ def _submit(kind: str, func) -> str:
 
 
 def _recompute_derived(config: dict, trigger: str = "手动",
-                       month: str | None = None, code: str | None = None) -> int:
+                       month: str | None = None, code: str | None = None,
+                       run_id: str | None = None) -> int:
     """按现有宏观观测重算派生指标并写入 SQLite。
 
-    month/code 均为空时全量重算并整表替换（清理陈旧口径行）；
-    指定 month 或 code 时仅计算目标子集并按 biz_key 幂等覆盖，不影响其他数据。
+    三种模式（优先级从高到低）：
+      - run_id 给定（定时调度步骤 6/6）：增量模式。只读取本次采集写入的宏观
+        变更范围，推导受影响的派生 (指标, 月份)，仅计算这些行并按 biz_key 幂等
+        upsert，不删全表、不对全量历史重复计算。派生表为空（首次）时回退全量。
+      - month/code 指定（手动兜底）：局部重算，仅计算目标子集按 biz_key 覆盖。
+      - 两者皆空（手动全量）：全量重算并整表替换，清理陈旧口径行。
     """
+    from processors.derived import incremental_targets
+
     db = _db_path(config)
     if not db:
         logger.warning("【数据处理】未配置 SQLite，跳过派生指标重算")
         return 0
+
+    # ---- 增量模式：定时调度随采集触发 ----
+    if run_id:
+        changed_codes, changed_months = storage.read_macro_changes_by_run(db, run_id)
+        if not changed_codes or not changed_months:
+            logger.info("【数据处理】%s派生增量重算：本次 run_id=%s 无宏观数据写入，跳过",
+                        trigger, run_id)
+            return 0
+        target_codes, target_months = incremental_targets(changed_codes, changed_months)
+        if not target_codes or not target_months:
+            logger.info("【数据处理】%s派生增量重算：无受影响派生指标，跳过", trigger)
+            return 0
+        # 派生表为空（如首次部署）时需全量建立基线，否则增量会留下历史空洞
+        existing = storage.read_derived(db)
+        if existing.empty:
+            logger.info("【数据处理】%s派生表为空，增量重算回退为全量建立基线", trigger)
+            _, macro_df = storage.read_macro(db, limit=None)
+            result = compute_derived(macro_df)
+            n = storage.replace_derived(db, result)
+            logger.info("【数据处理】%s触发派生指标全量重算（基线）：%d 行", trigger, n)
+            return n
+        _, macro_df = storage.read_macro(db, limit=None)
+        result = compute_derived(macro_df, target_codes=target_codes,
+                                 target_months=target_months)
+        n = storage.upsert_derived(db, result)
+        logger.info(
+            "【数据处理】%s触发派生指标【增量】重算：本次变更 %d 个原始指标/%d 个月份，"
+            "映射为 %d 项派生指标/%d 个目标月份，写入 %d 行（按业务键覆盖，未删全表）",
+            trigger, len(changed_codes), len(changed_months),
+            len(target_codes), len(target_months), n,
+        )
+        return n
+
+    # ---- 手动模式：局部 / 全量（保持原逻辑）----
     _, macro_df = storage.read_macro(db, limit=None)
     partial = bool(month or code)
     result = compute_derived(macro_df, month=month, only_code=code)
@@ -303,12 +344,13 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
                    f"指数 {len(index_df)} 行，接口失败 {failed} 次")
     logger.info("%s步骤 5/5 采集完成：%s", tag, summary)
     if trigger == "定时调度":
-        # 已确认：派生指标由定时调度触发，随每日定时任务完成后重算一次
+        # 派生指标随定时任务完成后重算；改为增量模式：只重算本次采集写入数据
+        # 所影响的派生指标与月份，不再每次都全量重算并替换整表。
         try:
-            n = _recompute_derived(config, trigger="定时调度")
-            logger.info("%s步骤 6/6 派生指标定时重算完成：%d 行", tag, n)
+            n = _recompute_derived(config, trigger="定时调度", run_id=monitor.run_id)
+            logger.info("%s步骤 6/6 派生指标定时增量重算完成：%d 行", tag, n)
         except Exception as exc:
-            logger.warning("%s派生指标定时重算失败：%s", tag, exc)
+            logger.warning("%s派生指标定时增量重算失败：%s", tag, exc)
     return summary
 
 

@@ -547,6 +547,27 @@ def read_macro(path: str | Path, code: str | None = None,
     return int(total), df[MACRO_COLUMNS]
 
 
+def read_macro_changes_by_run(path: str | Path, run_id: str) -> tuple[set[str], set[str]]:
+    """读取本次采集 run_id 写入的宏观观测，返回 (代码集合, 月份集合)。
+
+    供派生指标增量重算识别"本次变更范围"：只重算依赖了这些代码、且落在这些
+    月份（及其差分/同比偏移月）的派生行，避免每次定时调度都全量重算。
+    run_id 为空时返回空集合，调用方据此回退全量。
+    """
+    init_schema(path)
+    if not run_id:
+        return set(), set()
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT code, substr(date, 1, 7) AS ym FROM macro_observation "
+            "WHERE run_id=?",
+            (str(run_id),),
+        ).fetchall()
+    codes = {str(r["code"]).strip() for r in rows if r["code"]}
+    months = {str(r["ym"])[:7] for r in rows if r["ym"]}
+    return codes, months
+
+
 def read_etf(path: str | Path, code: str | None = None,
              start: str | None = None, end: str | None = None,
              limit: int | None = None, offset: int = 0,

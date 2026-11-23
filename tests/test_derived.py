@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 import storage
-from processors.derived import compute_derived
+from processors.derived import compute_derived, incremental_targets
 
 
 def _row(code, date, value=None, yoy=None):
@@ -127,3 +127,128 @@ class TestDerivedStorage:
         # 其他指标不受影响
         gold = after[(after["code"] == "GOLD_NEW_TON") & (after["date"] == "2026-11")]
         assert not gold.empty
+
+
+class TestIncrementalRecompute:
+    """增量重算：只重算受影响 (指标, 月份)，分母仍取全量历史，upsert 不删旧行。"""
+
+    def test_incremental_targets_maps_codes_and_months(self):
+        codes, months = incremental_targets({"M2", "CPI"}, {"2026-11"})
+        # M2 -> M2_YOY / M1_M2_GAP / A_SHARE_MC_M2；CPI -> CPI_YOY / CPI_PPI_GAP
+        assert codes == {"M2_YOY", "M1_M2_GAP", "A_SHARE_MC_M2", "CPI_YOY", "CPI_PPI_GAP"}
+        # 偏移并集：当月、下月、明年同月、明年下月
+        assert months == {"2026-11", "2026-12", "2027-11", "2027-12"}
+
+    def test_incremental_targets_empty_inputs(self):
+        assert incremental_targets(set(), {"2026-11"}) == (set(), set())
+        assert incremental_targets({"M2"}, set()) == (set(), set())
+
+    def test_incremental_keeps_diff_and_yoy_denominators(self):
+        """差分/二阶差分的目标月计算仍须拿到上月/去年同月分母，结果与全量一致。"""
+        df = pd.DataFrame([
+            _row("HH_DEPOSIT", "2025-10", 900.0),   # 2025-11 新增的分母
+            _row("HH_DEPOSIT", "2025-11", 1000.0),  # 去年同月新增(=100)的分母
+            _row("HH_DEPOSIT", "2026-10", 1100.0),
+            _row("HH_DEPOSIT", "2026-11", 1300.0),
+        ])
+        full = compute_derived(df)
+        inc = compute_derived(df, target_codes={"HH_DEPOSIT_NEW", "HH_DEPOSIT_NEW_YOY"},
+                              target_months={"2026-11"})
+        assert set(inc["code"]) == {"HH_DEPOSIT_NEW", "HH_DEPOSIT_NEW_YOY"}
+        assert set(inc["date"]) == {"2026-11"}
+        # 与全量同月同指标的值完全一致（分母未丢失）
+        f = full[(full["date"] == "2026-11") & (full["code"] == "HH_DEPOSIT_NEW")]
+        i = inc[inc["code"] == "HH_DEPOSIT_NEW"]
+        assert i["value"].iloc[0] == pytest.approx(f["value"].iloc[0]) == pytest.approx(200.0)
+
+    def test_incremental_upsert_does_not_delete_other_rows(self, tmp_path):
+        """增量写入按 biz_key 覆盖，只影响目标行，其他派生行保留。"""
+        db = tmp_path / "derived.db"
+        df = pd.DataFrame([
+            _row("M2", "2026-09", 3135000.0, 8.0),
+            _row("M2", "2026-10", 3150000.0, 8.2),
+            _row("M2", "2026-11", 3160000.0, 8.3),
+            _row("CPI", "2026-11", 100.2, 0.2),
+        ])
+        full = compute_derived(df)
+        storage.replace_derived(db, full)
+        before = storage.read_derived(db)
+
+        inc = compute_derived(df, target_codes={"M2_YOY"}, target_months={"2026-11"})
+        inc = inc.copy()
+        inc["value"] = 999.0
+        storage.upsert_derived(db, inc)
+        after = storage.read_derived(db)
+        assert len(after) == len(before)  # 行数不变，未删全表
+        got = after[(after["code"] == "M2_YOY") & (after["date"] == "2026-11")]
+        assert got["value"].iloc[0] == pytest.approx(999.0)
+        # 其他指标/月份保持原值
+        cpi = after[(after["code"] == "CPI_YOY") & (after["date"] == "2026-11")]
+        assert not cpi.empty and cpi["value"].iloc[0] != 999.0
+
+    def test_read_macro_changes_by_run(self, tmp_path):
+        """按 run_id 读取本次采集写入的原始代码/月份集合。"""
+        from processors.derived import INDICATORS  # 确保依赖模块可导入
+
+        db = tmp_path / "derived.db"
+        df = pd.DataFrame([
+            _row("M2", "2026-10", 3150000.0, 8.2),
+            _row("M2", "2026-11", 3160000.0, 8.3),
+            _row("CPI", "2026-11", 100.2, 0.2),
+        ])
+        storage.upsert_macro(db, df, run_id="run-A")
+        storage.upsert_macro(db, pd.DataFrame([_row("M2", "2026-09", 3135000.0, 8.0)]),
+                             run_id="run-B")
+        codes, months = storage.read_macro_changes_by_run(db, "run-A")
+        assert codes == {"M2", "CPI"}
+        assert months == {"2026-10", "2026-11"}
+        codes_b, months_b = storage.read_macro_changes_by_run(db, "run-B")
+        assert codes_b == {"M2"} and months_b == {"2026-09"}
+        assert storage.read_macro_changes_by_run(db, "") == (set(), set())
+        assert INDICATORS  # noqa: B011 - 仅确认导入成功
+
+    def test_recompute_derived_incremental_by_run_id(self, tmp_path, monkeypatch):
+        """调度增量：只重算 run 写入范围相关派生行，不删其他行；空表回退全量。"""
+        import web_app
+
+        db = tmp_path / "derived.db"
+        rows = [
+            _row("M2", "2026-09", 3135000.0, 8.0),
+            _row("M2", "2026-10", 3150000.0, 8.2),
+            _row("M2", "2026-11", 3160000.0, 8.3),
+            _row("CPI", "2026-09", 100.1, 0.1),
+            _row("CPI", "2026-10", 100.2, 0.2),
+            _row("CPI", "2026-11", 100.3, 0.3),
+        ]
+        storage.upsert_macro(db, pd.DataFrame(rows), run_id="run-full")
+        cfg = {"storage": {"backend": "sqlite", "db_path": str(db)}}
+
+        # 派生表为空 -> 增量触发时回退全量建立基线
+        n1 = web_app._recompute_derived(cfg, trigger="定时调度", run_id="run-full")
+        base_rows = storage.read_derived(db)
+        assert n1 == len(base_rows) and n1 > 0
+        assert set(base_rows["code"]) >= {"M2_YOY", "CPI_YOY"}
+
+        # 模拟"本次只新写入 M2 的 2026-11"：增量只重算 M2 相关行，行数不变
+        storage.upsert_macro(db, pd.DataFrame([_row("M2", "2026-11", 9999999.0, 99.0)]),
+                             run_id="run-delta")
+        n2 = web_app._recompute_derived(cfg, trigger="定时调度", run_id="run-delta")
+        after = storage.read_derived(db)
+        assert n2 > 0
+        assert len(after) == len(base_rows)  # 未删全表
+        m2 = after[(after["code"] == "M2_YOY") & (after["date"] == "2026-11")]
+        assert not m2.empty and m2["value"].iloc[0] == pytest.approx(99.0)
+
+    def test_recompute_derived_incremental_no_macro_writes_skips(self, tmp_path):
+        """run 未写入任何宏观数据（如仅采 ETF/指数）时，增量重算跳过返回 0。"""
+        import web_app
+
+        db = tmp_path / "derived.db"
+        storage.upsert_macro(db, pd.DataFrame([_row("M2", "2026-11", 3160000.0, 8.3)]),
+                             run_id="run-full")
+        cfg = {"storage": {"backend": "sqlite", "db_path": str(db)}}
+        web_app._recompute_derived(cfg, trigger="定时调度", run_id="run-full")
+        before = len(storage.read_derived(db))
+        n = web_app._recompute_derived(cfg, trigger="定时调度", run_id="run-with-no-macro")
+        assert n == 0
+        assert len(storage.read_derived(db)) == before

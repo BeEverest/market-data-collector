@@ -50,9 +50,13 @@ def test_scheduled_collection_recomputes_derived(base, config_file, monkeypatch)
         "macro_rows": 0, "etf_rows": 0, "index_rows": 0,
     })
     called = []
-    monkeypatch.setattr(web_app, "_recompute_derived", lambda cfg, trigger="手动": called.append(trigger) or 3)
+    # 定时调度以增量模式触发，必须传入本次采集 run_id
+    monkeypatch.setattr(web_app, "_recompute_derived",
+                        lambda cfg, trigger="手动", run_id=None: called.append((trigger, run_id)) or 3)
 
     web_app._do_collect(trigger="定时调度")
-    assert called == ["定时调度"]
+    assert len(called) == 1
+    assert called[0][0] == "定时调度"
+    assert called[0][1]  # run_id 非空，供增量识别本次变更
     web_app._do_collect(trigger="Web")
-    assert called == ["定时调度"]
+    assert len(called) == 1  # 手动/普通采集不触发派生重算

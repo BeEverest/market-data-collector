@@ -87,6 +87,36 @@ INDICATORS: dict[str, dict] = {
 }
 
 
+# 每项派生指标依赖的原始宏观代码（用于增量重算时判断"受哪些原始观测变化影响"）。
+# 差分/同比/二阶差分即使跨月取值，其唯一数据来源仍是下列代码本身，故这里只列代码，
+# 月份维度的依赖扩展（上月/去年同月/下月）由 incremental_targets 统一处理。
+DERIVED_SOURCE_CODES: dict[str, set[str]] = {
+    "TRADE_YOY": {"TRADE_CUM_TOTAL"},
+    "RETAIL_SALES_YOY": {"RETAIL_SALES"},
+    "CPI_YOY": {"CPI"},
+    "PPI_YOY": {"PPI"},
+    "CPI_PPI_GAP": {"CPI", "PPI"},
+    "SFR_STOCK_YOY": {"SFR_STOCK"},
+    "M1_YOY": {"M1"},
+    "M2_YOY": {"M2"},
+    "M1_M2_GAP": {"M1", "M2"},
+    "A_SHARE_MC_M2": {"A_SHARE_MC", "M2"},
+    "HH_DEPOSIT_NEW": {"HH_DEPOSIT"},
+    "HH_DEPOSIT_NEW_YOY": {"HH_DEPOSIT"},
+    "RMB_LOAN_NEW": {"RMB_LOAN"},
+    "GOLD_NEW_TON": {"GOLD_RESERVE"},
+}
+
+# 原始观测在月份 M 发生变化时，可能受影响的派生月份偏移：
+#   0  = 当月直接取数/作为差分的"本月"、同比的"今年"
+#   +1 = 作为下月差分的"上月"分母（HH_DEPOSIT_NEW / RMB_LOAN_NEW / GOLD_NEW_TON）
+#   +12 = 作为明年同月同比的"去年同月"分母（TRADE_YOY / SFR 派生 / A股M2…）
+#   +13 = 二阶差分的"去年同月新增"分母（HH_DEPOSIT_NEW_YOY）
+# 取保守并集，确保任何依赖方向的派生行都被覆盖；compute_derived 仍以全量历史为分母，
+# 这里的偏移只决定"哪些 (指标, 月份) 需要重算并 upsert"。
+INCREMENTAL_MONTH_OFFSETS = (0, 1, 12, 13)
+
+
 def _shift_month(month: str, delta: int) -> str:
     year, mon = (int(x) for x in str(month)[:7].split("-"))
     total = year * 12 + (mon - 1) + delta
@@ -131,19 +161,25 @@ def _yoy(df: pd.DataFrame, code: str) -> dict[str, float]:
 
 
 def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None,
-                    month: str | None = None, only_code: str | None = None) -> pd.DataFrame:
+                    month: str | None = None, only_code: str | None = None,
+                    target_codes: set[str] | None = None,
+                    target_months: set[str] | None = None) -> pd.DataFrame:
     """输入宏观观测 DataFrame，输出派生指标 DataFrame（缺失值不产出行）。
 
     month 为 YYYY-MM 时仅输出该月结果；only_code 为指标代码时仅输出该指标结果。
-    注意：两者只过滤“输出”，计算仍基于全量 macro_df——差分/同比类指标依赖
-    上月或去年同月的原始值，仅算单月会丢失分母导致算错。
+    target_codes / target_months 为集合版本，供增量重算只产出受影响的 (指标, 月份)。
+    注意：这些参数只过滤“输出”（并跳过无关月份的 emit），计算分母仍基于全量
+    macro_df——差分/同比类指标依赖上月或去年同月的原始值，只取目标月会算错。
     """
     if macro_df is None or macro_df.empty:
         return pd.DataFrame()
     if "日期" not in macro_df.columns:
         return pd.DataFrame()
     stamp = computed_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    dates = sorted({str(d)[:7] for d in macro_df["日期"] if str(d)[:7] >= "2000-01"})
+    all_dates = sorted({str(d)[:7] for d in macro_df["日期"] if str(d)[:7] >= "2000-01"})
+    # 增量模式只遍历目标月份（分母仍来自全量 raw/yoy，不受影响）
+    dates = ([d for d in all_dates if d in target_months]
+             if target_months is not None else all_dates)
 
     raw = {
         "trade_cum": _values(macro_df, "TRADE_CUM_TOTAL"),
@@ -164,15 +200,19 @@ def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None,
         "sfr": _yoy(macro_df, "SFR_STOCK"),
     }
 
+    # 差分/二阶差分分母必须基于全量月份构建，不能受目标月份裁剪影响，
+    # 否则 HH_DEPOSIT_NEW_YOY 等依赖去年同月新增的指标会丢失分母。
     new_hh = {d: raw["hh"][d] - raw["hh"][_shift_month(d, -1)]
-              for d in dates if d in raw["hh"] and _shift_month(d, -1) in raw["hh"]}
+              for d in all_dates if d in raw["hh"] and _shift_month(d, -1) in raw["hh"]}
     new_loan = {d: raw["loan"][d] - raw["loan"][_shift_month(d, -1)]
-                for d in dates if d in raw["loan"] and _shift_month(d, -1) in raw["loan"]}
+                for d in all_dates if d in raw["loan"] and _shift_month(d, -1) in raw["loan"]}
 
     rows: list[dict] = []
 
     def emit(code: str, date: str, value: float) -> None:
         if value is None or pd.isna(value):
+            return
+        if target_codes is not None and code not in target_codes:
             return
         meta = INDICATORS[code]
         rows.append({
@@ -234,3 +274,30 @@ def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None,
     if only_code:
         out = out[out["code"] == str(only_code).strip()]
     return out.reset_index(drop=True)
+
+
+def incremental_targets(changed_codes, changed_months) -> tuple[set[str], set[str]]:
+    """把本次采集变更的原始观测映射为需要重算的派生 (指标, 月份)。
+
+    changed_codes: 本次写入的原始宏观代码集合，如 {"M2", "RMB_LOAN"}。
+    changed_months: 本次写入的原始观测月份集合，如 {"2026-10", "2026-11"}。
+
+    返回 (target_codes, target_months)：
+      - target_codes：依赖了任一 changed_code 的派生指标；
+      - target_months：每个变更月份按 INCREMENTAL_MONTH_OFFSETS 扩展后的月份并集
+        （覆盖差分/同比/二阶差分的跨月分母方向），只把这些月份传给 compute_derived。
+    这样增量重算只覆盖受影响范围，避免对全量历史逐月重复计算。
+    """
+    changed_codes = {str(c).strip() for c in (changed_codes or set()) if str(c).strip()}
+    changed_months = {str(m)[:7] for m in (changed_months or set()) if str(m)[:7] >= "2000-01"}
+    if not changed_codes or not changed_months:
+        return set(), set()
+    target_codes = {
+        derived_code for derived_code, srcs in DERIVED_SOURCE_CODES.items()
+        if srcs & changed_codes
+    }
+    target_months: set[str] = set()
+    for month in changed_months:
+        for offset in INCREMENTAL_MONTH_OFFSETS:
+            target_months.add(_shift_month(month, offset))
+    return target_codes, target_months

@@ -301,7 +301,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 
 ### API 一览
 
-`GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/data/index`、`/api/derived`（`?month=YYYY-MM`）、`/api/derived/export`（`?month=YYYY-MM`）、`/api/dashboard`（`?months=60&days=30`，宏观 7 图 + ETF 2 图）、`/api/etf/config`、`/api/index/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
+`GET /api/status`、`/api/catalog`、`/api/monitor/report`、`/api/monitor/failed`、`/api/data/macro`、`/api/data/etf`、`/api/data/index`、`/api/derived`（`?month=YYYY-MM`）、`/api/derived/export`（`?month=YYYY-MM`）、`/api/dashboard`（`?months=12&etf_months=12`，宏观 8 图 + ETF 4 图）、`/api/etf/config`、`/api/index/config`、`/api/files`、`/api/download?name=...`、`/api/jobs`、`/api/jobs/{id}`、`/api/scheduler`、`/api/health`；
 `POST /api/collect`（支持 `index_only` + `start`/`end`）、`/api/collect/interface`（category 支持 `macro|etf|index`）、`/api/derived/recompute`（手动兜底重算）、`/api/clean/preview`（只读预览）、`/api/clean`（需 `confirm=true`）、`/api/monitor/clean/preview`（只读预览）、`/api/monitor/clean`（需 `confirm=true`）、`/api/retry`、`/api/scheduler`、`/api/etf/config`、`/api/index/config`；
 `POST /api/export/macro`、`/api/export/etf`、`/api/export/index`、`/api/export/monitor`、`/api/export/full`。交互式 API 文档见 `http://127.0.0.1:8000/docs`。点击看板上的导出按钮后，浏览器会自动下载对应的 ZIP 包（含数据 CSV、口径说明 CSV、Excel）。
 
@@ -311,7 +311,7 @@ python3 web_app.py --port 9000     # 覆盖端口
 python3.11 -m pytest          # 或 pytest
 ```
 
-共 **145 个用例**（含全量采集日期范围 7 个、口径化清理 15 个、接口监控清理 10 个、文件列表过滤 1 个、定时调度 run_type 6 个、采集量统计 6 个、结构化失败原因 1 个），全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。
+共 **272 个用例**（23 个测试文件，含派生指标口径与**增量重算** 13 个、看板装配 17 个、API 端到端 20 个、存储幂等 25 个、口径化清理 27 个、指数 23 个、监控 20 个、采集范围 7 个、定时调度 7 个等），全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。用例数随功能迭代变化，以 `python3.11 -m pytest` 实际结果为准。
 
 | 测试文件 | 覆盖范围 |
 | --- | --- |
@@ -322,5 +322,8 @@ python3.11 -m pytest          # 或 pytest
 | `tests/test_logic.py` | 补丁合并的非空覆盖与键类型兼容、分页边界（上限 100/越界纠正）、NaN/Inf 与 numpy 类型的 JSON 清洗 |
 | `tests/test_api.py` | FastAPI TestClient 端到端：健康检查、状态统计、数据筛选分页、监控、目录、ETF 配置、四类导出与下载链路 |
 | `tests/test_index.py` | 指数目录/字段/近一年范围/涨跌幅计算（Mock）、业务主键与 upsert 幂等、筛选分页/统计/配置、指数导出与口径说明、指数数据/状态/目录/配置/导出 API |
+| `tests/test_derived.py` | 14 项派生指标口径（官方累计/余额差分/二阶差分/黄金换算）、按月/按指标过滤、`compute_derived` 幂等存储；**增量重算**：依赖传播、差分/同比分母不丢失、upsert 不删旧行、按 run_id 读取变更、空表回退全量、无写入跳过、调度传参 |
+| `tests/test_scheduler.py` | 定时调度 run_type 合法取值与持久化、启用/时刻往返；定时采集完成后以增量模式触发派生重算并传入 run_id，手动/普通采集不触发 |
+| `tests/test_dashboard.py` | 宏观 8 图（GDP 次轴、贷款当月新增）、ETF 汇金/黄金/细分/累计图、叠加上证等指数切换、按天明细、精确日期范围与图表网格线口径 |
 
 测试过程中发现并修复了 `exporter._notes_for()` 的表头过滤缺陷：此前表头行被分类条件误过滤，导致导出口径说明的 CSV/Excel 首行数据被当作列名且丢失第一条说明；现已固定使用 `_NOTES[0]` 作为列名。

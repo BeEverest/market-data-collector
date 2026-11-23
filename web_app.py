@@ -760,7 +760,7 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "etf_end": etf_end or "",
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
-                                           etf_start, etf_end)},
+                                           etf_start, etf_end, index_df)},
     }
 
 

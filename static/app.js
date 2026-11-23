@@ -1356,6 +1356,68 @@ function dashboardChartOption(chart) {
   const categories = isRank ? rawCategories : rawCategories.sort();
   const axisCount = (chart.y_axes || []).length || 1;
   const hasBar = (chart.series || []).some(s => s.type === 'bar');
+
+  // 汇金原图叠加上证指数：上下两个 grid 联动（上=指数折线，下=份额/净流入柱）
+  if (chart.layout === 'etf_overlay') {
+    const idxName = chart.index_name || '上证指数 (点)';
+    const idxLookup = new Map(chart.index_data || []);
+    const idxValues = categories.map(c => idxLookup.has(c) ? idxLookup.get(c) : null);
+    const lowerAxes = (chart.y_axes || []).map((a, i) => ({
+      type: 'value', name: a.name || '', position: a.position || 'left',
+      offset: a.offset || 0, gridIndex: 1,
+      nameTextStyle: { fontSize: 10, padding: [0, 0, 0, a.offset ? 32 : 0] },
+      axisLabel: { fontSize: 10 },
+      splitLine: i === 0
+        ? { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } }
+        : { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
+    }));
+    return {
+      animation: false,
+      grid: [
+        { left: 62, right: 34 + (lowerAxes.length - 1) * 62, top: 52, height: '30%' },
+        { left: 62, right: 34 + (lowerAxes.length - 1) * 62, top: '50%', bottom: 96 },
+      ],
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      legend: { top: 4, type: 'scroll', textStyle: { fontSize: 11 } },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
+      xAxis: [
+        { type: 'category', gridIndex: 0, data: categories, boundaryGap: hasBar,
+          axisLabel: { show: false }, axisTick: { show: false },
+          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } } },
+        { type: 'category', gridIndex: 1, data: categories, boundaryGap: hasBar,
+          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
+          axisLabel: { fontSize: 10, hideOverlap: true, rotate: 30, margin: 14 } },
+      ],
+      yAxis: [{
+        type: 'value', name: idxName, position: 'left', gridIndex: 0,
+        scale: true,  // 指数点位按数据范围自适应，避免从 0 起把走势压成平线
+        nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10, formatter: v => Number(v).toFixed(0) },
+        splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } },
+      }, ...lowerAxes],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0, 1] },
+        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 8, brushSelect: false,
+          showDetail: true, handleSize: '110%',
+          dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
+      ],
+      series: [
+        { name: idxName, type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: idxValues,
+          smooth: true, showSymbol: false, symbolSize: 5, connectNulls: true,
+          lineStyle: { width: 2, color: '#3b5bdb' }, itemStyle: { color: '#3b5bdb' },
+          areaStyle: { color: '#3b5bdb', opacity: 0.08 } },
+        ...(chart.series || []).map((s, i) => {
+          const lookup = new Map(s.data || []);
+          return {
+            name: s.name, type: s.type || 'bar', xAxisIndex: 1,
+            yAxisIndex: (s.y_axis_index || 0) + 1,
+            data: categories.map(c => lookup.has(c) ? lookup.get(c) : null),
+            barMaxWidth: 20, barGap: '20%',
+            itemStyle: { color: DASH_PALETTE[(i + 1) % DASH_PALETTE.length] },
+          };
+        }),
+      ],
+    };
+  }
   return {
     animation: false,
     grid: isRank
@@ -1456,7 +1518,7 @@ function renderDashboardCharts(containerId, charts) {
         <span>${esc(c.note || '')}</span>
       </div>
       ${totalCard}
-      <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : ''}" data-chart-id="${esc(c.id)}"></div>
+      <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : (c.layout === 'etf_overlay' ? 'chart-box-overlay' : '')}" data-chart-id="${esc(c.id)}"></div>
       ${c.layout === 'etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : ''}
     </div>${c.id === 'etf_huijin' ? `
     <div class="chart-card chart-card-wide etf-daily-card" id="etfDailyCard">

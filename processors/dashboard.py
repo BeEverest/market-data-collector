@@ -132,6 +132,28 @@ def _index_monthly(df: pd.DataFrame, code: str = "000001") -> list[list]:
     return [[m, monthly[m]] for m in sorted(monthly)]
 
 
+def _index_daily_window(index_df, low: str, high: str, code: str = "000001") -> list[list]:
+    """指数日频收盘 [[YYYY-MM-DD, 点位], ...]，按 ETF 图展示窗口截取。
+
+    low/high 来自 _etf_window：精确模式为 YYYY-MM-DD，月份模式 low 为 YYYY-MM、high 为空。
+    无指数数据时返回空列表，前端据此退化为普通单图。
+    """
+    pairs = _pairs(index_df, "交易日期", "收盘价", code=code, code_col="指数代码")
+    if not pairs:
+        return []
+    out = []
+    for d, v in pairs:
+        if low and len(low) == 10:
+            if d < low:
+                continue
+        elif low and d[:7] < low:
+            continue
+        if high and d > high:
+            continue
+        out.append([d, v])
+    return out
+
+
 def _etf_window(df, months: int, start: str | None, end: str | None):
     """按精确日期区间(start/end)或近 N 个月截取 ETF 数据。
 
@@ -240,12 +262,13 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
 
 def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                      months: int = 12, start: str | None = None,
-                     end: str | None = None) -> list[dict]:
+                     end: str | None = None, index_df: pd.DataFrame | None = None) -> list[dict]:
     """按标签汇总 ETF 较上一交易日的份额变化/申赎净流入；months 控制展示最近 N 个月（0 为全部）。
 
     与宏观图保持一致的「近一年/近6个月/近3年/近5年/全部」口径。变化值已在
     read_etf_with_changes 中基于全量历史算好，这里只按日期截取展示窗口。
     start/end 为 YYYY-MM-DD 精确日期区间，优先于 months（任一给出即生效）。
+    index_df 为上证指数日频数据；有数据时汇金原图叠加指数日线（前端渲染为上下双图）。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
@@ -295,6 +318,13 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         })
 
         if tag == "汇金":
+            # 汇金原图叠加上证指数日线：与 ETF 同窗口截取；前端渲染为上下双图联动。
+            idx_data = _index_daily_window(index_df, low, high)
+            if idx_data:
+                charts[-1]["layout"] = "etf_overlay"
+                charts[-1]["index_name"] = "上证指数 (点)"
+                charts[-1]["index_data"] = idx_data
+                charts[-1]["note"] += "；上方叠加上证指数日线"
             # 汇金细分：按每只 ETF 累加所选区间内的真实净流入（份额变化×当日净值）降序。
             # 变化基准来自全量历史（见 read_etf_with_changes），这里只按窗口截取再累加。
             # 兼容旧数据：无「净流入(亿元)」列时回退到规模变化。

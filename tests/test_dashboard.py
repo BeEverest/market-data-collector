@@ -288,6 +288,41 @@ class TestEtfDashboard:
         assert daily["range"] == "2026-11-10 ~ 2026-11-18"
         assert daily["total"]["share"] == 6.0  # 2 + 4
 
+    def test_huijin_chart_overlays_index(self):
+        """有指数数据时汇金原图叠加日线（上下双图），黄金图与细分图不叠加；窗口与 ETF 一致。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "交易日期": "2026-10-30",
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0},
+            {"基金代码": "510050", "交易日期": "2026-11-18",
+             "份额变化(亿份)": 3.0, "规模变化(亿元)": 4.0},
+            {"基金代码": "518880", "交易日期": "2026-11-18",
+             "份额变化(亿份)": -0.5, "规模变化(亿元)": -1.5},
+        ])
+        tag_map = {"510050": ["汇金"], "518880": ["黄金"]}
+        idx = pd.DataFrame([
+            {"指数代码": "000001", "交易日期": "2026-10-30", "收盘价": 3410.0},
+            {"指数代码": "000001", "交易日期": "2026-11-18", "收盘价": 3520.5},
+            {"指数代码": "000001", "交易日期": "2026-11-20", "收盘价": 3600.0},
+        ])
+        # 精确区间：指数按同窗口截取
+        charts = build_etf_charts(df, tag_map, months=12,
+                                  start="2026-11-18", end="2026-11-19", index_df=idx)
+        hj = charts[0]
+        assert hj["layout"] == "etf_overlay"
+        assert hj["index_name"] == "上证指数 (点)"
+        assert hj["index_data"] == [["2026-11-18", 3520.5]]
+        assert "上方叠加上证指数日线" in hj["note"]
+        # 细分图、黄金图保持各自布局，不受叠加影响
+        assert charts[1].get("layout") == "etf_rank"
+        assert charts[2].get("layout") is None
+
+        # 月份模式：low 为 YYYY-MM，指数按月份截取
+        charts_m = build_etf_charts(df, tag_map, months=1, index_df=idx)
+        assert [d for d, _ in charts_m[0]["index_data"]] == ["2026-11-18", "2026-11-20"]
+
+        # 无指数数据：退化为普通单图（兼容既有行为）
+        assert build_etf_charts(df, tag_map, months=1)[0].get("layout") is None
+
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([
             {"基金代码": "510050", "交易日期": "2026-11-20",
@@ -315,6 +350,11 @@ class TestDashboardApi:
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
         assert "generated_at" in data
+        # 接口透传指数数据：汇金原图叠加日线（上下双图）
+        hj = data["etf"]["charts"][0]
+        assert hj["layout"] == "etf_overlay"
+        assert [d for d, _ in hj["index_data"]] == ["2026-10-30", "2026-10-31"]
+        assert data["etf"]["charts"][2].get("layout") is None
 
     def test_dashboard_endpoint_etf_date_range(self, client):
         data = client.get(

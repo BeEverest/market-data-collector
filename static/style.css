@@ -553,7 +553,9 @@ tr.row-ok td { }
 }
 /* ETF 维度：图表整行铺开，与下方「按天明细」卡片等宽对齐，日期轴有充足空间 */
 #etfCharts { grid-template-columns: 1fr; }
-#etfCharts .chart-box:not(.chart-box-tall) { height: 360px; }
+#etfCharts .chart-box:not(.chart-box-tall):not(.chart-box-overlay) { height: 360px; }
+/* 汇金叠加图：上下双 grid，需要更高画布容纳指数折线与净流入柱 */
+#etfCharts .chart-box-overlay { height: 470px; }
 .chart-card {
   border: 1px solid var(--line); border-radius: 10px; background: #fff;
   overflow: hidden; box-shadow: var(--shadow);

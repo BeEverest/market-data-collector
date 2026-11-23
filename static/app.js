@@ -1437,7 +1437,15 @@ function renderDashboardCharts(containerId, charts) {
       ${totalCard}
       <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : ''}" data-chart-id="${esc(c.id)}"></div>
       ${c.layout === 'etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : ''}
-    </div>`;
+    </div>${c.id === 'etf_huijin' ? `
+    <div class="chart-card chart-card-wide etf-daily-card" id="etfDailyCard">
+      <div class="chart-head">
+        <h4>汇金维度 · 按天流通份额 / 流通规模变化明细</h4>
+        <span>按交易日汇总汇金 ETF 较上一交易日的变化 · 点击某天展开当日各 ETF 明细</span>
+      </div>
+      <div class="etf-daily-total" id="etfDailyTotal"></div>
+      <div class="table-wrap" id="etfDailyTable"><div class="empty">加载中…</div></div>
+    </div>` : ''}`;
   }).join('');
   charts.forEach(c => {
     const box = el.querySelector(`[data-chart-id="${c.id}"]`);
@@ -1461,6 +1469,84 @@ function renderDashboardCharts(containerId, charts) {
       });
     }
   });
+  if (el.querySelector('#etfDailyCard')) loadEtfDailyDetail();
+}
+
+/* 汇金维度：按天汇总明细 + 区间合计 */
+function fmtNum(v, digits = 2) {
+  return (v == null || v === '') ? '—'
+    : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
+}
+
+async function loadEtfDailyDetail() {
+  const tableBox = document.getElementById('etfDailyTable');
+  const totalBox = document.getElementById('etfDailyTotal');
+  if (!tableBox || !totalBox) return;
+  const months = $('dashboardEtfMonths')?.value || '12';
+  try {
+    const res = await api(`/api/dashboard/etf-daily?months=${encodeURIComponent(months)}`);
+    const t = res.total || { share: 0, cap: 0, days: 0 };
+    totalBox.innerHTML = `
+      <div class="etf-daily-total-card"><span>区间合计流通份额变化</span>
+        <b class="${t.share >= 0 ? 'up' : 'down'}">${t.share >= 0 ? '+' : ''}${fmtNum(t.share)} <small>亿份</small></b></div>
+      <div class="etf-daily-total-card"><span>区间合计流通规模变化</span>
+        <b class="${t.cap >= 0 ? 'up' : 'down'}">${t.cap >= 0 ? '+' : ''}${fmtNum(t.cap)} <small>亿元</small></b></div>
+      <div class="etf-daily-total-card"><span>统计范围</span>
+        <b class="neutral">${t.days} 个交易日 · ${esc(res.range || '')}</b></div>`;
+    const rows = res.rows || [];
+    tableBox.innerHTML = `<table>
+      <thead><tr><th>交易日期</th><th>流通份额变化(亿份)</th><th>流通规模变化(亿元)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
+      <tbody>${rows.map(r => `
+        <tr class="etf-day-row" data-date="${esc(r.date)}">
+          <td>${esc(r.date)}</td>
+          <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
+          <td class="num"><span class="${r.cap >= 0 ? 'up' : 'down'}">${r.cap >= 0 ? '+' : ''}${fmtNum(r.cap)}</span></td>
+          <td class="num">${r.count}</td>
+          <td><button type="button" class="btn tiny etf-day-toggle" data-date="${esc(r.date)}">展开</button></td>
+        </tr>
+        <tr class="etf-day-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="5"></td></tr>`).join('')}</tbody>
+    </table>`;
+    tableBox.querySelectorAll('.etf-day-toggle').forEach(b =>
+      b.addEventListener('click', () => toggleEtfDayDetail(b.dataset.date)));
+  } catch (e) {
+    tableBox.innerHTML = `<div class="empty">按天明细加载失败：${esc(e.message || e)}</div>`;
+  }
+}
+
+async function toggleEtfDayDetail(date) {
+  const row = document.querySelector(`.etf-day-row[data-date="${date}"]`);
+  const detailRow = document.querySelector(`.etf-day-detail-row[data-detail-date="${date}"]`);
+  if (!row || !detailRow) return;
+  const btn = row.querySelector('.etf-day-toggle');
+  if (!detailRow.hidden) {
+    detailRow.hidden = true;
+    btn.textContent = '展开';
+    return;
+  }
+  detailRow.hidden = false;
+  btn.textContent = '收起';
+  const cell = detailRow.querySelector('td');
+  cell.innerHTML = '<div class="empty">加载当日明细…</div>';
+  try {
+    const months = $('dashboardEtfMonths')?.value || '12';
+    const qs = new URLSearchParams({ months, date });
+    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
+    const rows = res.rows || [];
+    cell.innerHTML = `
+      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 明细（按规模变化降序，共 ${rows.length} 只）</div>
+      <table class="etf-day-detail-table">
+        <thead><tr><th>ETF 名称</th><th>代码</th><th>份额变化(亿份)</th><th>变化率</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${esc(r.name)}</td><td>${esc(r.code)}</td>
+          <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
+          <td class="num">${r.share_rate == null ? '—' : fmtNum(r.share_rate) + '%'}</td>
+          <td class="num"><span class="${r.cap >= 0 ? 'up' : 'down'}">${r.cap >= 0 ? '+' : ''}${fmtNum(r.cap)}</span></td>
+          <td class="num">${r.cap_rate == null ? '—' : fmtNum(r.cap_rate) + '%'}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+  } catch (e) {
+    cell.innerHTML = `<div class="empty">加载失败：${esc(e.message || e)}</div>`;
+  }
 }
 
 /* 点击汇金细分图的柱子：展开/收起该 ETF 在所选区间内的每日明细 */

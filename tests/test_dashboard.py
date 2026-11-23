@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 import storage
 import web_app
-from processors.dashboard import build_etf_charts, build_macro_charts
+from processors.dashboard import (
+    build_etf_charts, build_etf_daily_detail, build_macro_charts,
+)
 
 
 @pytest.fixture
@@ -183,6 +185,31 @@ class TestEtfDashboard:
         assert [m["code"] for m in detail["rank_meta"]] == ["510300", "159915", "510050"]
         assert [m["name"] for m in detail["rank_meta"]] == [d[0] for d in data]
 
+    def test_daily_detail_summary_and_day(self):
+        """按天汇总含区间合计；展开某天返回当日各 ETF 明细并按规模变化降序。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-19",
+             "份额变化(亿份)": 1.0, "份额变化率(%)": 5.0, "规模变化(亿元)": 2.0, "规模变化率(%)": 4.0},
+            {"基金代码": "510300", "基金简称": "沪深300ETF", "交易日期": "2026-11-19",
+             "份额变化(亿份)": 3.0, "份额变化率(%)": 6.0, "规模变化(亿元)": 6.0, "规模变化率(%)": 7.0},
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-20",
+             "份额变化(亿份)": -1.0, "份额变化率(%)": -2.0, "规模变化(亿元)": -3.0, "规模变化率(%)": -1.0},
+            {"基金代码": "510300", "基金简称": "沪深300ETF", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 2.0, "份额变化率(%)": 3.0, "规模变化(亿元)": 5.0, "规模变化率(%)": 2.0},
+        ])
+        tag_map = {"510050": ["汇金"], "510300": ["汇金"], "518880": ["黄金"]}
+        summary = build_etf_daily_detail(df, tag_map, months=1)
+        assert summary["range"] == "近 1 个月"
+        assert summary["total"] == {"share": 5.0, "cap": 10.0, "days": 2}
+        assert [r["date"] for r in summary["rows"]] == ["2026-11-20", "2026-11-19"]
+        assert summary["rows"][0] == {"date": "2026-11-20", "share": 1.0, "cap": 2.0, "count": 2}
+
+        day = build_etf_daily_detail(df, tag_map, months=1, date="2026-11-19")
+        assert day["date"] == "2026-11-19"
+        assert [r["code"] for r in day["rows"]] == ["510300", "510050"]  # 规模变化降序
+        assert day["rows"][0]["name"] == "沪深300ETF"
+        assert day["rows"][0]["share_rate"] == 6.0
+
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([
             {"基金代码": "510050", "交易日期": "2026-11-20",
@@ -210,3 +237,17 @@ class TestDashboardApi:
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
         assert "generated_at" in data
+
+    def test_etf_daily_endpoint(self, client, db_path, config):
+        etf_cfg = dict(config["etf"])
+        etf_cfg["tags"] = {"510050": ["汇金"], "159915": ["黄金"]}
+        storage.save_etf_config(db_path, etf_cfg)
+        summary = client.get("/api/dashboard/etf-daily?months=12").json()
+        assert "rows" in summary and "total" in summary
+        assert summary["total"]["days"] >= 1
+        target = summary["rows"][0]["date"]
+        day = client.get(f"/api/dashboard/etf-daily?months=12&date={target}").json()
+        assert day["date"] == target
+        assert isinstance(day["rows"], list)
+        if day["rows"]:
+            assert "code" in day["rows"][0] and "cap" in day["rows"][0]

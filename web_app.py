@@ -46,7 +46,9 @@ from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
 from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
-from processors.dashboard import build_etf_charts, build_macro_charts
+from processors.dashboard import (
+    build_etf_charts, build_etf_daily_detail, build_macro_charts,
+)
 from processors.etf_change import compute_etf_changes
 
 ETF_TAG_OPTIONS = ["宽基", "汇金", "黄金"]
@@ -755,6 +757,17 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months)},
     }
+
+
+@app.get("/api/dashboard/etf-daily")
+def api_dashboard_etf_daily(months: int = 12, date: str | None = None):
+    """汇金维度按天明细：不带 date 返回每日汇总+区间合计；带 date 返回当日各 ETF 明细。"""
+    cfg = _cfg()
+    db = _require_db(cfg)
+    months = max(0, min(int(months or 0), 240))
+    _, etf_df = storage.read_etf_with_changes(db, limit=None)
+    etf_cfg = storage.get_etf_config(db, cfg.get("etf", {}))
+    return build_etf_daily_detail(etf_df, etf_cfg.get("tags", {}), months, date)
 
 
 @app.get("/api/files")

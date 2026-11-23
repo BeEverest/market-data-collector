@@ -290,3 +290,69 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 ],
             })
     return charts
+
+
+def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None = None) -> dict:
+    """汇金维度按天流通份额/规模变化明细。
+
+    - date 为空：按交易日倒序返回每日汇总（含当日各 ETF 只数）与区间合计。
+    - date 给定：返回该交易日各汇金 ETF 的份额/规模变化明细，按规模变化降序。
+    口径与 build_etf_charts 一致：变化基准来自全量历史，此处仅按窗口截取。
+    """
+    tag_map = tag_map or {}
+    months = max(0, int(months or 0))
+    codes = {str(c).zfill(6) for c, tags in tag_map.items() if "汇金" in (tags or [])}
+    scope = "全部" if not months else "近 %d 个月" % months
+
+    if etf_df is None or etf_df.empty or not codes:
+        if date:
+            return {"date": str(date)[:10], "rows": [], "range": scope}
+        return {"rows": [], "total": {"share": 0.0, "cap": 0.0, "days": 0}, "range": scope}
+
+    sub = etf_df[etf_df["基金代码"].astype(str).str.zfill(6).isin(codes)].copy()
+    if months:
+        all_dates = sorted(str(d)[:10] for d in sub["交易日期"] if str(d)[:10] >= "2000-01-01")
+        if all_dates:
+            cutoff = _shift_month(all_dates[-1][:7], -(months - 1))
+            sub = sub[sub["交易日期"].astype(str).str[:7] >= cutoff]
+
+    if date:
+        target = str(date)[:10]
+        day = sub[sub["交易日期"].astype(str).str[:10] == target]
+        rows = []
+        for _, r in day.iterrows():
+            cap = _clean_number(r.get("规模变化(亿元)"))
+            share = _clean_number(r.get("份额变化(亿份)"))
+            if cap is None and share is None:
+                continue
+            rows.append({
+                "code": str(r["基金代码"]).zfill(6),
+                "name": str(r.get("基金简称") or r["基金代码"]),
+                "share": share or 0.0,
+                "cap": cap or 0.0,
+                "share_rate": _clean_number(r.get("份额变化率(%)")),
+                "cap_rate": _clean_number(r.get("规模变化率(%)")),
+            })
+        rows.sort(key=lambda x: x["cap"], reverse=True)
+        return {"date": target, "rows": rows, "range": scope}
+
+    rows = []
+    for d, grp in sub.groupby("交易日期", sort=False):
+        share = _clean_number(grp["份额变化(亿份)"].sum()) or 0.0
+        cap = _clean_number(grp["规模变化(亿元)"].sum()) or 0.0
+        rows.append({
+            "date": str(d)[:10],
+            "share": share,
+            "cap": cap,
+            "count": int(grp["基金代码"].nunique()),
+        })
+    rows.sort(key=lambda x: x["date"], reverse=True)
+    return {
+        "rows": rows,
+        "total": {
+            "share": float(sum(r["share"] for r in rows)),
+            "cap": float(sum(r["cap"] for r in rows)),
+            "days": len(rows),
+        },
+        "range": scope,
+    }

@@ -596,8 +596,34 @@ tr.row-ok td { }
 .etf-daily-detail small { font-size: 10px; font-weight: 400; }
 .etf-daily-detail .table-wrap { max-height: 360px; }
 
+/* 汇金：按天流通份额/规模变化明细（原图下方独立卡片） */
+.etf-daily-card .table-wrap { max-height: 480px; margin: 0 14px 14px; }
+.etf-daily-total {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+  padding: 8px 14px 6px;
+}
+.etf-daily-total-card {
+  border: 1px solid var(--line); border-radius: 8px; background: #fbfcff;
+  padding: 8px 10px; text-align: center;
+}
+.etf-daily-total-card span { display: block; font-size: 10.5px; color: var(--muted); }
+.etf-daily-total-card b { display: block; font-size: 15px; margin-top: 3px; }
+.etf-daily-total-card b small { font-size: 10px; font-weight: 400; }
+.etf-daily-total-card .up { color: #c0392b; }
+.etf-daily-total-card .down { color: #16855b; }
+.etf-daily-total-card .neutral { font-size: 12px; color: var(--text); }
+.etf-daily-card td.num, .etf-daily-card th.num { text-align: right; }
+.etf-daily-card .up { color: #c0392b; font-weight: 600; }
+.etf-daily-card .down { color: #16855b; font-weight: 600; }
+.etf-day-detail-row > td { padding: 0 12px 12px; background: #f7f9fd; }
+.etf-day-detail-row[hidden] { display: none; }
+.etf-day-detail-title { padding: 9px 0 4px; font-size: 11px; color: var(--brand); font-weight: 700; }
+.etf-day-detail-table { font-size: 11px; }
+.etf-day-detail-table th { position: static; background: #eef2f9; padding: 5px 8px; font-size: 10.5px; }
+.etf-day-detail-table td { padding: 5px 8px; }
+
 @media (max-width: 860px) {
-  .etf-total-cards { grid-template-columns: 1fr; }
+  .etf-total-cards, .etf-daily-total { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .chart-box { height: 280px; }
 }

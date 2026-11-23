@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
@@ -37,3 +38,21 @@ class TestSchedulerRunType:
         assert r.status_code == 200
         data = client.get("/api/scheduler").json()
         assert data["enabled"] is True and data["time"] == "09:15" and data["run_type"] == "index"
+
+
+def test_scheduled_collection_recomputes_derived(base, config_file, monkeypatch):
+    """派生指标由定时调度触发；手动/普通采集不触发。"""
+    monkeypatch.setattr(web_app, "CONFIG_PATH", config_file)
+    monkeypatch.setattr(web_app, "BASE_DIR", base)
+    monkeypatch.setattr(web_app, "_collect", lambda *a, **k: (pd.DataFrame(), pd.DataFrame(), pd.DataFrame()))
+    monkeypatch.setattr(web_app, "_finish", lambda *a, **k: None)
+    monkeypatch.setattr(web_app.storage, "status_counts", lambda path: {
+        "macro_rows": 0, "etf_rows": 0, "index_rows": 0,
+    })
+    called = []
+    monkeypatch.setattr(web_app, "_recompute_derived", lambda cfg, trigger="手动": called.append(trigger) or 3)
+
+    web_app._do_collect(trigger="定时调度")
+    assert called == ["定时调度"]
+    web_app._do_collect(trigger="Web")
+    assert called == ["定时调度"]

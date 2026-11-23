@@ -22,7 +22,13 @@
   </div>
 </header>
 
+<nav class="module-nav" aria-label="模块导航">
+  <button type="button" class="module-tab active" data-module="collect">采集系统</button>
+  <button type="button" class="module-tab" data-module="derived">数据处理</button>
+</nav>
+
 <main class="container">
+  <div id="collectModule">
   <!-- 概览卡片 -->
   <section class="stats" id="stats"></section>
 
@@ -402,6 +408,28 @@
       </div>
       <div class="clean-result" id="cleanResult">—</div>
     </div>
+  </section>
+  </div><!-- /collectModule -->
+
+  <!-- 数据处理模块：与采集系统共用本页，顶部导航切换 -->
+  <section class="card module-derived" id="derivedModule" hidden>
+    <div class="card-head">
+      <div class="title-group">
+        <h2>数据处理 · 派生指标</h2>
+        <span class="module-chip part">14 项指标</span>
+      </div>
+      <span class="hint">官方累计 / 余额差分 / 央行官方增速 · 定时调度自动重算，手动重算仅作兜底</span>
+    </div>
+    <div class="derived-controls">
+      <label class="prec-field">月份
+        <input id="derivedMonth" class="prec-input" type="month" list="derivedMonthList">
+        <datalist id="derivedMonthList"></datalist>
+      </label>
+      <button type="button" class="btn tiny" id="derivedRecomputeBtn">重新计算</button>
+      <button type="button" class="btn tiny" id="derivedExportBtn">导出 CSV</button>
+      <span class="hint" id="derivedMeta">加载中…</span>
+    </div>
+    <div class="derived-groups" id="derivedGroups"><div class="empty">加载中…</div></div>
   </section>
 </main>
 

@@ -42,6 +42,18 @@ class TestReadOnlyApis:
         assert data["scheduler"]["enabled"] is False
         assert data["running"] is False
 
+    def test_derived_api(self, client):
+        r = client.get("/api/derived")
+        assert r.status_code == 200
+        data = r.json()
+        assert {"month", "months", "rows", "count"}.issubset(data)
+        recalc = client.post("/api/derived/recompute")
+        assert recalc.status_code == 200 and recalc.json()["ok"] is True
+        after = client.get("/api/derived").json()
+        assert after["count"] >= data["count"]
+        csv = client.get("/api/derived/export")
+        assert csv.status_code == 200 and "text/csv" in csv.headers["content-type"]
+
     def test_macro_pagination_and_date_filter(self, client):
         r = client.get("/api/data/macro", params={"page": 1, "page_size": 2})
         data = r.json()

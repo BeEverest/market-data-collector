@@ -1163,6 +1163,75 @@ $('exportIndexBtn').addEventListener('click', () => runExport('/api/export/index
 $('exportFullBtn').addEventListener('click', () => runExport('/api/export/full', '全量导出'));
 $('exportMonitorBtn').addEventListener('click', () => runExport('/api/export/monitor', '接口监控导出'));
 
+/* ---------- 数据处理模块 ---------- */
+function derivedTag(code) {
+  if (['RETAIL_SALES_YOY', 'CPI_YOY', 'PPI_YOY', 'M1_YOY', 'M2_YOY'].includes(code)) return '直接取数';
+  if (code === 'TRADE_YOY') return '官方累计';
+  if (code === 'SFR_STOCK_YOY') return '央行官方';
+  if (code.includes('NEW') || code === 'GOLD_NEW_TON') return '差分';
+  return '派生';
+}
+
+function switchModule(name) {
+  document.querySelectorAll('.module-tab').forEach(b => b.classList.toggle('active', b.dataset.module === name));
+  $('collectModule').hidden = name !== 'collect';
+  $('derivedModule').hidden = name !== 'derived';
+  if (name === 'derived') loadDerived();
+}
+
+async function loadDerived() {
+  try {
+    const month = $('derivedMonth').value || '';
+    const res = await api('/api/derived' + (month ? '?month=' + encodeURIComponent(month) : ''));
+    $('derivedMonth').value = res.month || '';
+    $('derivedMonthList').innerHTML = (res.months || []).map(m => `<option value="${esc(m)}"></option>`).join('');
+    $('derivedMeta').textContent = `${res.month || '—'} · ${res.count} 项指标 · 来源 macro_observation`;
+    const groups = {};
+    (res.rows || []).forEach(r => { (groups[r.grp] = groups[r.grp] || []).push(r); });
+    const keys = Object.keys(groups).sort();
+    if (!keys.length) {
+      $('derivedGroups').innerHTML = '<div class="empty">该月暂无派生指标，请先执行定时调度或在采集完成后手动重算</div>';
+      return;
+    }
+    $('derivedGroups').innerHTML = keys.map(g => `
+      <div class="derived-group">
+        <h3>${esc(g)}</h3>
+        <div class="derived-grid">
+          ${groups[g].map(r => {
+            const v = (r.value === null || r.value === undefined) ? '—'
+              : Number(r.value).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
+            return `<div class="derived-item" title="${esc(r.formula || '')}">
+              <span class="d-tag">${esc(derivedTag(r.code))}</span>
+              <div class="d-name">${esc(r.name)}</div>
+              <div class="d-value">${v}<span class="d-unit">${esc(r.unit || '')}</span></div>
+              <div class="d-formula">${esc(r.formula || '')}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`).join('');
+  } catch (e) {
+    $('derivedGroups').innerHTML = `<div class="empty">派生指标加载失败：${esc(e.message)}</div>`;
+    flashLog(`派生指标加载失败：${e.message}`, 'ERROR');
+  }
+}
+
+document.querySelectorAll('.module-tab').forEach(btn =>
+  btn.addEventListener('click', () => switchModule(btn.dataset.module)));
+$('derivedMonth').addEventListener('change', loadDerived);
+$('derivedRecomputeBtn').addEventListener('click', async () => {
+  try {
+    const res = await api('/api/derived/recompute', { method: 'POST' });
+    flashLog(`派生指标重算完成：${res.rows} 行`, 'INFO');
+    await loadDerived();
+  } catch (e) {
+    alert(`派生指标重算失败：${e.message}`);
+  }
+});
+$('derivedExportBtn').addEventListener('click', () => {
+  const month = $('derivedMonth').value || '';
+  window.location.href = '/api/derived/export' + (month ? '?month=' + encodeURIComponent(month) : '');
+});
+
 /* ---------- 定时刷新 ---------- */
 async function refresh() {
   await Promise.all([loadStatus(), loadMonitor()]);
@@ -1181,6 +1250,7 @@ async function init() {
   resetToDefaultRange();
   monitorDefaultRange();
   await loadData();
+  await loadDerived();
   await refresh();
   startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 5000 行
 }

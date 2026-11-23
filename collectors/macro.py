@@ -477,6 +477,13 @@ def collect_macro(
                     r.get("当月进口额-同比增长"), r.get("当月进口额-环比增长"), "海关总署（akshare 封装）")
                 add("TRADE_TOTAL", "进出口总额", r["月份"], (exp + imp) / 1e5, "亿美元",
                     source="海关总署（akshare 封装）")
+                # 数据处理模块用「官方累计口径」计算进出口同比：累计出口+累计进口
+                cum_exp = _to_float(r.get("累计出口额-金额"))
+                cum_imp = _to_float(r.get("累计进口额-金额"))
+                if cum_exp is not None and cum_imp is not None:
+                    add("TRADE_CUM_TOTAL", "进出口累计总额（官方）", r["月份"],
+                        (cum_exp + cum_imp) / 1e5, "亿美元",
+                        source="海关总署（akshare 封装·官方累计额）")
         else:
             logger.warning("海关接口缺少列：%s", list(trade.columns))
 

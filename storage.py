@@ -170,6 +170,21 @@ def init_schema(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_cstat_run ON collection_stat(run_id, category);
             CREATE INDEX IF NOT EXISTS idx_cstat_date ON collection_stat(run_date DESC);
+
+            CREATE TABLE IF NOT EXISTS derived_indicator (
+                biz_key TEXT PRIMARY KEY,
+                code TEXT NOT NULL,
+                name TEXT NOT NULL,
+                date TEXT NOT NULL,
+                value REAL,
+                unit TEXT,
+                formula TEXT,
+                grp TEXT,
+                source TEXT,
+                computed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_derived_date ON derived_indicator(date DESC, code);
+            CREATE INDEX IF NOT EXISTS idx_derived_code ON derived_indicator(code, date DESC);
             """
         )
         conn.execute(
@@ -196,6 +211,10 @@ def get_meta(path: str | Path, key: str, default: str = "") -> str:
 # ---------- 业务主键 ----------
 def macro_biz_key(code: str, date: str) -> str:
     return f"{code}_{str(date)[:7].replace('-', '')}"
+
+
+def derived_biz_key(code: str, date: str) -> str:
+    return f"derived_{code}_{str(date)[:7].replace('-', '')}"
 
 
 def _date_order_sql(order: str) -> str:
@@ -263,6 +282,62 @@ def upsert_macro(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
             records,
         )
     return len(records)
+
+
+def upsert_derived(path: str | Path, df: pd.DataFrame) -> int:
+    """幂等写入派生指标；df 需含 code/name/date/value/unit/formula/grp/source/computed_at。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        code = str(r.get("code", "")).strip()
+        date = str(r.get("date", ""))[:7]
+        if not code or not date:
+            continue
+        records.append((
+            derived_biz_key(code, date), code, str(r.get("name", "") or ""), date,
+            _clean(r.get("value")), str(r.get("unit", "") or ""),
+            str(r.get("formula", "") or ""), str(r.get("grp", "") or ""),
+            str(r.get("source", "") or ""), str(r.get("computed_at", "") or ""),
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO derived_indicator(
+                biz_key, code, name, date, value, unit, formula, grp, source, computed_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                name=excluded.name, value=excluded.value, unit=excluded.unit,
+                formula=excluded.formula, grp=excluded.grp, source=excluded.source,
+                computed_at=excluded.computed_at
+            """,
+            records,
+        )
+    return len(records)
+
+
+def read_derived(path: str | Path, month: str | None = None) -> pd.DataFrame:
+    """读取派生指标；month 为 YYYY-MM，留空返回全部。"""
+    init_schema(path)
+    where = " WHERE date=?" if month else ""
+    args = [str(month)[:7]] if month else []
+    with connect(path) as conn:
+        rows = conn.execute(
+            f"SELECT code, name, date, value, unit, formula, grp, source, computed_at "
+            f"FROM derived_indicator{where} ORDER BY grp, code, date DESC",
+            args,
+        ).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+def derived_months(path: str | Path) -> list[str]:
+    init_schema(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM derived_indicator ORDER BY date DESC"
+        ).fetchall()
+    return [r["date"] for r in rows]
 
 
 def upsert_etf(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:

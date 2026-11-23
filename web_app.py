@@ -27,7 +27,7 @@ from pathlib import Path
 import pandas as pd
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -45,6 +45,7 @@ from collectors.macro import catalog as macro_catalog
 from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
 from collectors.trade_calendar import last_completed_trade_day
+from processors.derived import compute_derived
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
@@ -212,6 +213,19 @@ def _submit(kind: str, func) -> str:
     return job_id
 
 
+def _recompute_derived(config: dict, trigger: str = "手动") -> int:
+    """按现有宏观观测重算 14 项派生指标并写入 SQLite。"""
+    db = _db_path(config)
+    if not db:
+        logger.warning("【数据处理】未配置 SQLite，跳过派生指标重算")
+        return 0
+    _, macro_df = storage.read_macro(db, limit=None)
+    result = compute_derived(macro_df)
+    n = storage.upsert_derived(db, result)
+    logger.info("【数据处理】%s触发派生指标重算：%d 行", trigger, n)
+    return n
+
+
 def _do_collect(macro_only: bool = False, etf_only: bool = False,
                 index_only: bool = False, start: str | None = None,
                 end: str | None = None, trigger: str = "Web") -> str:
@@ -242,6 +256,13 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
         summary = (f"宏观 {len(macro_df)} 行 / ETF {len(etf_df)} 行 / "
                    f"指数 {len(index_df)} 行，接口失败 {failed} 次")
     logger.info("%s步骤 5/5 采集完成：%s", tag, summary)
+    if trigger == "定时调度":
+        # 已确认：派生指标由定时调度触发，随每日定时任务完成后重算一次
+        try:
+            n = _recompute_derived(config, trigger="定时调度")
+            logger.info("%s步骤 6/6 派生指标定时重算完成：%d 行", tag, n)
+        except Exception as exc:
+            logger.warning("%s派生指标定时重算失败：%s", tag, exc)
     return summary
 
 
@@ -593,6 +614,48 @@ def api_data_index(code: str | None = None, start: str | None = None,
     if not df.empty and "交易日期" in df.columns:
         df = df.sort_values("交易日期", ascending=(date_order == "asc"))
     return _paged(df, page, page_size)
+
+
+@app.get("/api/derived")
+def api_derived(month: str | None = None):
+    """数据处理模块：返回指定月份的派生指标与可选月份列表。"""
+    db = _require_db(_cfg())
+    months = storage.derived_months(db)
+    target = month or (months[0] if months else "")
+    if not target:
+        _, macro_df = storage.read_macro(db, limit=None)
+        if not macro_df.empty:
+            target = str(macro_df["日期"].max())[:7]
+    rows = storage.read_derived(db, target) if target else pd.DataFrame()
+    return {
+        "month": target,
+        "months": months,
+        "rows": rows.to_dict("records"),
+        "count": len(rows),
+    }
+
+
+@app.post("/api/derived/recompute")
+def api_derived_recompute():
+    """手动兜底重算；主触发方式为定时调度，见 Scheduler/_do_collect。"""
+    n = _recompute_derived(_cfg(), trigger="看板手动")
+    return {"ok": True, "rows": n}
+
+
+@app.get("/api/derived/export")
+def api_derived_export(month: str | None = None):
+    db = _require_db(_cfg())
+    target = month or (storage.derived_months(db) or [""])[0]
+    df = storage.read_derived(db, target) if target else pd.DataFrame()
+    if df.empty:
+        text = "code,name,date,value,unit,formula,grp,source,computed_at\n"
+    else:
+        text = df.to_csv(index=False)
+    return Response(
+        content=text.encode("utf-8-sig"),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="derived_{(target or "all").replace("-", "")}.csv"'},
+    )
 
 
 @app.get("/api/files")

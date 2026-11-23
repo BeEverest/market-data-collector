@@ -43,6 +43,40 @@ body {
 .pill.warn { background: var(--warn-soft); color: var(--warn); }
 .pill.danger { background: var(--danger-soft); color: var(--danger); }
 
+.module-nav {
+  display: flex; gap: 6px; padding: 0 26px; background: #fff;
+  border-bottom: 1px solid var(--line); position: sticky; top: 67px; z-index: 9;
+}
+.module-tab {
+  border: 0; background: transparent; color: var(--muted); cursor: pointer;
+  padding: 12px 18px; font-size: 14px; font-weight: 650; border-bottom: 2px solid transparent;
+}
+.module-tab:hover { color: var(--ink); background: #f8f9fd; }
+.module-tab.active { color: var(--brand); border-bottom-color: var(--brand); }
+#derivedModule[hidden] { display: none; }
+.derived-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.derived-controls label { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.derived-groups { display: grid; gap: 16px; }
+.derived-group h3 {
+  margin: 0 0 10px; font-size: 13px; color: var(--brand);
+  padding-bottom: 8px; border-bottom: 1px solid var(--line);
+}
+.derived-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.derived-item {
+  border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  background: #fbfcff; position: relative;
+}
+.derived-item .d-name { font-weight: 650; font-size: 13px; }
+.derived-item .d-value { font-size: 21px; font-weight: 750; margin: 8px 0 4px; }
+.derived-item .d-unit { font-size: 11px; color: var(--muted); margin-left: 4px; }
+.derived-item .d-formula { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.derived-item .d-tag {
+  position: absolute; top: 10px; right: 10px; font-size: 10px;
+  padding: 2px 7px; border-radius: 999px; background: var(--brand-soft); color: var(--brand);
+}
+
 .container { max-width: 1360px; margin: 22px auto 40px; padding: 0 22px; }
 .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .stat {

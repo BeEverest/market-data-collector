@@ -1277,6 +1277,95 @@ const DERIVED_CODES = [
   if (sel) sel.innerHTML = DERIVED_CODES.map(([c, n]) => `<option value="${c}">${n} (${c})</option>`).join('');
 })();
 
+/* ---------- 数据处理 · 子 Tab（派生指标 / ETF 计算） ---------- */
+let etfCalcRows = [];  // 当前 ETF 计算明细（日期升序），用于导出
+function switchDerivedSubtab(name) {
+  document.querySelectorAll('#derivedSubTabs .tab').forEach(b =>
+    b.classList.toggle('active', b.dataset.subtab === name));
+  $('derivedCalcPanel').hidden = name !== 'calc';
+  $('etfCalcPanel').hidden = name !== 'etf';
+  if (name === 'etf') loadEtfCalc();
+}
+document.querySelectorAll('#derivedSubTabs .tab').forEach(b =>
+  b.addEventListener('click', () => switchDerivedSubtab(b.dataset.subtab)));
+
+function etfCalcRange() {
+  const months = $('etfCalcMonths')?.value || '12';
+  const start = $('etfCalcStart')?.value || '';
+  const end = $('etfCalcEnd')?.value || '';
+  return { months, start, end };
+}
+
+function fmtSigned(v, digits = 2) {
+  if (v === null || v === undefined) return '—';
+  return (v >= 0 ? '+' : '') + Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
+}
+
+async function loadEtfCalc() {
+  try {
+    const { months, start, end } = etfCalcRange();
+    const qs = new URLSearchParams({ months });
+    if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
+    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
+    const rows = res.rows || [];
+    const total = res.total || { share: 0, cap: 0, net: 0, days: 0 };
+    etfCalcRows = [...rows].sort((a, b) => a.date.localeCompare(b.date));
+    $('etfCalcMeta').textContent = `${res.range || '—'} · ${total.days} 个交易日 · 汇金维度每日总量`;
+
+    // 汇总卡片（末值即区间累计净变化）
+    const last = etfCalcRows[etfCalcRows.length - 1] || {};
+    const cumShare = last.cum_share != null ? last.cum_share : total.share;
+    $('etfCalcTotal').innerHTML = `
+      <div class="etf-daily-total-card"><span>区间累计份额变化</span>
+        <b class="${cumShare >= 0 ? 'up' : 'down'}">${fmtSigned(cumShare)} <small>亿份</small></b></div>
+      <div class="etf-daily-total-card"><span>区间累计申赎净流入</span>
+        <b class="${total.net >= 0 ? 'up' : 'down'}">${fmtSigned(total.net)} <small>亿元</small></b></div>
+      <div class="etf-daily-total-card"><span>交易日数</span>
+        <b class="neutral">${total.days} <small>天</small></b></div>
+      <div class="etf-daily-total-card"><span>统计范围</span>
+        <b class="neutral">${esc(res.range || '')}</b></div>`;
+
+    // 逐日明细（日期升序 + 累计份额变化列）
+    let running = 0;
+    const body = etfCalcRows.map(r => {
+      running += (r.share || 0);
+      r.cum_share = Number(running.toFixed(4));
+      const cls = v => (v == null ? '' : (v >= 0 ? 'up' : 'down'));
+      return `<tr>
+        <td>${esc(r.date)}</td>
+        <td class="num"><span class="${cls(r.share)}">${fmtSigned(r.share)}</span></td>
+        <td class="num"><span class="${cls(r.cum_share)}">${fmtSigned(r.cum_share)}</span></td>
+        <td class="num"><span class="${cls(r.net)}">${fmtSigned(r.net)}</span></td>
+        <td class="num">${r.count || 0}</td>
+      </tr>`;
+    }).join('');
+    $('etfCalcTable').innerHTML = body
+      ? `<table><thead><tr><th>交易日期</th><th>总份额变化(亿份)</th><th>累计份额变化(亿份)</th><th>总申赎净流入(亿元)</th><th>ETF数</th></tr></thead>
+         <tbody>${body}</tbody></table>`
+      : '<div class="empty">该范围暂无汇金 ETF 数据</div>';
+  } catch (e) {
+    $('etfCalcTable').innerHTML = `<div class="empty">ETF 计算加载失败：${esc(e.message)}</div>`;
+  }
+}
+
+['etfCalcMonths', 'etfCalcStart', 'etfCalcEnd'].forEach(id => {
+  $(id)?.addEventListener('change', loadEtfCalc);
+});
+$('etfCalcRefreshBtn').addEventListener('click', loadEtfCalc);
+$('etfCalcExportBtn').addEventListener('click', () => {
+  if (!etfCalcRows.length) { alert('暂无可导出的数据'); return; }
+  const head = ['交易日期', '总份额变化(亿份)', '累计份额变化(亿份)', '总申赎净流入(亿元)', 'ETF数'];
+  const lines = [head.join(',')].concat(etfCalcRows.map(r =>
+    [r.date, r.share ?? '', r.cum_share ?? '', r.net ?? '', r.count ?? 0].join(',')));
+  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ETF计算_汇金每日份额变化.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
 async function recomputeDerived(payload, label) {
   try {
     const res = await api('/api/derived/recompute', {
@@ -1737,7 +1826,7 @@ async function loadDashboard() {
     dashboardData = res;
     // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
     renderDashboardTab();
-    const etfNote = etf.filter(c => c.group !== 'huijin_detail')
+    const etfNote = etf.filter(c => c.group !== 'huijin_detail' && c.id !== 'etf_huijin_cumulative')
       .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
     const etfRange = (start || end) ? ` · ETF ${start || '最早'}~${end || '最新'}` : '';
     const overlayChart = etf.find(c => c.layout === 'etf_overlay');

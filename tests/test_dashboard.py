@@ -93,6 +93,12 @@ class TestMacroDashboard:
 
     def test_chart_series_and_axes(self):
         by_id = {c["id"]: c for c in self.charts}
+        # 图1 GDP 用次坐标轴（右轴），进出口同比保持左轴
+        gdp = by_id["gdp_trade"]
+        assert len(gdp["y_axes"]) == 2
+        assert gdp["y_axes"][1]["name"] == "GDP同比 (%)"
+        assert gdp["series"][0]["name"] == "GDP同比" and gdp["series"][0]["y_axis_index"] == 1
+        assert gdp["series"][1]["name"] == "进出口同比" and gdp["series"][1]["y_axis_index"] == 0
         assert [s["name"] for s in by_id["price"]["series"]] == [
             "社零同比", "CPI同比", "PPI同比", "CPI-PPI剪刀差"]
         credit = by_id["credit"]
@@ -136,10 +142,11 @@ class TestEtfDashboard:
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
         tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
-        # 汇金原图(按交易日) + 汇金细分(按ETF净流入降序) + 黄金原图
+        # 汇金原图(按交易日) + 汇金细分(按ETF净流入降序) + 黄金原图 + 汇金累计份额变化
         # 近1月只保留 2026-11；510050 规模变化 = 2+6+8 = 16，510300 = 4，合计 20
         charts = build_etf_charts(df, tag_map, months=1)
-        assert [c["id"] for c in charts] == ["etf_huijin", "etf_huijin_detail", "etf_gold"]
+        assert [c["id"] for c in charts] == [
+            "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_huijin_cumulative"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
         assert hj["etf_count"] == 2
@@ -159,6 +166,12 @@ class TestEtfDashboard:
             {"code": "510050", "name": "510050"}, {"code": "510300", "name": "510300"}]
         gold = charts[2]
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
+        # 累计份额变化：从区间起始日逐日累加 4+5+7 = 16（末值=区间净变化）
+        cum = charts[3]
+        assert cum["id"] == "etf_huijin_cumulative"
+        assert cum["series"][0]["data"] == [
+            ["2026-11-18", 4.0], ["2026-11-19", 9.0], ["2026-11-20", 16.0]]
+        assert cum["total_cap_change"] == 16.0
 
         full = build_etf_charts(df, tag_map, months=0)
         # 全量区间：510050 = 10+2+6+8 = 26；510300 = 4
@@ -370,10 +383,11 @@ class TestDashboardApi:
         data = client.get("/api/dashboard?months=12&etf_months=12").json()
         assert data["months"] == 12 and data["etf_months"] == 12
         assert len(data["macro"]["charts"]) == 7
-        assert len(data["etf"]["charts"]) == 3
+        assert len(data["etf"]["charts"]) == 4
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
+        assert data["etf"]["charts"][3]["id"] == "etf_huijin_cumulative"
         assert "generated_at" in data
         # 接口透传指数数据：汇金原图叠加日线（上下双图）
         hj = data["etf"]["charts"][0]
@@ -396,7 +410,12 @@ class TestDashboardApi:
         ).json()
         assert data["etf_start"] == "2026-11-10"
         assert data["etf_end"] == "2026-11-20"
-        assert len(data["etf"]["charts"]) == 3
+        # 未配置 ETF 标签时无汇金数据，故不生成累计图（3 张）；有汇金数据时为 4 张
+        ids = [c["id"] for c in data["etf"]["charts"]]
+        assert "etf_huijin" in ids and "etf_gold" in ids
+        if "etf_huijin_cumulative" in ids:
+            cum = next(c for c in data["etf"]["charts"] if c["id"] == "etf_huijin_cumulative")
+            assert all("2026-11-10" <= d <= "2026-11-20" for d, _ in cum["series"][0]["data"])
 
     def test_etf_daily_endpoint_date_range(self, client):
         data = client.get(

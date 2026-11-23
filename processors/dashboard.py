@@ -26,8 +26,11 @@ ETF_DASHBOARD_TAGS = ["汇金", "黄金"]
 MACRO_CHART_SPECS = [
     {
         "id": "gdp_trade", "title": "图1：GDP与进出口同比",
-        "note": "GDP 为季度同比、进出口为月度官方累计同比，均为百分数",
-        "y_axes": [{"name": "同比 (%)", "position": "left"}],
+        "note": "GDP 为季度同比（右轴）、进出口为月度官方累计同比（左轴），均为百分数",
+        "y_axes": [
+            {"name": "进出口同比 (%)", "position": "left"},
+            {"name": "GDP同比 (%)", "position": "right"},
+        ],
     },
     {
         "id": "price", "title": "图2：社零同比、CPI同比、PPI同比、CPI-PPI剪刀差",
@@ -247,7 +250,7 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
         }
 
     grouped = {
-        "gdp_trade": [s("GDP同比", "gdp_yoy"), s("进出口同比", "trade_yoy")],
+        "gdp_trade": [s("GDP同比", "gdp_yoy", 1), s("进出口同比", "trade_yoy", 0)],
         "price": [s("社零同比", "retail"), s("CPI同比", "cpi"), s("PPI同比", "ppi"),
                   s("CPI-PPI剪刀差", "cpi_ppi")],
         "credit": [s("社融存量同比", "sfr"), s("人民币贷款当月新增", "loan_new", 1, "bar")],
@@ -277,6 +280,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
     months = max(0, int(months or 0))
     etf_df, scope, low, high = _etf_window(etf_df, months, start, end)
     charts = []
+    huijin_share_data: list[list] = []  # 汇金每日总份额变化，供累计图使用
     for tag in ETF_DASHBOARD_TAGS:
         codes = {str(c).zfill(6) for c, tags in tag_map.items()
                  if tag in (tags or [])}
@@ -321,6 +325,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         })
 
         if tag == "汇金":
+            huijin_share_data = share_data  # 记录汇金每日总份额变化（按交易日升序）
             # 汇金原图叠加上证指数日线：与 ETF 同窗口截取；前端渲染为上下双图联动。
             idx_data = _index_daily_window(index_df, low, high, code=index_code)
             if idx_data:
@@ -374,6 +379,26 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                      "y_axis_index": 0, "type": "bar"},
                 ],
             })
+
+    # 汇金每日总份额变化的区间累计曲线（默认近一年；随 ETF 范围控件联动）。
+    # 从所选区间起始日逐日累加，末值即区间内总份额变化净额。
+    if huijin_share_data:
+        cum = 0.0
+        cum_data = []
+        for d, v in huijin_share_data:
+            cum += v
+            cum_data.append([d, round(cum, 4)])
+        charts.append({
+            "id": "etf_huijin_cumulative",
+            "title": "汇金维度 · 每日总份额变化累计",
+            "note": f"从所选区间起始日逐日累加汇金 ETF 总流通份额变化，末值为区间净变化；{scope}",
+            "y_axes": [{"name": "累计份额变化 (亿份)", "position": "left"}],
+            "series": [
+                {"name": "累计份额变化", "data": cum_data, "y_axis_index": 0, "type": "line"},
+            ],
+            "total_cap_change": round(cum, 4),  # 末值=区间累计净变化
+            "range_label": scope,
+        })
     return charts
 
 

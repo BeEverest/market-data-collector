@@ -421,6 +421,12 @@
       </div>
       <span class="hint">官方累计 / 余额差分 / 央行官方增速 · 定时调度自动重算，手动重算仅作兜底</span>
     </div>
+    <!-- 子 Tab：派生指标 / ETF 计算 -->
+    <div class="tabs" id="derivedSubTabs" style="padding: 4px 14px 0">
+      <button type="button" class="tab active" data-subtab="calc">派生指标</button>
+      <button type="button" class="tab" data-subtab="etf">ETF 计算</button>
+    </div>
+    <div id="derivedCalcPanel">
     <!-- 触发控制区：定时调度（主）+ 手动重算（兜底） -->
     <div class="trigger-grid">
       <div class="trigger-card">
@@ -498,13 +504,48 @@
         <li><b>看板联动</b>：数据看板与各派生指标图直接读取 <code>derived_indicator</code>，重算完成后自动生效；看板支持按日期范围筛选，宏观与 ETF 口径一致。</li>
       </ol>
     </div>
+    </div><!-- /derivedCalcPanel -->
+
+    <!-- ETF 计算子面板 -->
+    <div id="etfCalcPanel" hidden>
+      <div class="etf-calc-head">
+        <h3>ETF 计算 · 流通份额变化 / 申赎净流入</h3>
+        <span class="hint">按基金代码以上一交易日为基准 · 汇金维度每日总量 · 数据来自 etf_observation 全量历史</span>
+      </div>
+      <div class="etf-formula-note">
+        <div><b>流通份额变化</b> = 当日份额 − 上一交易日份额（亿份）</div>
+        <div><b>申赎净流入</b> = 份额变化 × 当日单位净值（亿元），剔除价格涨跌的市值波动；净值单日涨跌超 ±20% 视为份额折算，净流入置空</div>
+      </div>
+      <div class="etf-calc-controls">
+        <label class="prec-field">查看范围
+          <select id="etfCalcMonths" class="prec-input">
+            <option value="6">近半年</option>
+            <option value="12" selected>近一年</option>
+            <option value="36">近3年</option>
+            <option value="60">近5年</option>
+            <option value="0">全部</option>
+          </select>
+        </label>
+        <label class="prec-field">起始日期
+          <input id="etfCalcStart" class="prec-input" type="date" title="自定义起始日期，优先于快捷范围">
+        </label>
+        <label class="prec-field">结束日期
+          <input id="etfCalcEnd" class="prec-input" type="date" title="自定义结束日期，优先于快捷范围">
+        </label>
+        <button type="button" class="btn tiny" id="etfCalcRefreshBtn">刷新</button>
+        <button type="button" class="btn tiny" id="etfCalcExportBtn">导出 CSV</button>
+        <span class="hint" id="etfCalcMeta">加载中…</span>
+      </div>
+      <div class="etf-calc-total" id="etfCalcTotal"></div>
+      <div class="table-wrap tall" id="etfCalcTable"><div class="empty">加载中…</div></div>
+    </div>
   </section>
 
   <!-- 数据看板：与采集系统共用本页，顶部导航切换 -->
   <section class="card module-dashboard" id="dashboardModule" hidden>
     <div class="card-head">
       <div class="title-group">
-        <span class="module-chip auto">宏观 7 图 · ETF 2 图</span>
+        <span class="module-chip auto">宏观 7 图 · ETF 3 图</span>
       </div>
       <span class="hint">与采集系统共用数据源 · 图表随派生指标定时重算自动更新</span>
     </div>

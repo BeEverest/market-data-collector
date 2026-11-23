@@ -44,6 +44,7 @@ from monitor import Monitor, format_failure_detail
 from collectors.macro import catalog as macro_catalog
 from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
+from collectors.trade_calendar import last_completed_trade_day
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
@@ -457,6 +458,8 @@ def api_status():
         },
         "running": _run_lock.locked(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # 最近一个已结束交易日，供前端「精确采集 / 全量采集」日期默认取值
+        "last_trade_date": last_completed_trade_day(),
     }
 
 

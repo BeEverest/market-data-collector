@@ -40,12 +40,17 @@ function monthsAgoText(months) {
   d.setDate(Math.min(day, lastDay));
   return dateText(d);
 }
-// 日期控件默认值：起始与结束均为当天
+// 日期控件默认值：优先用后端返回的「最近一个已结束交易日」，未加载时用当天
+let lastTradeDate = '';               // 由 /api/status 注入，形如 2026-11-20
 const DEFAULT_START_DATE = todayText();
 
+function defaultTradeDay() {
+  return lastTradeDate || todayText();
+}
 function applyDefaultRange(startId, endId) {
-  $(startId).value = DEFAULT_START_DATE;
-  $(endId).value = todayText();
+  const d = defaultTradeDay();
+  $(startId).value = d;
+  $(endId).value = d;
 }
 let monitorPage = 1;
 let monitorPages = 1;
@@ -61,6 +66,7 @@ const LIVE_LOG_LIMIT = 5000;  // 与后端环形缓冲一致：保留最近 5000
 async function loadStatus() {
   try {
     const s = await api('/api/status');
+    if (s.last_trade_date) lastTradeDate = s.last_trade_date;
     $('sysTime').textContent = s.server_time;
     const sched = s.scheduler;
     const sb = $('schedBadge');
@@ -382,15 +388,11 @@ function updatePrecNote() {
   $('precNote').textContent = note;
 }
 
-// 类别切换
-document.querySelectorAll('#precCategory .seg-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#precCategory .seg-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    precCategory = btn.dataset.cat;
-    applyDefaultRange('precStart', 'precEnd');
-    renderPrecItems();
-  });
+// 类别切换（两级联动：类别下拉 → 该类别下的具体口径下拉）
+$('precCategory').addEventListener('change', () => {
+  precCategory = $('precCategory').value;
+  applyDefaultRange('precStart', 'precEnd');   // 时间回到最近一个交易日
+  renderPrecItems();                            // 重建口径下拉，默认「全部」
 });
 $('precCode').addEventListener('change', updatePrecNote);
 
@@ -1117,6 +1119,8 @@ async function refresh() {
 
 async function init() {
   applyDateControl();
+  // 先取 status 注入「最近一个已结束交易日」，保证日期默认值取最近交易日而非当天
+  await loadStatus();
   // 并行加载目录/配置，再填充下拉并套用默认日期区间
   await Promise.all([loadCatalog(), loadEtfConfig(), loadIndexConfig()]);
   fillCodeOptions();

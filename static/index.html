@@ -36,69 +36,64 @@
       <span class="hint" id="jobHint">实时监控含定时调度/后台/手动任务全部日志 · 保留最近 5000 行 · 点击日志可展开</span>
     </div>
     <div class="console-grid">
-      <div class="actions">
-        <div class="action-grid">
-          <button class="btn primary has-scope" data-action="collect" data-kind="full">
-            <span class="ico">↻</span><span><b>全量采集</b><small>宏观 + ETF + 指数</small></span>
-            <span class="scope whole">整体</span>
-          </button>
-          <button class="btn warn has-scope" data-action="retry">
-            <span class="ico">⛏</span><span><b>批量重跑失败</b><small>最近失败批次全部</small></span>
-            <span class="scope ops">运维</span>
-          </button>
+      <div class="actions sampling-list">
+        <div class="sampling-head">
+          <span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span>
         </div>
-        <div class="full-range-box">
-          <div class="full-range-head">
-            <span class="full-range-title">全量采集日期范围</span>
-            <span class="full-range-hint">统一作用于宏观 / ETF / 指数，留空则沿用各类别配置</span>
+
+        <!-- 行1：全量采集 -->
+        <div class="sampling-row">
+          <div class="s-row-name">
+            <span class="s-ico" style="background:#3b5bdb">↻</span>
+            <div><b>全量采集</b><small>宏观 + ETF + 指数</small></div>
           </div>
-          <div class="prec-dates">
+          <span class="scope whole">整体</span>
+          <div class="s-params">
             <input id="fullStart" class="prec-input" type="date" title="全量采集起始日期">
             <span class="date-sep">~</span>
             <input id="fullEnd" class="prec-input" type="date" title="全量采集结束日期">
             <button type="button" class="btn tiny" id="fullRangeReset" title="恢复默认为当天">默认</button>
           </div>
+          <div style="text-align:center"><span class="s-always">手动</span></div>
+          <div><button class="btn primary tiny has-scope" data-action="collect" data-kind="full">立即采集</button></div>
         </div>
-        <div class="divider"></div>
-        <div class="precision-box">
-          <div class="prec-title">精确采集 <span class="tag scope-tag">部分</span><span class="tag retry">按接口 / 指标 + 时间范围</span></div>
-          <div class="prec-grid">
-            <div class="prec-field">
-              <label class="field-label">数据类型</label>
-              <div class="seg" id="precCategory">
-                <button type="button" class="seg-btn active" data-cat="macro">宏观指标</button>
-                <button type="button" class="seg-btn" data-cat="etf">ETF 基金</button>
-                <button type="button" class="seg-btn" data-cat="index">指数</button>
-              </div>
-            </div>
-            <div class="prec-field">
-              <label class="field-label">选择指标 <span id="precItemCount" class="muted-inline"></span></label>
-              <select id="precCode" class="prec-input"><option value="">加载中…</option></select>
-            </div>
-            <div class="prec-field full">
-              <label class="field-label">时间范围 <span class="muted-inline" id="precDateHint">按日期 · YYYY-MM-DD</span></label>
-              <div class="prec-dates">
-                <input id="precStart" class="prec-input" type="date" title="起始日期，默认当天">
-                <span class="date-sep">~</span>
-                <input id="precEnd" class="prec-input" type="date" title="结束日期，默认当天">
-              </div>
-            </div>
+
+        <!-- 行2：精确采集（类别 → 具体口径 两级联动） -->
+        <div class="sampling-row">
+          <div class="s-row-name">
+            <span class="s-ico" style="background:#16855b">◎</span>
+            <div><b>精确采集</b><small>类别 → 具体口径 + 时间</small></div>
           </div>
-          <button class="btn primary prec-run" id="precRun">
-            <span class="ico">◎</span><span><b>采集所选范围</b><small>仅采此项并合并，不影响其它数据</small></span>
-          </button>
-          <div class="prec-note" id="precNote">—</div>
+          <span class="scope part">部分</span>
+          <div class="s-params">
+            <select id="precCategory" class="prec-input s-cat" title="第一步：选择采集类别">
+              <option value="macro">宏观指标</option>
+              <option value="etf">ETF 基金</option>
+              <option value="index">指数</option>
+            </select>
+            <span class="date-sep">→</span>
+            <select id="precCode" class="prec-input s-code" title="第二步：选择该类别下的具体口径"><option value="">加载中…</option></select>
+            <input id="precStart" class="prec-input" type="date" title="起始日期，默认最近一个交易日">
+            <span class="date-sep">~</span>
+            <input id="precEnd" class="prec-input" type="date" title="结束日期，默认最近一个交易日">
+          </div>
+          <div style="text-align:center"><span class="s-always">手动</span></div>
+          <div><button class="btn primary tiny" id="precRun">采集所选</button></div>
+          <div class="s-note" id="precNote">—</div>
+          <span class="s-extra" id="precItemCount"></span>
+          <span class="s-extra" id="precDateHint" hidden></span>
         </div>
-        <div class="divider"></div>
-        <div class="sched-box">
-          <div class="sched-title">定时调度 <span class="tag scope-tag auto">整体</span></div>
-          <label class="switch-row">
-            <input type="checkbox" id="schedEnabled">
-            <span>每日自动采集</span>
-          </label>
-          <div class="sched-fields">
-            <input type="time" id="schedTime" value="08:30">
-            <select id="schedType">
+
+        <!-- 行3：定时调度 -->
+        <div class="sampling-row">
+          <div class="s-row-name">
+            <span class="s-ico" style="background:#7048b6">◷</span>
+            <div><b>定时调度</b><small>每日到点自动采集</small></div>
+          </div>
+          <span class="scope auto">自动</span>
+          <div class="s-params">
+            <input type="time" id="schedTime" value="08:30" class="prec-input s-time" title="每日触发时刻">
+            <select id="schedType" class="prec-input s-runType" title="采集范围">
               <option value="full">全量</option>
               <option value="macro">仅宏观</option>
               <option value="etf">仅ETF</option>
@@ -106,17 +101,36 @@
             </select>
             <button class="btn tiny" id="schedSave">保存</button>
           </div>
-          <div class="sched-next" id="schedNext">下次运行：--</div>
+          <div style="text-align:center"><label class="switch-row"><input type="checkbox" id="schedEnabled" title="启用每日自动采集"></label></div>
+          <div><span class="s-next" id="schedNext">下次运行：--</span></div>
         </div>
-        <div class="divider"></div>
-        <div class="import-box">
-          <div class="sched-title">文件导入 <span class="tag scope-tag ops">ETF 数据</span></div>
-          <div class="import-hint" id="importHint">单次最多 10 个文件，按文件名「份额与规模_代码.xlsx」识别标的，导入至 SQLite</div>
-          <div class="import-row">
+
+        <!-- 行4：文件导入 -->
+        <div class="sampling-row">
+          <div class="s-row-name">
+            <span class="s-ico" style="background:#c2410c">⇧</span>
+            <div><b>文件导入</b><small>份额与规模_代码.xlsx</small></div>
+          </div>
+          <span class="scope ops">ETF数据</span>
+          <div class="s-params">
             <input type="file" id="importFiles" accept=".xlsx,.xlsm" multiple title="选择份额与规模 Excel 文件，可多选">
             <button type="button" class="btn tiny primary" id="importBtn">导入数据</button>
           </div>
-          <div class="import-result" id="importResult">—</div>
+          <div style="text-align:center"><span class="s-always">手动</span></div>
+          <div><span class="s-next" id="importHint" title="单次最多 10 个文件">≤10 文件</span></div>
+          <div class="s-note" id="importResult">—</div>
+        </div>
+
+        <!-- 行5：批量重跑失败 -->
+        <div class="sampling-row">
+          <div class="s-row-name">
+            <span class="s-ico" style="background:#d92d20">⛏</span>
+            <div><b>批量重跑失败</b><small>最近失败批次全部</small></div>
+          </div>
+          <span class="scope ops">运维</span>
+          <div class="s-params"><span class="s-always">重跑最近一次失败批次的全部接口</span></div>
+          <div style="text-align:center"><span class="s-always">手动</span></div>
+          <div><button class="btn warn tiny has-scope" data-action="retry">重跑失败</button></div>
         </div>
       </div>
       <div class="log-panel" id="logPanel">

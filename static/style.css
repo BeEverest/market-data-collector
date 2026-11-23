@@ -593,7 +593,8 @@ tr.row-ok td { }
   gap: 12px; margin-bottom: 8px; font-size: 12px;
 }
 .etf-daily-detail .muted-inline { margin-left: 10px; }
-.etf-daily-detail td.num { text-align: right; }
+.etf-daily-detail th, .etf-daily-detail td { text-align: center; }
+.etf-daily-detail td.num { font-variant-numeric: tabular-nums; }
 .etf-daily-detail .up { color: #c0392b; font-weight: 600; }
 .etf-daily-detail .down { color: #16855b; font-weight: 600; }
 .etf-daily-detail small { font-size: 10px; font-weight: 400; }
@@ -615,15 +616,21 @@ tr.row-ok td { }
 .etf-daily-total-card .up { color: #c0392b; }
 .etf-daily-total-card .down { color: #16855b; }
 .etf-daily-total-card .neutral { font-size: 12px; color: var(--text); }
-.etf-daily-card td.num, .etf-daily-card th.num { text-align: right; }
+/* 按天明细：数据居中 + 斑马纹 + 等宽数字，视觉更整齐 */
+.etf-daily-card th, .etf-daily-card td { text-align: center; }
+.etf-daily-card th { font-weight: 600; color: var(--text); }
+.etf-daily-card td.num { font-variant-numeric: tabular-nums; }
+.etf-daily-card tbody tr:nth-child(odd) > td { background: #fafbff; }
+.etf-daily-card tbody tr:hover > td { background: #eef3ff; }
 .etf-daily-card .up { color: #c0392b; font-weight: 600; }
 .etf-daily-card .down { color: #16855b; font-weight: 600; }
 .etf-day-detail-row > td { padding: 0 12px 12px; background: #f7f9fd; }
 .etf-day-detail-row[hidden] { display: none; }
 .etf-day-detail-title { padding: 9px 0 4px; font-size: 11px; color: var(--brand); font-weight: 700; }
 .etf-day-detail-table { font-size: 11px; }
-.etf-day-detail-table th { position: static; background: #eef2f9; padding: 5px 8px; font-size: 10.5px; }
-.etf-day-detail-table td { padding: 5px 8px; }
+.etf-day-detail-table th { position: static; background: #eef2f9; padding: 5px 8px; font-size: 10.5px; text-align: center; font-weight: 600; }
+.etf-day-detail-table td { padding: 6px 8px; text-align: center; font-variant-numeric: tabular-nums; }
+.etf-day-detail-table tbody tr:nth-child(odd) td { background: #fafbff; }
 
 @media (max-width: 860px) {
   .etf-total-cards, .etf-daily-total { grid-template-columns: 1fr; }

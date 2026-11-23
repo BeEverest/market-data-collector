@@ -272,10 +272,25 @@ def collect_macro(
         "start": start_date or "", "end": end_date or "",
         "codes": ",".join(sorted(codes)) if codes else "",
     }
+    total_ifaces = len(only) if only is not None else len(IFACE_NAMES)
+    fetch_count = 0
 
     def fetch(fn_name: str) -> pd.DataFrame:
-        return _fetch(ak, fn_name, monitor=monitor, retries=retries,
-                      retry_interval=retry_interval, only=only, params=call_params)
+        nonlocal fetch_count
+        fetch_count += 1
+        df = _fetch(ak, fn_name, monitor=monitor, retries=retries,
+                    retry_interval=retry_interval, only=only, params=call_params)
+        label = IFACE_NAMES.get(fn_name, fn_name)
+        if only is not None and fn_name not in only:
+            logger.info("  │ 接口 %d/%d %s：跳过（不在本次重跑范围）",
+                        fetch_count, total_ifaces, label)
+        elif df.empty:
+            logger.warning("  │ 接口 %d/%d %s：无数据",
+                           fetch_count, total_ifaces, label)
+        else:
+            logger.info("  │ 接口 %d/%d %s：返回 %d 行原始记录",
+                        fetch_count, total_ifaces, label, len(df))
+        return df
 
     def add(code, name, date, value, unit, yoy=None, mom=None, source=PBC):
         date = _normalize_month(date)
@@ -337,6 +352,9 @@ def collect_macro(
         for _, r in d.iterrows():
             add(code, name, r["日期"], r["数值"], unit, source=source)
 
+    logger.info("  [宏观采集] 分步明细：区间 %s ~ %s，本次调用 %d 个接口",
+                start_date or "起", end_date or "今", total_ifaces)
+    logger.info("  ├ 央行：货币供应量 / 存款 / 贷款 / 社融")
     # ============ 央行：货币供应量 M0 / M1 / M2 ============
     ms = fetch("macro_china_money_supply")
     money_specs = [
@@ -400,6 +418,7 @@ def collect_macro(
             add("SFR_STOCK", "社会融资规模存量", m, v * 10000, "亿元",
                 source="中国人民银行（金融统计数据报告）")
 
+    logger.info("  ├ 海关：进出口（出口 / 进口 / 进出口总额）")
     # ============ 海关：进出口 ============
     trade = fetch("macro_china_hgjck")
     if not trade.empty:
@@ -419,6 +438,7 @@ def collect_macro(
         else:
             logger.warning("海关接口缺少列：%s", list(trade.columns))
 
+    logger.info("  ├ 统计局：社会消费品零售 / CPI / PPI / PMI")
     # ============ 统计局：社会消费品零售总额 ============
     retail = fetch("macro_china_consumer_goods_retail")
     if not retail.empty and "当月" in retail.columns:
@@ -451,6 +471,7 @@ def collect_macro(
             for _, r in pmi.iterrows():
                 add(code, name, r["月份"], r[val], "指数", source=NBS)
 
+    logger.info("  ├ 交易所 / 外汇局：A股总市值 / 黄金储备 / 中国GDP")
     # ============ A股总市值（沪市 + 深市） ============
     cap = fetch("macro_china_stock_market_cap")
     if not cap.empty and {"市价总值-上海", "市价总值-深圳"}.issubset(cap.columns):
@@ -475,6 +496,7 @@ def collect_macro(
             add("CN_GDP", "中国GDP(季度绝对值)", _normalize_quarter(r["季度"]),
                 r["国内生产总值-绝对值"], "亿元", r.get("国内生产总值-同比增长"), source=NBS)
 
+    logger.info("  ├ 美国 FRED：GDP / CPI / 核心CPI / PPI / 非农 / 利率")
     # ============ 美国 GDP（FRED 环比折年率） ============
     us_gdp = fetch("fred_A191RL1Q225SBEA")
     if not us_gdp.empty and {"日期", "数值"}.issubset(us_gdp.columns):
@@ -506,6 +528,6 @@ def collect_macro(
     df = pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
     if not df.empty:
         df = df.sort_values(["指标代码", "日期"], ascending=[True, False]).reset_index(drop=True)
-    logger.info("宏观数据采集完成：%d 行，%d 个指标",
-                len(df), df["指标代码"].nunique() if not df.empty else 0)
+    logger.info("  └ [宏观采集] 合并完成：%d 行，%d 个指标（本次调用 %d 个接口）",
+                len(df), df["指标代码"].nunique() if not df.empty else 0, fetch_count)
     return df

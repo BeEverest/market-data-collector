@@ -720,7 +720,7 @@ $('monFilterBtn').addEventListener('click', () => { monitorPage = 1; renderMonit
 $('monResetBtn').addEventListener('click', () => {
   $('monKeyword').value = '';
   $('monRunType').value = ''; $('monCategory').value = ''; $('monStatus').value = '';
-  applyDefaultRange('monStart', 'monEnd');
+  monitorDefaultRange();
   monitorPage = 1;
   renderMonitor();
 });
@@ -787,9 +787,10 @@ $('mcResetBtn').addEventListener('click', () => {
   setMcResult('—');
 });
 
-// 监控看板默认日期：当天
+// 监控看板默认日期：当天（监控看的是运行记录，与行情交易日无关）
 function monitorDefaultRange() {
-  applyDefaultRange('monStart', 'monEnd');
+  $('monStart').value = todayText();
+  $('monEnd').value = todayText();
 }
 
 // 从一行里按字段名取值（各 sheet 字段名不同，做兼容映射）
@@ -856,8 +857,10 @@ function renderMonitor() {
   }
   // 失败明细：额外加「操作」列，每条失败可单独重跑自己的任务
   const showRetry = sheetIsFailureView() && !hasNotice;
+  // 运行总览：额外加「展开」列，点开可看该批次每次接口调用的明细
+  const isOverview = monitorTab === 'overview' && !hasNotice;
   const cols = Object.keys(pageRows[0]);
-  const headCols = showRetry ? [...cols, '操作'] : cols;
+  const headCols = isOverview ? ['', ...cols] : (showRetry ? [...cols, '操作'] : cols);
   const head = '<thead><tr>' + headCols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
   const body = '<tbody>' + pageRows.map(r => {
     const isFail = (r['状态'] === 'failed') || (r['失败原因'] && !r['重跑结果']);
@@ -880,15 +883,63 @@ function renderMonitor() {
       const label = done ? '再次重跑' : '重跑此条';
       cells += `<td><button class="btn tiny retry-task" data-task-id="${tid}" title="仅重跑这一条失败任务">${label}</button></td>`;
     }
+    if (isOverview) {
+      const runId = esc(r['运行ID'] || '');
+      cells = `<td><button class="btn tiny ov-expand" data-run-id="${runId}" title="展开本次运行的接口调用明细">▸</button></td>` + cells;
+      return `<tr class="${cls}">${cells}</tr>` +
+             `<tr class="ov-detail-row" hidden><td colspan="${headCols.length}"></td></tr>`;
+    }
     return `<tr class="${cls}">` + cells + '</tr>';
   }).join('') + '</tbody>';
   el.innerHTML = '<table>' + head + body + '</table>';
+  if (isOverview) {
+    el.querySelectorAll('button.ov-expand').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const detailRow = btn.closest('tr').nextElementSibling;
+        if (detailRow.hidden) {
+          const runId = String(btn.dataset.runId || '');
+          const details = (monitorData['调用明细'] || []).filter(
+            d => String(d['运行ID'] || '') === runId);
+          detailRow.querySelector('td').innerHTML = renderOverviewDetail(runId, details);
+          detailRow.hidden = false;
+          btn.textContent = '▾';
+        } else {
+          detailRow.hidden = true;
+          btn.textContent = '▸';
+        }
+      });
+    });
+  }
   if (showRetry) {
     el.querySelectorAll('button.retry-task').forEach(btn => {
       btn.addEventListener('click', () => retryFailureTask(btn.dataset.taskId, btn));
     });
   }
   renderMonitorPager();
+}
+
+// 运行总览展开：展示该批次每次接口调用的明细
+function renderOverviewDetail(runId, details) {
+  if (!details || !details.length) {
+    return `<div class="ov-detail-empty">运行 ${esc(runId)} 无接口调用明细</div>`;
+  }
+  const cols = ['运行时间', '接口名称', '类别', '状态', '数据行数', '耗时(秒)', '失败原因'];
+  const head = `<div class="ov-detail-title">运行 ${esc(runId)} · 接口调用明细（${details.length} 条）</div>` +
+    '<table class="ov-detail-table"><thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
+  const body = details.map(d => {
+    return '<tr>' + cols.map(c => {
+      const v = d[c] == null ? '' : String(d[c]);
+      if (c === '状态') {
+        const ok = v === 'success';
+        return `<td><span class="tag ${ok ? 'success' : 'failed'}">${ok ? '成功' : '失败'}</span></td>`;
+      }
+      if (c === '失败原因' && v) {
+        return `<td><div class="cell-clip" title="${esc(v)}">${esc(v)}</div></td>`;
+      }
+      return `<td>${esc(v)}</td>`;
+    }).join('') + '</tr>';
+  }).join('');
+  return head + body + '</tbody></table>';
 }
 
 // 监控失败明细：按任务ID重跑单条失败任务

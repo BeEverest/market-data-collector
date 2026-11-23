@@ -1349,7 +1349,7 @@ function renderDashboardCharts(containerId, charts) {
 
 async function loadDashboard() {
   try {
-    const months = $('dashboardMonths').value || '60';
+    const months = $('dashboardMonths').value || '12';
     const days = $('dashboardDays').value || '30';
     const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&days=${encodeURIComponent(days)}`);
     const macro = (res.macro && res.macro.charts) || [];

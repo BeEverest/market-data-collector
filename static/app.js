@@ -1266,6 +1266,8 @@ $('derivedExportBtn').addEventListener('click', () => {
 
 /* ---------- 数据看板模块 ---------- */
 const dashboardInstances = {};  // containerId -> [{ id, inst }]
+let dashboardTab = 'macro';
+let dashboardData = null;
 const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
 
 function disposeDashboardCharts(containerId) {
@@ -1352,8 +1354,9 @@ async function loadDashboard() {
     const res = await api(`/api/dashboard?months=${encodeURIComponent(months)}&days=${encodeURIComponent(days)}`);
     const macro = (res.macro && res.macro.charts) || [];
     const etf = (res.etf && res.etf.charts) || [];
-    renderDashboardCharts('macroCharts', macro);
-    renderDashboardCharts('etfCharts', etf);
+    dashboardData = res;
+    // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
+    renderDashboardTab();
     const etfNote = etf.map(c => `${c.title.replace('维度 · 流通份额变化 / 流通规模变化', '')} ${c.etf_count}只`).join(' · ');
     $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}`;
   } catch (e) {
@@ -1361,6 +1364,27 @@ async function loadDashboard() {
     flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
   }
 }
+
+function renderDashboardTab() {
+  if (!dashboardData) return;
+  if (dashboardTab === 'macro') {
+    renderDashboardCharts('macroCharts', (dashboardData.macro && dashboardData.macro.charts) || []);
+  } else {
+    renderDashboardCharts('etfCharts', (dashboardData.etf && dashboardData.etf.charts) || []);
+  }
+  setTimeout(resizeDashboardCharts, 40);
+}
+
+document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('#dashboardTabs .tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    dashboardTab = tab.dataset.tab;
+    $('dashboardMacroPanel').hidden = dashboardTab !== 'macro';
+    $('dashboardEtfPanel').hidden = dashboardTab !== 'etf';
+    renderDashboardTab();
+  });
+});
 
 window.addEventListener('resize', resizeDashboardCharts);
 $('dashboardMonths').addEventListener('change', loadDashboard);

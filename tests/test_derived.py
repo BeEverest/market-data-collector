@@ -50,7 +50,8 @@ class TestComputeDerived:
         assert got[("HH_DEPOSIT_NEW", "2026-11")] == pytest.approx(15.0)
         assert got[("HH_DEPOSIT_NEW_YOY", "2026-11")] == pytest.approx(5.0)
         assert got[("RMB_LOAN_NEW", "2026-11")] == pytest.approx(200.0)  # 余额差分
-        assert got[("GOLD_NEW_TON", "2026-11")] == pytest.approx(83 * 31.1034768 / 10000, abs=1e-4)
+        # 83 万盎司 = 83 × 10^4 × 31.1034768 克 ÷ 10^6 克/吨 = 25.816 吨（÷100，不是 ÷10000）
+        assert got[("GOLD_NEW_TON", "2026-11")] == pytest.approx(83 * 31.1034768 / 100, abs=1e-4)
 
     def test_missing_months_are_skipped(self, macro_df):
         df = compute_derived(macro_df)

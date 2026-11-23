@@ -445,6 +445,14 @@ tr.row-ok td { }
   border-radius: 5px; padding: 2px 6px; align-self: flex-start;
 }
 .etf-chip .chip-listing.pending { color: var(--muted); background: #f1f3f8; }
+.etf-chip .chip-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 4px; }
+.tag-check {
+  display: inline-flex; align-items: center; gap: 3px; cursor: pointer;
+  font-size: 10.5px; color: var(--muted); background: #f1f3f8;
+  border: 1px solid transparent; border-radius: 999px; padding: 2px 7px;
+}
+.tag-check input { width: 11px; height: 11px; margin: 0; accent-color: var(--brand); }
+.tag-check.on { color: var(--brand); background: var(--brand-soft); border-color: #cdd8f5; }
 .etf-add-btn-row { display: flex; gap: 8px; }
 .etf-range {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;

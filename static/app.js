@@ -518,16 +518,22 @@ async function loadEtfConfig() {
   }
 }
 
+function etfTagOptions() {
+  return (etfCfg && etfCfg.tag_options) ? etfCfg.tag_options : ['宽基', '汇金', '黄金'];
+}
+
 function renderEtfChips() {
   const wrap = $('etfChips');
   if (!etfCfg || !etfCfg.items.length) {
     wrap.innerHTML = '<div class="empty">尚未配置 ETF 标的，请在上方输入基金代码添加。</div>';
     return;
   }
+  const options = etfTagOptions();
   wrap.innerHTML = etfCfg.items.map(it => {
     const listing = it.listing_date
       ? `<span class="chip-listing">上市 ${esc(it.listing_date)}</span>`
       : '<span class="chip-listing pending">上市日待采集</span>';
+    const tags = it.tags || [];
     return `<div class="etf-chip">
       <div class="chip-top">
         <span class="chip-code">${esc(it.code)}</span>
@@ -535,16 +541,38 @@ function renderEtfChips() {
       </div>
       <span class="chip-name">${esc(it.name || '—')}</span>
       ${listing}
+      <div class="chip-tags">
+        ${options.map(t => `<label class="tag-check ${tags.includes(t) ? 'on' : ''}">
+          <input type="checkbox" data-tag="${esc(t)}" data-code="${esc(it.code)}" ${tags.includes(t) ? 'checked' : ''}>${esc(t)}
+        </label>`).join('')}
+      </div>
     </div>`;
   }).join('');
   wrap.querySelectorAll('.chip-remove').forEach(btn => {
     btn.addEventListener('click', () => removeEtfCode(btn.dataset.code));
   });
+  wrap.querySelectorAll('.tag-check input').forEach(cb => {
+    cb.addEventListener('change', async () => {
+      const item = etfCfg.items.find(x => x.code === cb.dataset.code);
+      if (!item) return;
+      const codes = etfCfg.items.map(x => x.code);
+      const checked = Array.from(wrap.querySelectorAll(`.tag-check input[data-code="${cb.dataset.code}"]:checked`))
+        .map(x => x.dataset.tag);
+      item.tags = etfTagOptions().filter(t => checked.includes(t));
+      await saveEtfConfig(true);
+      flashLog(`ETF ${item.code} 标签已更新：${item.tags.join('/') || '无'}`, 'INFO');
+    });
+  });
 }
 
 function etfPayload() {
+  const tags = {};
+  if (etfCfg) {
+    etfCfg.items.forEach(x => { if (x.tags && x.tags.length) tags[x.code] = x.tags; });
+  }
   return {
     codes: etfCfg ? etfCfg.items.map(x => x.code) : [],
+    tags,
     start_date: $('etfStart').value.trim(),
     end_date: $('etfEnd').value.trim(),
     default_trade_days: $('etfDays').value.trim(),
@@ -576,7 +604,7 @@ async function addEtfCode() {
   const full = code.padStart(6, '0');
   if (!etfCfg) etfCfg = { items: [] };
   if (etfCfg.items.some(x => x.code === full)) { alert('该标的已在列表中'); return; }
-  etfCfg.items.push({ code: full, name: '', listing_date: '' });
+  etfCfg.items.push({ code: full, name: '', listing_date: '', tags: [] });
   renderEtfChips();
   input.value = '';
   await saveEtfConfig(true);

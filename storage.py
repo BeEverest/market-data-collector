@@ -577,6 +577,53 @@ def read_etf(path: str | Path, code: str | None = None,
     return int(total), df[ETF_COLUMNS]
 
 
+def read_etf_with_changes(
+    path: str | Path,
+    code: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    limit: int | None = None,
+    offset: int = 0,
+    date_order: str = "desc",
+) -> tuple[int, pd.DataFrame]:
+    """读取 ETF 并追加较上一交易日的份额/规模变化指标。
+
+    先在全量数据上按代码计算环比，再按 code/start/end 过滤，避免起始日被截断后
+    把窗口内第一行误当成“无上一交易日”。
+    """
+    from processors.etf_change import ETF_CHANGE_COLUMNS, compute_etf_changes
+
+    init_schema(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            "SELECT code, name, market, trade_date, shares, nav, market_cap, source, collected_at "
+            "FROM etf_observation"
+        ).fetchall()
+    if not rows:
+        cols = ETF_COLUMNS + ETF_CHANGE_COLUMNS
+        return 0, pd.DataFrame(columns=cols)
+    df = pd.DataFrame([dict(r) for r in rows]).rename(columns={
+        "code": "基金代码", "name": "基金简称", "market": "交易市场",
+        "trade_date": "交易日期", "shares": "份额(亿份)", "nav": "单位净值(元)",
+        "market_cap": "规模(亿元)", "source": "数据源", "collected_at": "采集时间",
+    })[ETF_COLUMNS]
+    df = compute_etf_changes(df)
+    if code:
+        df = df[df["基金代码"] == str(code).strip().zfill(6)]
+    if start:
+        df = df[df["交易日期"] >= str(start)[:10]]
+    if end:
+        df = df[df["交易日期"] <= str(end)[:10]]
+    total = len(df)
+    df = df.sort_values(
+        ["基金代码", "交易日期"],
+        ascending=[True, str(date_order).lower() == "asc"],
+    ).reset_index(drop=True)
+    if limit is not None:
+        df = df.iloc[int(offset):int(offset) + int(limit)]
+    return int(total), df[ETF_COLUMNS + ETF_CHANGE_COLUMNS]
+
+
 def read_index(path: str | Path, code: str | None = None,
                start: str | None = None, end: str | None = None,
                limit: int | None = None, offset: int = 0,

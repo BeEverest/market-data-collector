@@ -46,6 +46,9 @@ from collectors.etf import get_fund_name_map
 from collectors.index import catalog as index_catalog
 from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
+from processors.etf_change import compute_etf_changes
+
+ETF_TAG_OPTIONS = ["宽基", "汇金", "黄金"]
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
@@ -118,18 +121,47 @@ def _etf_config_view() -> dict:
     codes = [str(c).strip().zfill(6) for c in etf.get("codes", []) if str(c).strip()]
     name_map = get_fund_name_map()
     listing = {str(k).zfill(6): v for k, v in (etf.get("listing_dates") or {}).items()}
+    tag_map = {
+        str(k).zfill(6): [t for t in (v if isinstance(v, list) else str(v).split(",")) if t]
+        for k, v in (etf.get("tags") or {}).items()
+    }
     items = [{
         "code": c,
         "name": name_map.get(c, ""),
         "listing_date": listing.get(c, ""),
+        "tags": tag_map.get(c, []),
     } for c in codes]
     return {
         "codes": codes,
         "items": items,
+        "tags": tag_map,
+        "tag_options": ETF_TAG_OPTIONS,
         "start_date": etf.get("start_date", ""),
         "end_date": etf.get("end_date", ""),
         "default_trade_days": etf.get("default_trade_days", storage.DEFAULT_ETF_CONFIG["default_trade_days"]),
     }
+
+
+def _etf_tag_map() -> dict[str, str]:
+    cfg = _cfg()
+    db = _db_path(cfg)
+    etf = storage.get_etf_config(db, cfg.get("etf", {})) if db else cfg.get("etf", {})
+    out = {}
+    for code, tags in (etf.get("tags") or {}).items():
+        if isinstance(tags, list):
+            out[str(code).zfill(6)] = "、".join(str(t) for t in tags if t)
+        elif tags:
+            out[str(code).zfill(6)] = str(tags)
+    return out
+
+
+def _attach_etf_tags(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty or "基金代码" not in df.columns or "标签" in df.columns:
+        return df
+    out = df.copy()
+    tag_map = _etf_tag_map()
+    out.insert(2, "标签", out["基金代码"].astype(str).map(lambda c: tag_map.get(c, "")))
+    return out
 
 
 def _index_config_view() -> dict:
@@ -561,18 +593,19 @@ def api_data_etf(code: str | None = None, start: str | None = None,
     date_order = "asc" if str(order).lower() == "asc" else "desc"
     db_path = _db_path(_cfg())
     if db_path:
-        total, _ = storage.read_etf(db_path, code, start, end, limit=1)
+        total, _ = storage.read_etf_with_changes(db_path, code, start, end, limit=1)
         pages = max(1, (total + page_size - 1) // page_size)
         if page > pages:
             page = pages
-        _, df = storage.read_etf(
+        _, df = storage.read_etf_with_changes(
             db_path, code, start, end, limit=page_size,
             offset=(page - 1) * page_size, date_order=date_order)
+        df = _attach_etf_tags(df)
         return {
             "total": total, "pages": pages, "page": page, "page_size": page_size,
             "rows": _frame_to_records(df, page_size),
         }
-    df = _read_csv("etf")
+    df = compute_etf_changes(_read_csv("etf"))
     if code and not df.empty:
         df = df[df["基金代码"] == code]
     if start and not df.empty:
@@ -581,7 +614,7 @@ def api_data_etf(code: str | None = None, start: str | None = None,
         df = df[df["交易日期"] <= end]
     if not df.empty and "交易日期" in df.columns:
         df = df.sort_values("交易日期", ascending=(date_order == "asc"))
-    return _paged(df, page, page_size)
+    return _paged(_attach_etf_tags(df), page, page_size)
 
 
 @app.get("/api/data/index")
@@ -712,7 +745,8 @@ def api_export_macro():
 def api_export_etf():
     config = _cfg()
     db_path = _require_db(config)
-    _, df = storage.read_etf(db_path)
+    _, df = storage.read_etf_with_changes(db_path)
+    df = _attach_etf_tags(df)
     files = export_etf(df, BASE_DIR, config)
     storage.log_export(db_path, "etf", files[-1], {"rows": len(df)})
     return {"files": _export_names(files, config)}
@@ -743,7 +777,8 @@ def api_export_full():
     config = _cfg()
     db_path = _require_db(config)
     _, macro_df = storage.read_macro(db_path)
-    _, etf_df = storage.read_etf(db_path)
+    _, etf_df = storage.read_etf_with_changes(db_path)
+    etf_df = _attach_etf_tags(etf_df)
     history = storage.read_interface_runs(db_path)
     files = export_full(macro_df, etf_df, history, BASE_DIR, config)
     storage.log_export(db_path, "full", files[-1], {
@@ -978,6 +1013,8 @@ def api_etf_config_set(payload: dict):
         etf["codes"] = codes
         listing = etf.get("listing_dates") or {}
         etf["listing_dates"] = {k: v for k, v in listing.items() if k in codes}
+        tags = etf.get("tags") or {}
+        etf["tags"] = {k: v for k, v in tags.items() if k in codes}
         updated = True
 
     for key in ("start_date", "end_date"):
@@ -999,6 +1036,35 @@ def api_etf_config_set(payload: dict):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="default_trade_days 应为 1~500 的整数")
         etf["default_trade_days"] = n
+        updated = True
+
+    if "tags" in payload:
+        raw = payload["tags"]
+        if isinstance(raw, list):
+            raw = {
+                str(item.get("code", "")).strip().zfill(6): item.get("tags", [])
+                for item in raw if isinstance(item, dict)
+            }
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="tags 应为 {代码: [标签]} 或 [{code, tags}]")
+        allowed = set(ETF_TAG_OPTIONS)
+        cleaned: dict[str, list[str]] = {}
+        for key, val in raw.items():
+            code = str(key).strip().zfill(6)
+            if code not in etf.get("codes", []):
+                raise HTTPException(status_code=400, detail=f"标签对应的 ETF 未配置：{code}")
+            tags = val if isinstance(val, list) else str(val).split(",")
+            tags = [str(t).strip() for t in tags if str(t).strip()]
+            bad = [t for t in tags if t not in allowed]
+            if bad:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"ETF {code} 标签无效：{'、'.join(bad)}；可选 {'/'.join(ETF_TAG_OPTIONS)}",
+                )
+            ordered = [t for t in ETF_TAG_OPTIONS if t in tags]
+            if ordered:
+                cleaned[code] = ordered
+        etf["tags"] = cleaned
         updated = True
 
     if not updated:

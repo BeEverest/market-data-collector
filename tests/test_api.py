@@ -54,6 +54,25 @@ class TestReadOnlyApis:
         csv = client.get("/api/derived/export")
         assert csv.status_code == 200 and "text/csv" in csv.headers["content-type"]
 
+    def test_etf_tags_and_change_columns(self, client):
+        cfg = client.get("/api/etf/config").json()
+        assert cfg["tag_options"] == ["宽基", "汇金", "黄金"]
+        code = cfg["codes"][0]
+        saved = client.post("/api/etf/config", json={"tags": {code: ["黄金", "宽基"]}})
+        assert saved.status_code == 200
+        item = next(x for x in saved.json()["config"]["items"] if x["code"] == code)
+        assert item["tags"] == ["宽基", "黄金"]  # 按选项顺序归一
+        bad = client.post("/api/etf/config", json={"tags": {code: ["未知标签"]}})
+        assert bad.status_code == 400
+
+        data = client.get("/api/data/etf", params={"code": "510050", "page_size": 100}).json()
+        row = next(r for r in data["rows"] if r["交易日期"] == "2026-10-20")
+        assert row["标签"] == "宽基、黄金"
+        assert row["份额变化(亿份)"] == pytest.approx(2.0)
+        assert row["份额变化率(%)"] == pytest.approx(2 / 98 * 100, abs=1e-3)
+        assert row["规模变化(亿元)"] == pytest.approx(8.96)
+        assert row["规模变化率(%)"] == pytest.approx(8.96 / 341.04 * 100, abs=1e-3)
+
     def test_macro_pagination_and_date_filter(self, client):
         r = client.get("/api/data/macro", params={"page": 1, "page_size": 2})
         data = r.json()

@@ -50,8 +50,8 @@ class TestIndexCollector:
         assert list(df.columns) == idx_mod.OUTPUT_COLUMNS
         assert len(df) == 2
         assert df["指数代码"].tolist() == ["000001", "000001"]
-        # 首日无前收基准 -> 空；次日 12/11-1 = 9.09%
-        assert pd.isna(df.iloc[0]["涨跌幅(%)"])
+        # 涨跌幅基于完整历史：11-19 基于 11-18(10) -> 10%；11-20 基于 11-19(11) -> 9.09%
+        assert round(df.iloc[0]["涨跌幅(%)"], 2) == 10.0
         assert round(df.iloc[1]["涨跌幅(%)"], 2) == 9.09
 
     def test_collect_unknown_code_returns_empty(self):
@@ -70,6 +70,24 @@ class TestIndexCollector:
 
         df = idx_mod.collect_index(codes=["000001"])
         assert df["交易日期"].tolist() == ["2026-11-20"]
+        # 单日采集也必须带涨跌幅（基于前一日 11 -> 12 = 9.09%），不能因裁剪成 1 行而变 NaN
+        assert not pd.isna(df.iloc[0]["涨跌幅(%)"])
+        assert round(df.iloc[0]["涨跌幅(%)"], 2) == 9.09
+
+    def test_single_day_collect_keeps_pct_change(self, monkeypatch):
+        """显式单日采集（定时调度口径）涨跌幅非空——回归 11-20 缺失问题。"""
+        raw = pd.DataFrame({
+            "date": ["2026-11-18", "2026-11-19", "2026-11-20"],
+            "open": [10, 11, 12], "high": [11, 12, 13],
+            "low": [9, 10, 11], "close": [10, 11, 12], "volume": [100, 110, 120],
+        })
+        monkeypatch.setattr(idx_mod, "_fetch_index", lambda symbol, **kw: raw.copy())
+
+        df = idx_mod.collect_index(
+            codes=["000001"], start_date="2026-11-20", end_date="2026-11-20"
+        )
+        assert len(df) == 1
+        assert round(df.iloc[0]["涨跌幅(%)"], 2) == 9.09
 
     def test_explicit_date_still_wins(self, monkeypatch):
         """显式 start/end 优先于默认锚点。"""

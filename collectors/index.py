@@ -138,21 +138,26 @@ def collect_index(
             df = raw.copy()
             df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
             df = df.dropna(subset=["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+            # 涨跌幅依赖「相邻交易日收盘价」，必须对完整历史先算、再裁剪目标区间。
+            # 定时调度按最近一个交易日采集（start=end）时，若先裁剪只剩 1 行，
+            # pct_change() 没有前一日基准会返回 NaN，导致当日涨跌幅缺失。
+            close_all = pd.to_numeric(df["close"], errors="coerce")
+            df["涨跌幅(%)"] = (close_all.pct_change() * 100).round(4)
             df = df[(df["date"] >= start_date) & (df["date"] <= end_date)]
             if df.empty:
                 raise ValueError(f"区间 {start_date}~{end_date} 内无交易日数据")
-            df = df.sort_values("date").reset_index(drop=True)
             out = pd.DataFrame({
                 "指数代码": code,
                 "指数名称": meta["name"],
-                "交易日期": df["date"],
-                "开盘价": pd.to_numeric(df["open"], errors="coerce"),
-                "最高价": pd.to_numeric(df["high"], errors="coerce"),
-                "最低价": pd.to_numeric(df["low"], errors="coerce"),
-                "收盘价": pd.to_numeric(df["close"], errors="coerce"),
-                "成交量": pd.to_numeric(df["volume"], errors="coerce"),
+                "交易日期": df["date"].values,
+                "开盘价": pd.to_numeric(df["open"], errors="coerce").values,
+                "最高价": pd.to_numeric(df["high"], errors="coerce").values,
+                "最低价": pd.to_numeric(df["low"], errors="coerce").values,
+                "收盘价": pd.to_numeric(df["close"], errors="coerce").values,
+                "成交量": pd.to_numeric(df["volume"], errors="coerce").values,
+                "涨跌幅(%)": df["涨跌幅(%)"].values,
             })
-            out["涨跌幅(%)"] = (out["收盘价"].pct_change() * 100).round(4)
             out["数据源"] = SOURCE
             out["采集时间"] = collected_at
             out = out[OUTPUT_COLUMNS]

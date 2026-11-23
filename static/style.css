@@ -579,6 +579,23 @@ tr.row-ok td { }
 .etc-v.down { color: #16855b; }
 .etc-v.neutral { font-size: 13px; color: var(--text); }
 
+/* 汇金细分图：点击柱子展开的该 ETF 每日明细 */
+.etf-daily-detail {
+  border-top: 1px dashed var(--line); background: #fbfcff;
+  padding: 10px 14px 14px;
+}
+.etf-daily-detail[hidden] { display: none; }
+.etf-detail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; margin-bottom: 8px; font-size: 12px;
+}
+.etf-daily-detail .muted-inline { margin-left: 10px; }
+.etf-daily-detail td.num { text-align: right; }
+.etf-daily-detail .up { color: #c0392b; font-weight: 600; }
+.etf-daily-detail .down { color: #16855b; font-weight: 600; }
+.etf-daily-detail small { font-size: 10px; font-weight: 400; }
+.etf-daily-detail .table-wrap { max-height: 360px; }
+
 @media (max-width: 860px) {
   .etf-total-cards { grid-template-columns: 1fr; }
   .dashboard-grid { grid-template-columns: 1fr; }

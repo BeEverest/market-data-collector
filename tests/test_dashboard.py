@@ -151,6 +151,10 @@ class TestEtfDashboard:
         assert detail["total_cap_change"] == 20.0
         assert detail["total_share_change"] == 16.0
         assert detail["series"][0]["data"] == [["510050", 16.0], ["510300", 4.0]]  # 降序
+        # 点击柱子展开每日明细所需的元数据：代码/简称与柱子同序，起始月与图表同口径
+        assert detail["detail_start"] == "2026-11"
+        assert detail["rank_meta"] == [
+            {"code": "510050", "name": "510050"}, {"code": "510300", "name": "510300"}]
         gold = charts[2]
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
 
@@ -159,6 +163,7 @@ class TestEtfDashboard:
         assert full[0]["series"][0]["data"][0] == ["2026-10-15", 9.0]
         assert full[1]["series"][0]["data"] == [["510050", 26.0], ["510300", 4.0]]
         assert full[1]["total_cap_change"] == 30.0
+        assert full[1]["detail_start"] == ""  # 全部区间不设起始月
 
     def test_etf_rank_sort_with_negative_and_name(self):
         """净流入有正有负时按降序，X 轴标签优先用基金简称。"""
@@ -175,6 +180,8 @@ class TestEtfDashboard:
         data = detail["series"][0]["data"]
         assert data == [["沪深300ETF", 8.0], ["创业板ETF", 5.0], ["上证50ETF", -3.0]]
         assert detail["total_cap_change"] == 10.0  # 8+5-3
+        assert [m["code"] for m in detail["rank_meta"]] == ["510300", "159915", "510050"]
+        assert [m["name"] for m in detail["rank_meta"]] == [d[0] for d in data]
 
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([

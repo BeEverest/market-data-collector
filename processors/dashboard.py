@@ -265,16 +265,21 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                     rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
             ordered = sorted(rank.items(), key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
             rank_data = [[v["name"], v["net"]] for _, v in ordered if v["net"] is not None]
+            # 与 rank_data 顺序一致的代码/简称，供前端点击柱子定位到具体 ETF 拉每日明细
+            rank_meta = [{"code": code, "name": v["name"]} for code, v in ordered
+                         if v["net"] is not None]
             total_cap_change = _clean_number(sum(v["net"] for v in rank.values() if v["net"] is not None))
             total_share_change = _clean_number(sum(v["share"] for v in rank.values() if v["share"] is not None))
             charts.append({
                 "id": "etf_huijin_detail",
                 "title": "汇金维度 · 各 ETF 净流入细分（规模变化）",
-                "note": f"每只 ETF 在区间内的规模变化累计，按净流入降序；{scope}",
+                "note": f"每只 ETF 在区间内的规模变化累计，按净流入降序；{scope} · 点击柱子查看每日明细",
                 "layout": "etf_rank",
                 "group": "huijin_detail",  # 前端紧贴在汇金原图下方，不另起一行
                 "etf_count": len(codes),
                 "codes": sorted(codes),
+                "rank_meta": rank_meta,     # 与 series data 同序：{code,name}
+                "detail_start": cutoff,     # 与图表同口径的起始月份（YYYY-MM），空=全部
                 "range_label": scope,
                 "total_cap_change": total_cap_change,
                 "total_share_change": total_share_change,

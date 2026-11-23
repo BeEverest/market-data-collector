@@ -1324,6 +1324,7 @@ async function loadDerivedScheduler() {
 const dashboardInstances = {};  // containerId -> [{ id, inst }]
 let dashboardTab = 'macro';
 let dashboardData = null;
+const etfDetailState = { code: '', page: 1, start: '' };  // 当前展开的 ETF 每日明细
 const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
 
 function disposeDashboardCharts(containerId) {
@@ -1404,6 +1405,7 @@ function dashboardChartOption(chart) {
 function renderDashboardCharts(containerId, charts) {
   const el = $(containerId);
   disposeDashboardCharts(containerId);
+  etfDetailState.code = '';  // 重绘后旧明细面板已销毁
   if (!charts || !charts.length) {
     el.innerHTML = '<div class="empty">暂无图表数据</div>';
     return;
@@ -1434,6 +1436,7 @@ function renderDashboardCharts(containerId, charts) {
       </div>
       ${totalCard}
       <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : ''}" data-chart-id="${esc(c.id)}"></div>
+      ${c.layout === 'etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : ''}
     </div>`;
   }).join('');
   charts.forEach(c => {
@@ -1446,7 +1449,89 @@ function renderDashboardCharts(containerId, charts) {
     const inst = echarts.init(box);
     inst.setOption(dashboardChartOption(c));
     dashboardInstances[containerId].push({ id: c.id, inst });
+    if (c.layout === 'etf_rank') {
+      box.style.cursor = 'pointer';
+      box.title = '点击任意 ETF 柱子，展开该 ETF 每日明细';
+      inst.on('click', (p) => {
+        if (p.componentType !== 'series' || p.dataIndex == null) return;
+        const meta = (c.rank_meta || [])[p.dataIndex];
+        if (!meta || !meta.code) return;
+        const net = ((c.series || [])[0]?.data || [])[p.dataIndex]?.[1];
+        openEtfDailyDetail(c, meta, net);
+      });
+    }
   });
+}
+
+/* 点击汇金细分图的柱子：展开/收起该 ETF 在所选区间内的每日明细 */
+async function openEtfDailyDetail(chart, meta, netValue) {
+  const panel = document.querySelector(`[data-detail-for="${chart.id}"]`);
+  if (!panel) return;
+  if (!panel.hidden && etfDetailState.code === meta.code) {
+    panel.hidden = true;
+    etfDetailState.code = '';
+    return;
+  }
+  etfDetailState.code = meta.code;
+  etfDetailState.page = 1;
+  etfDetailState.start = chart.detail_start || '';
+  panel.hidden = false;
+  panel.innerHTML = '<div class="empty">加载每日明细…</div>';
+  await renderEtfDetailPage(panel, chart, meta, netValue);
+}
+
+async function renderEtfDetailPage(panel, chart, meta, netValue) {
+  const qs = new URLSearchParams({
+    code: meta.code, page: String(etfDetailState.page), page_size: '100', order: 'desc',
+  });
+  if (etfDetailState.start) qs.set('start', etfDetailState.start);
+  try {
+    const res = await api('/api/data/etf?' + qs.toString());
+    if (etfDetailState.code !== meta.code) return;  // 已切到其他 ETF，丢弃过期响应
+    const rows = res.rows || [];
+    const fmt = (v, digits = 2) => (v == null || v === '') ? '—'
+      : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
+    const signed = (v, unit) => {
+      const n = Number(v || 0);
+      return `<span class="${n >= 0 ? 'up' : 'down'}">${n >= 0 ? '+' : ''}${fmt(n)} <small>${unit}</small></span>`;
+    };
+    const body = rows.map(r => `<tr>
+      <td>${esc(r['交易日期'])}</td>
+      <td class="num">${fmt(r['份额(亿份)'])}</td>
+      <td class="num">${signed(r['份额变化(亿份)'], '亿份')}</td>
+      <td class="num">${fmt(r['份额变化率(%)'])}%</td>
+      <td class="num">${fmt(r['规模(亿元)'])}</td>
+      <td class="num">${signed(r['规模变化(亿元)'], '亿元')}</td>
+      <td class="num">${fmt(r['规模变化率(%)'])}%</td>
+    </tr>`).join('');
+    const pages = res.pages || 1;
+    const pager = `<div class="pager">
+      <button type="button" data-detail-page="prev" ${etfDetailState.page <= 1 ? 'disabled' : ''}>上一页</button>
+      <span class="page-info">第 ${etfDetailState.page} / ${pages} 页 · 共 ${res.total} 条</span>
+      <button type="button" data-detail-page="next" ${etfDetailState.page >= pages ? 'disabled' : ''}>下一页</button>
+    </div>`;
+    panel.innerHTML = `
+      <div class="etf-detail-head">
+        <div><b>${esc(meta.name)}</b> <span class="muted-inline">${esc(meta.code)}</span>
+          <span class="muted-inline">区间净流入（规模变化累计）：${Number(netValue) >= 0 ? '+' : ''}${fmt(netValue)} 亿元</span></div>
+        <button type="button" class="btn tiny" data-detail-close>收起明细</button>
+      </div>
+      <div class="table-wrap tall"><table>
+        <thead><tr><th>交易日期</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率</th><th>规模(亿元)</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
+        <tbody>${body || '<tr><td colspan="7" class="empty">该区间无数据</td></tr>'}</tbody>
+      </table></div>
+      ${pager}`;
+    panel.querySelector('[data-detail-close]').addEventListener('click', () => {
+      panel.hidden = true;
+      etfDetailState.code = '';
+    });
+    panel.querySelectorAll('[data-detail-page]').forEach(b => b.addEventListener('click', () => {
+      etfDetailState.page += (b.dataset.detailPage === 'next' ? 1 : -1);
+      renderEtfDetailPage(panel, chart, meta, netValue);
+    }));
+  } catch (e) {
+    panel.innerHTML = `<div class="empty">明细加载失败：${esc(e.message || e)}</div>`;
+  }
 }
 
 async function loadDashboard() {

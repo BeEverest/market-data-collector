@@ -551,6 +551,9 @@ tr.row-ok td { }
 .dashboard-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(540px, 1fr)); gap: 14px;
 }
+/* ETF 维度：图表整行铺开，与下方「按天明细」卡片等宽对齐，日期轴有充足空间 */
+#etfCharts { grid-template-columns: 1fr; }
+#etfCharts .chart-box:not(.chart-box-tall) { height: 360px; }
 .chart-card {
   border: 1px solid var(--line); border-radius: 10px; background: #fff;
   overflow: hidden; box-shadow: var(--shadow);

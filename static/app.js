@@ -1342,6 +1342,8 @@ function resizeDashboardCharts() {
 function dashboardChartOption(chart) {
   // etf_rank 布局：X 轴为 ETF 简称，顺序由后端按净流入降序给出，不能再排序
   const isRank = chart.layout === 'etf_rank';
+  // ETF 时间序列图（汇金/黄金原图）：拉宽后给日期轴更充足的空间与范围选择
+  const isEtfTime = !isRank && /^etf_/.test(chart.id || '');
   const rawCategories = [...new Set((chart.series || []).flatMap(s => (s.data || []).map(p => p[0])))];
   const categories = isRank ? rawCategories : rawCategories.sort();
   const axisCount = (chart.y_axes || []).length || 1;
@@ -1350,7 +1352,9 @@ function dashboardChartOption(chart) {
     animation: false,
     grid: isRank
       ? { left: 62, right: 24, top: 30, bottom: 82 }
-      : { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
+      : isEtfTime
+        ? { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 92 }
+        : { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
     legend: isRank ? { show: false } : { top: 6, type: 'scroll', textStyle: { fontSize: 11 } },
     tooltip: {
       trigger: 'axis', axisPointer: { type: isRank ? 'shadow' : 'cross' }, confine: true,
@@ -1359,9 +1363,10 @@ function dashboardChartOption(chart) {
     xAxis: {
       type: 'category', data: categories, boundaryGap: hasBar,
       axisLabel: {
-        fontSize: isRank ? 10 : 10, hideOverlap: !isRank,
-        rotate: isRank ? 42 : (categories.length > 36 ? 30 : 0),
+        fontSize: isEtfTime ? 10 : 10, hideOverlap: !isRank,
+        rotate: isRank ? 42 : (isEtfTime ? 30 : (categories.length > 36 ? 30 : 0)),
         interval: isRank ? 0 : 'auto',
+        margin: isEtfTime ? 14 : 8,
       },
     },
     yAxis: (chart.y_axes || [{ name: '', position: 'left' }]).map((a, i) => ({
@@ -1373,7 +1378,10 @@ function dashboardChartOption(chart) {
     })),
     dataZoom: [
       { type: 'inside' },
-      { type: 'slider', height: 14, bottom: 8, brushSelect: false },
+      { type: 'slider', height: isEtfTime ? 20 : 14, bottom: 8, brushSelect: false,
+        showDetail: true,
+        handleSize: isEtfTime ? '110%' : '100%',
+        dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
     ],
     series: (chart.series || []).map((s, idx) => {
       const lookup = new Map(s.data || []);

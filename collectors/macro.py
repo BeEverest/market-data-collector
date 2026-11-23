@@ -420,8 +420,13 @@ def collect_macro(
             from collectors.macro_sfr_stock import fetch_sfr_stock
 
             if sfr_stock_map is None:
-                sfr_official, sfr_url_used = fetch_sfr_stock(url=sfr_stock_url or None)
+                sfr_official, sfr_url_used = fetch_sfr_stock(
+                    url=sfr_stock_url or None,
+                    start_month=start_date, end_month=end_date,
+                )
                 sfr_params["url"] = sfr_url_used or ""
+                sfr_params["start_month"] = start_date or ""
+                sfr_params["end_month"] = end_date or ""
             else:
                 sfr_official = sfr_stock_map
                 sfr_params["source"] = "调用方传入官方口径"

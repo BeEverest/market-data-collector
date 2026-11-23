@@ -23,6 +23,29 @@ SAMPLE_HTML = """
 </table>
 """
 
+# 早年（如 2019）数据行首列没有 AFRE 字样，且标题行也含「社会融资规模存量」
+SAMPLE_HTML_NO_AFRE = """
+<table>
+  <tr><td>社会融资规模存量统计表</td></tr>
+  <tr><td>单位：万亿元人民币</td></tr>
+  <tr><td></td><td>2019.1</td><td>2019.2</td><td>2019.3</td></tr>
+  <tr><td>项目 Items</td><td>存量</td><td>增速（%）</td><td>存量</td><td>增速（%）</td><td>存量</td><td>增速（%）</td></tr>
+  <tr><td>社会融资规模存量</td><td>231.55</td><td>10.9</td><td>232.41</td><td>10.6</td><td>235.24</td><td>11.2</td></tr>
+  <tr><td>注：社会融资规模存量是指一定时期末余额。</td></tr>
+</table>
+"""
+
+# 2015 年官方表按季末披露
+SAMPLE_QUARTER_HTML = """
+<table>
+  <tr><td>社会融资规模存量统计表</td></tr>
+  <tr><td>单位：万亿元人民币</td></tr>
+  <tr><td></td><td>2015.Q1</td><td>2015.Q2</td><td>2015.Q3</td><td>2015.Q4</td></tr>
+  <tr><td>项目 Items</td><td>存量</td><td>增速（%）</td><td>存量</td><td>增速（%）</td><td>存量</td><td>增速（%）</td><td>存量</td><td>增速（%）</td></tr>
+  <tr><td>社会融资规模存量 AFRE（ stock)</td><td>127.68</td><td>13.1</td><td>131.70</td><td>12.0</td><td>134.70</td><td>12.5</td><td>138.28</td><td>12.5</td></tr>
+</table>
+"""
+
 
 class TestParseSfrStock:
     def test_parse_months_and_values(self):
@@ -44,6 +67,39 @@ class TestParseSfrStock:
 
     def test_too_few_rows_returns_empty(self):
         assert mss.parse_sfr_stock("<table><tr><td>2026.1</td></tr></table>") == {}
+
+    def test_old_table_without_afre_label(self):
+        d = mss.parse_sfr_stock(SAMPLE_HTML_NO_AFRE)
+        assert d["2019-01"] == (231.55, 10.9)
+        assert d["2019-03"] == (235.24, 11.2)
+
+    def test_quarterly_table_maps_to_quarter_end_months(self):
+        d = mss.parse_sfr_stock(SAMPLE_QUARTER_HTML)
+        assert d["2015-03"] == (127.68, 13.1)
+        assert d["2015-12"] == (138.28, 12.5)
+
+
+class TestFetchSfrStockYears:
+    def test_fetches_only_years_in_requested_range(self, monkeypatch):
+        tables = {"2024": "u24", "2025": "u25", "2026": "u26"}
+        payloads = {
+            "u24": {"2024-01": (390.0, 9.0)},
+            "u25": {"2025-01": (420.0, 8.0)},
+            "u26": {"2026-01": (449.11, 8.2)},
+        }
+        seen = []
+
+        def fake_discover(*a, **k):
+            seen.append((k.get("start_month"), k.get("end_month")))
+            return {y: u for y, u in tables.items() if y in {"2024", "2025"}}
+
+        monkeypatch.setattr(mss, "discover_stock_tables", fake_discover)
+        monkeypatch.setattr(mss, "_fetch_table", lambda u, t: payloads[u])
+
+        data, note = mss.fetch_sfr_stock(start_month="2024-06", end_month="2025-12")
+        assert seen == [("2024-06", "2025-12")]
+        assert set(data) == {"2024-01", "2025-01"}
+        assert "2024" in note and "2025" in note and "2026" not in note
 
 
 class TestCollectMacroSfrStock:
@@ -84,6 +140,20 @@ class TestCollectMacroSfrStock:
             sfr_stock_map=stock_map, only={"M2"},
         )
         assert df[df["指标代码"] == "SFR_STOCK"].empty
+
+    def test_date_range_passed_to_official_fetch(self, monkeypatch):
+        captured = {}
+
+        def fake_fetch(*a, **k):
+            captured.update(k)
+            return {"2025-01": (420.0, 8.0)}, "央行存量统计表（2025）"
+
+        monkeypatch.setattr(mss, "fetch_sfr_stock", fake_fetch)
+        df = macro.collect_macro(start_date="2025-01", end_date="2025-12")
+        assert captured["start_month"] == "2025-01"
+        assert captured["end_month"] == "2025-12"
+        rows = df[df["指标代码"] == "SFR_STOCK"]
+        assert len(rows) == 1 and rows.iloc[0]["日期"] == "2025-01"
 
 
 class TestAbsoluteURL:

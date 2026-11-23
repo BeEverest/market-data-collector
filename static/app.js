@@ -1411,11 +1411,11 @@ function renderDashboardCharts(containerId, charts) {
     return;
   }
   el.innerHTML = charts.map(c => {
-    // 汇金净流入图：独立合计数字卡片（合计流通规模变化 / 份额变化）
+    // 汇金净流入图：独立合计数字卡片（合计净流入=申赎资金 / 份额变化）
     const totalCard = (c.layout === 'etf_rank' && c.total_cap_change != null) ? `
       <div class="etf-total-cards">
         <div class="etf-total-card">
-          <div class="etc-k">合计流通规模变化</div>
+          <div class="etc-k">合计净流入（申赎资金）</div>
           <div class="etc-v ${c.total_cap_change >= 0 ? 'up' : 'down'}">${c.total_cap_change >= 0 ? '+' : ''}${Number(c.total_cap_change).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} <small>亿元</small></div>
         </div>
         <div class="etf-total-card">
@@ -1485,8 +1485,10 @@ async function loadEtfDailyDetail() {
   const months = $('dashboardEtfMonths')?.value || '12';
   try {
     const res = await api(`/api/dashboard/etf-daily?months=${encodeURIComponent(months)}`);
-    const t = res.total || { share: 0, cap: 0, days: 0 };
+    const t = res.total || { share: 0, cap: 0, net: 0, days: 0 };
     totalBox.innerHTML = `
+      <div class="etf-daily-total-card"><span>区间合计净流入（申赎资金）</span>
+        <b class="${t.net >= 0 ? 'up' : 'down'}">${t.net >= 0 ? '+' : ''}${fmtNum(t.net)} <small>亿元</small></b></div>
       <div class="etf-daily-total-card"><span>区间合计流通份额变化</span>
         <b class="${t.share >= 0 ? 'up' : 'down'}">${t.share >= 0 ? '+' : ''}${fmtNum(t.share)} <small>亿份</small></b></div>
       <div class="etf-daily-total-card"><span>区间合计流通规模变化</span>
@@ -1495,16 +1497,17 @@ async function loadEtfDailyDetail() {
         <b class="neutral">${t.days} 个交易日 · ${esc(res.range || '')}</b></div>`;
     const rows = res.rows || [];
     tableBox.innerHTML = `<table>
-      <thead><tr><th>交易日期</th><th>流通份额变化(亿份)</th><th>流通规模变化(亿元)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
+      <thead><tr><th>交易日期</th><th>净流入(申赎·亿元)</th><th>流通份额变化(亿份)</th><th>流通规模变化(亿元)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
       <tbody>${rows.map(r => `
         <tr class="etf-day-row" data-date="${esc(r.date)}">
           <td>${esc(r.date)}</td>
+          <td class="num"><span class="${(r.net || 0) >= 0 ? 'up' : 'down'}">${r.net == null ? '—' : ((r.net >= 0 ? '+' : '') + fmtNum(r.net))}</span></td>
           <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
           <td class="num"><span class="${r.cap >= 0 ? 'up' : 'down'}">${r.cap >= 0 ? '+' : ''}${fmtNum(r.cap)}</span></td>
           <td class="num">${r.count}</td>
           <td><button type="button" class="btn tiny etf-day-toggle" data-date="${esc(r.date)}">展开</button></td>
         </tr>
-        <tr class="etf-day-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="5"></td></tr>`).join('')}</tbody>
+        <tr class="etf-day-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="6"></td></tr>`).join('')}</tbody>
     </table>`;
     tableBox.querySelectorAll('.etf-day-toggle').forEach(b =>
       b.addEventListener('click', () => toggleEtfDayDetail(b.dataset.date)));
@@ -1533,11 +1536,12 @@ async function toggleEtfDayDetail(date) {
     const res = await api('/api/dashboard/etf-daily?' + qs.toString());
     const rows = res.rows || [];
     cell.innerHTML = `
-      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 明细（按规模变化降序，共 ${rows.length} 只）</div>
+      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 明细（按净流入降序，共 ${rows.length} 只）· 净流入=份额变化×当日净值，剔除市值波动与份额折算</div>
       <table class="etf-day-detail-table">
-        <thead><tr><th>ETF 名称</th><th>代码</th><th>份额变化(亿份)</th><th>变化率</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
+        <thead><tr><th>ETF 名称</th><th>代码</th><th>净流入(申赎·亿元)</th><th>份额变化(亿份)</th><th>变化率</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
         <tbody>${rows.map(r => `<tr>
           <td>${esc(r.name)}</td><td>${esc(r.code)}</td>
+          <td class="num"><span class="${(r.net || 0) >= 0 ? 'up' : 'down'}">${r.net == null ? '折算日' : ((r.net >= 0 ? '+' : '') + fmtNum(r.net))}</span></td>
           <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
           <td class="num">${r.share_rate == null ? '—' : fmtNum(r.share_rate) + '%'}</td>
           <td class="num"><span class="${r.cap >= 0 ? 'up' : 'down'}">${r.cap >= 0 ? '+' : ''}${fmtNum(r.cap)}</span></td>
@@ -1581,8 +1585,11 @@ async function renderEtfDetailPage(panel, chart, meta, netValue) {
       const n = Number(v || 0);
       return `<span class="${n >= 0 ? 'up' : 'down'}">${n >= 0 ? '+' : ''}${fmt(n)} <small>${unit}</small></span>`;
     };
+    const netCell = (v) => v == null ? '<span class="muted-inline">折算日</span>'
+      : `<span class="${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '+' : ''}${fmt(v)} <small>亿元</small></span>`;
     const body = rows.map(r => `<tr>
       <td>${esc(r['交易日期'])}</td>
+      <td class="num">${netCell(r['净流入(亿元)'])}</td>
       <td class="num">${fmt(r['份额(亿份)'])}</td>
       <td class="num">${signed(r['份额变化(亿份)'], '亿份')}</td>
       <td class="num">${fmt(r['份额变化率(%)'])}%</td>
@@ -1599,12 +1606,12 @@ async function renderEtfDetailPage(panel, chart, meta, netValue) {
     panel.innerHTML = `
       <div class="etf-detail-head">
         <div><b>${esc(meta.name)}</b> <span class="muted-inline">${esc(meta.code)}</span>
-          <span class="muted-inline">区间净流入（规模变化累计）：${Number(netValue) >= 0 ? '+' : ''}${fmt(netValue)} 亿元</span></div>
+          <span class="muted-inline">区间净流入（申赎资金）：${Number(netValue) >= 0 ? '+' : ''}${fmt(netValue)} 亿元</span></div>
         <button type="button" class="btn tiny" data-detail-close>收起明细</button>
       </div>
       <div class="table-wrap tall"><table>
-        <thead><tr><th>交易日期</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率</th><th>规模(亿元)</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
-        <tbody>${body || '<tr><td colspan="7" class="empty">该区间无数据</td></tr>'}</tbody>
+        <thead><tr><th>交易日期</th><th>净流入(申赎·亿元)</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率</th><th>规模(亿元)</th><th>规模变化(亿元)</th><th>变化率</th></tr></thead>
+        <tbody>${body || '<tr><td colspan="8" class="empty">该区间无数据</td></tr>'}</tbody>
       </table></div>
       ${pager}`;
     panel.querySelector('[data-detail-close]').addEventListener('click', () => {

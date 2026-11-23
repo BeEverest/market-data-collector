@@ -35,6 +35,27 @@ class TestComputeEtfChanges:
         assert down["份额变化(亿份)"] == pytest.approx(-2.0)
         assert down["份额变化率(%)"] == pytest.approx(-4.0)
 
+    def test_net_inflow_uses_nav_and_excludes_price_move(self):
+        """净流入=份额变化×当日净值，不含净值涨跌的市值波动。"""
+        df = pd.DataFrame([
+            {**_etf_row("510050", "2026-10-17", 100.0, 350.0), "单位净值(元)": 3.5},
+            {**_etf_row("510050", "2026-10-20", 110.0, 392.7), "单位净值(元)": 3.57},
+        ])
+        out = compute_etf_changes(df).set_index("交易日期").loc["2026-10-20"]
+        assert out["份额变化(亿份)"] == pytest.approx(10.0)
+        assert out["规模变化(亿元)"] == pytest.approx(42.7)  # 含净值上涨
+        assert out["净流入(亿元)"] == pytest.approx(35.7)    # 10 亿份 × 3.57，剔除价格因素
+
+    def test_split_day_net_inflow_blank(self):
+        """份额折算（净值单日涨跌>20%）当日净流入置空。"""
+        df = pd.DataFrame([
+            {**_etf_row("510310", "2024-09-19", 1218.64, 1947.03), "单位净值(元)": 1.5977},
+            {**_etf_row("510310", "2024-09-20", 623.47, 1996.42), "单位净值(元)": 3.2021},
+        ])
+        out = compute_etf_changes(df).set_index("交易日期").loc["2024-09-20"]
+        assert out["份额变化(亿份)"] == pytest.approx(-595.17, abs=0.01)
+        assert pd.isna(out["净流入(亿元)"])  # 折算日不计入净流入
+
     def test_nonpositive_previous_value_has_no_rate(self):
         df = pd.DataFrame([
             _etf_row("510050", "2026-10-17", 0.0, 0.0),

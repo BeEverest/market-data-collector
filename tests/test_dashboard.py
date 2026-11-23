@@ -185,6 +185,17 @@ class TestEtfDashboard:
         assert [m["code"] for m in detail["rank_meta"]] == ["510300", "159915", "510050"]
         assert [m["name"] for m in detail["rank_meta"]] == [d[0] for d in data]
 
+    def test_huijin_detail_prefers_net_inflow_column(self):
+        """有「净流入(亿元)」列时细分图用申赎口径，不用规模变化。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "基金简称": "上证50ETF", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 10.0, "规模变化(亿元)": 42.7, "净流入(亿元)": 35.7},
+        ])
+        tag_map = {"510050": ["汇金"]}
+        detail = build_etf_charts(df, tag_map, months=1)[1]
+        assert detail["total_cap_change"] == 35.7  # 净流入而非规模变化 42.7
+        assert detail["series"][0]["data"] == [["上证50ETF", 35.7]]
+
     def test_daily_detail_summary_and_day(self):
         """按天汇总含区间合计；展开某天返回当日各 ETF 明细并按规模变化降序。"""
         df = pd.DataFrame([
@@ -200,9 +211,11 @@ class TestEtfDashboard:
         tag_map = {"510050": ["汇金"], "510300": ["汇金"], "518880": ["黄金"]}
         summary = build_etf_daily_detail(df, tag_map, months=1)
         assert summary["range"] == "近 1 个月"
-        assert summary["total"] == {"share": 5.0, "cap": 10.0, "days": 2}
+        # 测试数据无净流入列，回退到规模变化合计
+        assert summary["total"] == {"share": 5.0, "cap": 10.0, "net": 10.0, "days": 2}
         assert [r["date"] for r in summary["rows"]] == ["2026-11-20", "2026-11-19"]
-        assert summary["rows"][0] == {"date": "2026-11-20", "share": 1.0, "cap": 2.0, "count": 2}
+        assert summary["rows"][0] == {"date": "2026-11-20", "share": 1.0, "cap": 2.0,
+                                       "net": 2.0, "count": 2}
 
         day = build_etf_daily_detail(df, tag_map, months=1, date="2026-11-19")
         assert day["date"] == "2026-11-19"

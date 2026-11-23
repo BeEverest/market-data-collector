@@ -79,6 +79,16 @@ def _clean_number(value) -> float | None:
     return None if math.isnan(out) or math.isinf(out) else round(out, 4)
 
 
+def _net_inflow_sum(group) -> float | None:
+    """汇总真实净流入（份额变化×净值）；无该列时回退到规模变化以兼容旧数据。"""
+    if "净流入(亿元)" in group.columns:
+        series = group["净流入(亿元)"].dropna()
+        return _clean_number(series.sum()) if not series.empty else None
+    if "规模变化(亿元)" in group.columns:
+        return _clean_number(group["规模变化(亿元)"].sum())
+    return None
+
+
 def _pairs(df: pd.DataFrame, date_col: str, value_col: str,
            code: str | None = None, code_col: str | None = None,
            transform=None) -> list[list]:
@@ -254,15 +264,17 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         })
 
         if tag == "汇金":
-            # 汇金细分：按每只 ETF 累加所选区间内的规模变化作为「净流入」，降序排列；
+            # 汇金细分：按每只 ETF 累加所选区间内的真实净流入（份额变化×当日净值）降序。
             # 变化基准来自全量历史（见 read_etf_with_changes），这里只按窗口截取再累加。
+            # 兼容旧数据：无「净流入(亿元)」列时回退到规模变化。
             rank: dict[str, dict] = {}
             if not sub.empty:
                 for code, grp in sub.groupby("基金代码", sort=False):
                     name = str(grp["基金简称"].iloc[0]) if "基金简称" in grp.columns else str(code)
-                    net = _clean_number(grp["规模变化(亿元)"].sum())
+                    net = _net_inflow_sum(grp)
+                    cap = _clean_number(grp["规模变化(亿元)"].sum())
                     share = _clean_number(grp["份额变化(亿份)"].sum())
-                    rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
+                    rank[str(code).zfill(6)] = {"name": name, "net": net, "cap": cap, "share": share}
             ordered = sorted(rank.items(), key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
             rank_data = [[v["name"], v["net"]] for _, v in ordered if v["net"] is not None]
             # 与 rank_data 顺序一致的代码/简称，供前端点击柱子定位到具体 ETF 拉每日明细
@@ -272,8 +284,9 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
             total_share_change = _clean_number(sum(v["share"] for v in rank.values() if v["share"] is not None))
             charts.append({
                 "id": "etf_huijin_detail",
-                "title": "汇金维度 · 各 ETF 净流入细分（规模变化）",
-                "note": f"每只 ETF 在区间内的规模变化累计，按净流入降序；{scope} · 点击柱子查看每日明细",
+                "title": "汇金维度 · 各 ETF 净流入细分（申赎资金）",
+                "note": f"净流入=份额变化×当日净值，剔除价格涨跌的市值波动（份额折算日不计）；"
+                        f"按净流入降序，{scope} · 点击柱子查看每日明细",
                 "layout": "etf_rank",
                 "group": "huijin_detail",  # 前端紧贴在汇金原图下方，不另起一行
                 "etf_count": len(codes),
@@ -281,11 +294,11 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 "rank_meta": rank_meta,     # 与 series data 同序：{code,name}
                 "detail_start": cutoff,     # 与图表同口径的起始月份（YYYY-MM），空=全部
                 "range_label": scope,
-                "total_cap_change": total_cap_change,
+                "total_cap_change": total_cap_change,   # 实为合计净流入（申赎资金）
                 "total_share_change": total_share_change,
-                "y_axes": [{"name": "净流入 / 规模变化 (亿元)", "position": "left"}],
+                "y_axes": [{"name": "净流入 (亿元)", "position": "left"}],
                 "series": [
-                    {"name": "净流入(规模变化·亿元)", "data": rank_data,
+                    {"name": "净流入(申赎资金·亿元)", "data": rank_data,
                      "y_axis_index": 0, "type": "bar"},
                 ],
             })
@@ -307,7 +320,8 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
     if etf_df is None or etf_df.empty or not codes:
         if date:
             return {"date": str(date)[:10], "rows": [], "range": scope}
-        return {"rows": [], "total": {"share": 0.0, "cap": 0.0, "days": 0}, "range": scope}
+        return {"rows": [], "total": {"share": 0.0, "cap": 0.0,
+                                       "net": 0.0, "days": 0}, "range": scope}
 
     sub = etf_df[etf_df["基金代码"].astype(str).str.zfill(6).isin(codes)].copy()
     if months:
@@ -323,27 +337,32 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
         for _, r in day.iterrows():
             cap = _clean_number(r.get("规模变化(亿元)"))
             share = _clean_number(r.get("份额变化(亿份)"))
-            if cap is None and share is None:
+            net = _clean_number(r.get("净流入(亿元)"))
+            if cap is None and share is None and net is None:
                 continue
             rows.append({
                 "code": str(r["基金代码"]).zfill(6),
                 "name": str(r.get("基金简称") or r["基金代码"]),
                 "share": share or 0.0,
                 "cap": cap or 0.0,
+                "net": net,
                 "share_rate": _clean_number(r.get("份额变化率(%)")),
                 "cap_rate": _clean_number(r.get("规模变化率(%)")),
             })
-        rows.sort(key=lambda x: x["cap"], reverse=True)
+        # 有净流入列时按申赎资金降序；旧数据无该列时回退到规模变化降序
+        rows.sort(key=lambda x: -(x["net"] if x["net"] is not None else x["cap"]))
         return {"date": target, "rows": rows, "range": scope}
 
     rows = []
     for d, grp in sub.groupby("交易日期", sort=False):
         share = _clean_number(grp["份额变化(亿份)"].sum()) or 0.0
         cap = _clean_number(grp["规模变化(亿元)"].sum()) or 0.0
+        net = _net_inflow_sum(grp)
         rows.append({
             "date": str(d)[:10],
             "share": share,
             "cap": cap,
+            "net": net,
             "count": int(grp["基金代码"].nunique()),
         })
     rows.sort(key=lambda x: x["date"], reverse=True)
@@ -352,6 +371,7 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
         "total": {
             "share": float(sum(r["share"] for r in rows)),
             "cap": float(sum(r["cap"] for r in rows)),
+            "net": float(sum(r["net"] or 0 for r in rows)),
             "days": len(rows),
         },
         "range": scope,

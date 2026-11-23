@@ -300,9 +300,9 @@ class TestEtfDashboard:
         ])
         tag_map = {"510050": ["汇金"], "518880": ["黄金"]}
         idx = pd.DataFrame([
-            {"指数代码": "000001", "交易日期": "2026-10-30", "收盘价": 3410.0},
-            {"指数代码": "000001", "交易日期": "2026-11-18", "收盘价": 3520.5},
-            {"指数代码": "000001", "交易日期": "2026-11-20", "收盘价": 3600.0},
+            {"指数代码": "000001", "指数名称": "上证指数", "交易日期": "2026-10-30", "收盘价": 3410.0},
+            {"指数代码": "000001", "指数名称": "上证指数", "交易日期": "2026-11-18", "收盘价": 3520.5},
+            {"指数代码": "000001", "指数名称": "上证指数", "交易日期": "2026-11-20", "收盘价": 3600.0},
         ])
         # 精确区间：指数按同窗口截取
         charts = build_etf_charts(df, tag_map, months=12,
@@ -322,6 +322,31 @@ class TestEtfDashboard:
 
         # 无指数数据：退化为普通单图（兼容既有行为）
         assert build_etf_charts(df, tag_map, months=1)[0].get("layout") is None
+
+    def test_overlay_index_switchable(self):
+        """叠加指数可切换：按 index_code 取对应日线与名称，无该指数数据则不叠加。"""
+        df = pd.DataFrame([
+            {"基金代码": "510050", "交易日期": "2026-11-20",
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0},
+        ])
+        idx = pd.DataFrame([
+            {"指数代码": "000001", "指数名称": "上证指数", "交易日期": "2026-11-20", "收盘价": 3533.0},
+            {"指数代码": "000300", "指数名称": "沪深300", "交易日期": "2026-11-20", "收盘价": 4100.0},
+            {"指数代码": "399006", "指数名称": "创业板指", "交易日期": "2026-11-20", "收盘价": 2200.0},
+        ])
+        tag_map = {"510050": ["汇金"]}
+        hj = build_etf_charts(df, tag_map, months=1, index_df=idx, index_code="000300")[0]
+        assert hj["index_code"] == "000300"
+        assert hj["index_name"] == "沪深300 (点)"
+        assert hj["index_data"] == [["2026-11-20", 4100.0]]
+        assert "上方叠加沪深300日线" in hj["note"]
+        # 切换另一指数
+        hj2 = build_etf_charts(df, tag_map, months=1, index_df=idx, index_code="399006")[0]
+        assert hj2["index_name"] == "创业板指 (点)"
+        assert hj2["index_data"] == [["2026-11-20", 2200.0]]
+        # 不存在的指数：退化为普通单图
+        hj3 = build_etf_charts(df, tag_map, months=1, index_df=idx, index_code="999999")[0]
+        assert hj3.get("layout") is None
 
     def test_no_tags_returns_empty_series(self):
         df = pd.DataFrame([
@@ -355,6 +380,14 @@ class TestDashboardApi:
         assert hj["layout"] == "etf_overlay"
         assert [d for d, _ in hj["index_data"]] == ["2026-10-30", "2026-10-31"]
         assert data["etf"]["charts"][2].get("layout") is None
+        # 默认叠加指数为上证指数，并返回可用指数选项
+        assert data["overlay_index"] == "000001"
+        assert {o["code"]: o["name"] for o in data["index_options"]} == {"000001": "上证指数"}
+
+        # 切换叠加指数：接口按 overlay_index 取对应指数日线
+        data2 = client.get("/api/dashboard?months=12&etf_months=12&overlay_index=000001").json()
+        assert data2["overlay_index"] == "000001"
+        assert data2["etf"]["charts"][0]["index_code"] == "000001"
 
     def test_dashboard_endpoint_etf_date_range(self, client):
         data = client.get(

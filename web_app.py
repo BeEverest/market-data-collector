@@ -733,11 +733,13 @@ def api_derived_export(month: str | None = None):
 
 @app.get("/api/dashboard")
 def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None,
-                  etf_start: str | None = None, etf_end: str | None = None):
+                  etf_start: str | None = None, etf_end: str | None = None,
+                  overlay_index: str = "000001"):
     """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。
 
     months/etf_months 均为月份范围（0=全部），默认近一年；days 为兼容旧前端的别名。
     etf_start/etf_end 为 YYYY-MM-DD 精确日期区间，优先于 etf_months。
+    overlay_index 为汇金图上方叠加的指数代码，默认上证指数 000001。
     """
     cfg = _cfg()
     db = _require_db(cfg)
@@ -748,9 +750,21 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
 
     derived_df = storage.read_derived(db)
     _, macro_df = storage.read_macro(db, limit=None)
-    _, index_df = storage.read_index(db, code="000001", limit=None)
+    # 读取全部指数：宏观图5固定用上证指数(000001)，ETF 叠加指数由 overlay_index 指定
+    _, index_df = storage.read_index(db, limit=None)
     _, etf_df = storage.read_etf_with_changes(db, limit=None)
     etf_cfg = storage.get_etf_config(db, cfg.get("etf", {}))
+    overlay_index = str(overlay_index or "000001").strip().zfill(6)
+
+    # 可用叠加指数：从实际有数据的指数中生成 {code, name}，顺序为常用指数优先
+    index_options = []
+    if not index_df.empty and "指数代码" in index_df.columns:
+        for code, grp in index_df.groupby("指数代码", sort=False):
+            code = str(code).strip().zfill(6)
+            name = str(grp["指数名称"].iloc[0]) if "指数名称" in grp.columns else code
+            index_options.append({"code": code, "name": name})
+        order = {"000001": 0, "000300": 1, "000688": 2, "399006": 3}
+        index_options.sort(key=lambda x: (order.get(x["code"], 99), x["code"]))
 
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -758,9 +772,11 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "etf_months": etf_months,
         "etf_start": etf_start or "",
         "etf_end": etf_end or "",
+        "overlay_index": overlay_index,
+        "index_options": index_options,
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
-                                           etf_start, etf_end, index_df)},
+                                           etf_start, etf_end, index_df, overlay_index)},
     }
 
 

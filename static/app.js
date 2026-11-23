@@ -1717,10 +1717,21 @@ async function loadDashboard() {
     const months = $('dashboardMonths').value || '12';
     const etfMonths = $('dashboardEtfMonths').value || '12';
     const { start, end } = etfDateRange();
-    const qs = new URLSearchParams({ months, etf_months: etfMonths });
+    const overlayIndex = $('dashboardOverlayIndex')?.value || '000001';
+    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex });
     if (start) qs.set('etf_start', start);
     if (end) qs.set('etf_end', end);
     const res = await api('/api/dashboard?' + qs.toString());
+    // 叠加指数下拉：用接口返回的可用指数动态填充，保留当前选择
+    const opts = res.index_options || [];
+    const sel = $('dashboardOverlayIndex');
+    if (sel && opts.length) {
+      const cur = sel.value;
+      sel.innerHTML = opts.map(o => `<option value="${esc(o.code)}">${esc(o.name)}</option>`).join('');
+      const valid = opts.some(o => o.code === cur) ? cur
+        : (opts.some(o => o.code === res.overlay_index) ? res.overlay_index : opts[0].code);
+      sel.value = valid;
+    }
     const macro = (res.macro && res.macro.charts) || [];
     const etf = (res.etf && res.etf.charts) || [];
     dashboardData = res;
@@ -1729,7 +1740,9 @@ async function loadDashboard() {
     const etfNote = etf.filter(c => c.group !== 'huijin_detail')
       .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
     const etfRange = (start || end) ? ` · ETF ${start || '最早'}~${end || '最新'}` : '';
-    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${etfRange}`;
+    const overlayChart = etf.find(c => c.layout === 'etf_overlay');
+    const overlayNote = overlayChart ? ` · 叠加${(overlayChart.index_name || '').replace(/\s*\(点\)\s*$/, '')}` : '';
+    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange}`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
     flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
@@ -1760,6 +1773,7 @@ document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
 window.addEventListener('resize', resizeDashboardCharts);
 $('dashboardMonths').addEventListener('change', loadDashboard);
 $('dashboardEtfMonths').addEventListener('change', loadDashboard);
+$('dashboardOverlayIndex').addEventListener('change', loadDashboard);
 $('dashboardEtfStart').addEventListener('change', loadDashboard);
 $('dashboardEtfEnd').addEventListener('change', loadDashboard);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));

@@ -27,6 +27,7 @@ BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
 from collectors import collect_etf, collect_index, collect_macro
+from collectors.trade import collect_trade
 from collectors.etf import fetch_nav, get_trade_dates
 from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
@@ -292,6 +293,52 @@ def _collect_stat_records(monitor: Monitor, macro_df: pd.DataFrame,
     return records
 
 
+def collect_trade_raw(config: dict, monitor: Monitor, *, start_date=None, end_date=None,
+                      sources: list[str] | None = None) -> dict[str, pd.DataFrame]:
+    """采集交易原始数据（只落库、不计算）。返回 {exchange/margin/snapshot: DataFrame}。"""
+    fetch_cfg = config.get("fetch", {})
+    trade_cfg = config.get("trade", {})
+    raw = collect_trade(
+        sources=sources or trade_cfg.get("sources") or None,
+        start_date=start_date or trade_cfg.get("start_date") or None,
+        end_date=end_date or trade_cfg.get("end_date") or None,
+        monitor=monitor,
+        retries=fetch_cfg.get("retry", 3),
+        retry_interval=fetch_cfg.get("retry_interval_sec", 2),
+    )
+    return raw
+
+
+def _finish_trade(monitor: Monitor, raw: dict[str, pd.DataFrame], config: dict) -> dict[str, int]:
+    """把交易原始数据写入 3 张原始表（幂等 upsert），并记录采集统计。返回各表写入行数。"""
+    db_path = _db_path(config)
+    if not db_path:
+        logger.warning("[交易] 交易原始表需 SQLite 存储，文件模式跳过")
+        return {}
+    monitor.db_path = db_path
+    monitor.save()
+    written = {
+        "exchange": storage.upsert_trade_exchange(db_path, raw.get("exchange"), monitor.run_id),
+        "margin": storage.upsert_trade_margin(db_path, raw.get("margin"), monitor.run_id),
+        "snapshot": storage.upsert_trade_snapshot(db_path, raw.get("snapshot"), monitor.run_id),
+    }
+    # 采集统计：交易按原始源类别细分
+    stat_records = []
+    for source, df in raw.items():
+        if df is None or df.empty:
+            continue
+        stat_records.append({
+            "run_id": monitor.run_id, "run_type": monitor.run_type,
+            "run_date": monitor.run_date, "category": "交易",
+            "code": source, "name": source, "rows": int(len(df)),
+            "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+    storage.append_collection_stats(db_path, stat_records)
+    logger.info("[交易] 原始落库完成：交易所 %d / 两融 %d / 快照 %d 行（业务键幂等）",
+                written["exchange"], written["margin"], written["snapshot"])
+    return written
+
+
 def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
             config: dict, run_ts: str, index_df: pd.DataFrame | None = None) -> list[str]:
     """写入 SQLite 主存储；按配置决定是否自动生成文件快照。"""
@@ -527,6 +574,19 @@ def collect_interface(
     etf_base = _read_base("etf", config)
     index_base = _read_base("index", config)
 
+    if category == "trade":
+        # 交易为原始数据层：直接采原始表，不走 DataFrame 合并基底
+        monitor.db_path = db_path
+        raw = collect_trade_raw(config, monitor, start_date=start, end_date=end,
+                                sources=codes or None)
+        written = _finish_trade(monitor, raw, config)
+        failed = sum(1 for r in monitor.records if r["status"] == "failed")
+        summary = (f"交易原始采集完成（{scope}）：交易所 {written.get('exchange', 0)} 行 / "
+                   f"两融 {written.get('margin', 0)} 行 / 快照 {written.get('snapshot', 0)} 行，"
+                   f"接口失败 {failed} 次。计算请到「数据处理·交易」Tab 执行。")
+        logger.info(summary)
+        return summary
+
     added_macro = added_etf = added_index = 0
     if category == "macro":
         code_set = set(codes) if codes else None
@@ -606,6 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--macro-only", action="store_true", help="仅采集宏观数据")
     parser.add_argument("--etf-only", action="store_true", help="仅采集 ETF 数据")
     parser.add_argument("--index-only", action="store_true", help="仅采集指数数据（近一年）")
+    parser.add_argument("--trade-only", action="store_true", help="仅采集交易原始数据（交易所/两融/快照）")
     parser.add_argument(
         "--output-format",
         choices=["csv", "excel", "both"],
@@ -615,7 +676,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--monitor-report", action="store_true", help="仅生成运维监控报告，不采集数据")
     parser.add_argument("--retry-failed", action="store_true", help="重跑最近批次的失败接口并合并结果")
     parser.add_argument("--collect-interface", action="store_true", help="按接口/指标+时间范围精确采集")
-    parser.add_argument("--category", choices=["macro", "etf", "index"], help="精确采集类别")
+    parser.add_argument("--category", choices=["macro", "etf", "index", "trade"], help="精确采集类别")
     parser.add_argument("--codes", help="指标代码/基金代码，逗号分隔；留空为该类别全部")
     parser.add_argument("--start", help="起始时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
     parser.add_argument("--end", help="结束时间（全量/精确采集通用）：宏观 YYYY-MM / ETF、指数 YYYY-MM-DD")
@@ -674,19 +735,28 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.collect_interface:
         if not args.category:
-            logger.error("精确采集需指定 --category macro|etf|index")
+            logger.error("精确采集需指定 --category macro|etf|index|trade")
             return 2
         codes = [c.strip() for c in (args.codes or "").split(",") if c.strip()]
         collect_interface(config, args.category, codes, args.start, args.end)
         return 0
 
     monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path, db_path=db_path)
+    if args.trade_only:
+        raw = collect_trade_raw(config, monitor, start_date=args.start, end_date=args.end)
+        _finish_trade(monitor, raw, config)
+        return 0
     macro_df, etf_df, index_df = _collect(
         config, monitor, macro_only=args.macro_only,
         etf_only=args.etf_only, index_only=args.index_only,
         start_date=args.start, end_date=args.end,
     )
     _finish(monitor, macro_df, etf_df, config, monitor.run_id, index_df)
+    # 全量采集（非 only）时附带采集交易原始数据
+    if not (args.macro_only or args.etf_only or args.index_only):
+        trade_monitor = Monitor(BASE_DIR, run_type="full", history_path=history_path, db_path=db_path)
+        trade_raw = collect_trade_raw(config, trade_monitor, start_date=args.start, end_date=args.end)
+        _finish_trade(trade_monitor, trade_raw, config)
     return 0
 
 

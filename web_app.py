@@ -36,9 +36,10 @@ sys.path.insert(0, str(BASE_DIR))
 
 from main import (
     BASE_DIR as MAIN_BASE, _collect, _finish, _merge_patch,
-    collect_interface, load_config,
+    collect_interface, load_config, collect_trade_raw, _finish_trade,
 )
 import storage
+from processors import trade as trade_calc
 from exporter import export_etf, export_full, export_index, export_macro, export_monitor
 from monitor import Monitor, format_failure_detail
 from collectors.macro import catalog as macro_catalog
@@ -47,7 +48,7 @@ from collectors.index import catalog as index_catalog
 from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
 from processors.dashboard import (
-    build_etf_charts, build_etf_daily_detail, build_macro_charts,
+    build_etf_charts, build_etf_daily_detail, build_macro_charts, build_trade_charts,
 )
 from processors.etf_change import compute_etf_changes
 
@@ -313,6 +314,37 @@ def _recompute_derived(config: dict, trigger: str = "手动",
     return n
 
 
+def _recompute_trade(config: dict, trigger: str = "手动", run_id: str | None = None,
+                     trade_date: str | None = None, full: bool = False) -> int:
+    """从交易原始表重算 10 指标写入 trade_observation。
+
+    - run_id 给定（定时调度）：增量重算本次写入的交易日
+    - trade_date 指定（手动按日）：只重算该交易日（upsert 覆盖）
+    - 全参省略：全量重算并替换整表
+    """
+    db = _db_path(config)
+    if not db:
+        logger.warning("【交易计算】未配置 SQLite，跳过")
+        return 0
+    if trade_date:
+        from datetime import datetime as _dt
+        ex = storage.read_trade_raw(db, "exchange", trade_date, trade_date)
+        mg = storage.read_trade_raw(db, "margin", trade_date, trade_date)
+        snap = storage.read_trade_raw(db, "snapshot", trade_date, trade_date)
+        rec = trade_calc.compute_trade(
+            ex.iloc[0].to_dict() if not ex.empty else None,
+            mg.iloc[0].to_dict() if not mg.empty else None,
+            snap, trade_calc._load_policy(config), trade_date,
+        )
+        rec["computed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
+        n = storage.upsert_trade(db, pd.DataFrame([rec]), "")
+        logger.info("【交易计算】%s按日重算 %s：%d 行", trigger, trade_date, n)
+        return n
+    n = trade_calc.recompute_trade(db, config=config, run_id=run_id, full=full)
+    logger.info("【交易计算】%s重算完成：%d 个交易日", trigger, n)
+    return n
+
+
 def _do_collect(macro_only: bool = False, etf_only: bool = False,
                 index_only: bool = False, start: str | None = None,
                 end: str | None = None, trigger: str = "Web") -> str:
@@ -351,6 +383,36 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
             logger.info("%s步骤 6/6 派生指标定时增量重算完成：%d 行", tag, n)
         except Exception as exc:
             logger.warning("%s派生指标定时增量重算失败：%s", tag, exc)
+        # 交易原始数据随定时任务采集并重算（仅全量触发时；四类数据并行接入）
+        if not (macro_only or etf_only or index_only):
+            try:
+                tmon = Monitor(MAIN_BASE, run_type="scheduled", history_path=_history_path(config),
+                               db_path=db_path)
+                traw = collect_trade_raw(config, tmon)
+                _finish_trade(tmon, traw, config)
+                tn = _recompute_trade(config, trigger="定时调度", run_id=tmon.run_id, full=True)
+                logger.info("%s步骤 6/6 交易原始采集+计算完成：%d 个交易日", tag, tn)
+            except Exception as exc:
+                logger.warning("%s交易采集/计算失败：%s", tag, exc)
+    return summary
+
+
+def _do_collect_trade(sources: list[str] | None = None, start: str | None = None,
+                      end: str | None = None, trigger: str = "Web") -> str:
+    """采集交易原始数据（只落库），供 Web 后台任务调用。"""
+    config = _cfg()
+    db_path = _db_path(config)
+    monitor = Monitor(MAIN_BASE, run_type="interface", history_path=_history_path(config),
+                      db_path=db_path)
+    tag = f"【{trigger}】"
+    logger.info("%s交易原始采集开始：源=%s | 区间=%s~%s", tag,
+                sources or "全部", start or "默认", end or "默认")
+    raw = collect_trade_raw(config, monitor, start_date=start, end_date=end, sources=sources)
+    written = _finish_trade(monitor, raw, config)
+    failed = sum(1 for r in monitor.records if r["status"] == "failed")
+    summary = (f"交易原始落库：交易所 {written.get('exchange', 0)} / 两融 {written.get('margin', 0)} / "
+               f"快照 {written.get('snapshot', 0)} 行，接口失败 {failed} 次。请到数据处理·交易 Tab 计算。")
+    logger.info("%s交易采集完成：%s", tag, summary)
     return summary
 
 
@@ -526,6 +588,8 @@ def api_status():
     failed_count = 0
     today_calls = 0
     today_new = {}
+    trade_rows = 0
+    trade_raw_rows = {}
     if db_path:
         counts = storage.status_counts(db_path)
         last_run = counts.get("last_run") or {}
@@ -536,6 +600,8 @@ def api_status():
         etf_rows, etf_codes = counts["etf_rows"], counts["etf_codes"]
         index_rows, index_codes = counts["index_rows"], counts["index_codes"]
         today_new = counts.get("today_new", {})
+        trade_rows = counts.get("trade_rows", 0)
+        trade_raw_rows = counts.get("trade_raw_rows", {})
     else:
         history = Monitor.load(_history_path(cfg))
         if not history.empty:
@@ -564,6 +630,8 @@ def api_status():
         "etf_codes": etf_codes,
         "index_rows": index_rows,
         "index_codes": index_codes,
+        "trade_rows": trade_rows,
+        "trade_raw_rows": trade_raw_rows,
         "today_new": today_new,
         "scheduler": {
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
@@ -779,10 +847,71 @@ def api_derived_export(month: str | None = None):
     )
 
 
+@app.get("/api/trade/raw")
+def api_trade_raw(table: str = "exchange", start: str | None = None,
+                  end: str | None = None, limit: int = 200):
+    """采集系统·交易预览 Tab：预览 3 张原始表的落库数据（含原始单位）。"""
+    cfg = _cfg()
+    db = _require_db(cfg)
+    if table not in ("exchange", "margin", "snapshot"):
+        raise HTTPException(status_code=400, detail="table 应为 exchange/margin/snapshot")
+    df = storage.read_trade_raw(db, table, start, end)
+    total = len(df)
+    return {"table": table, "total": total,
+            "rows": _frame_to_records(df.head(limit), limit=limit)}
+
+
+@app.get("/api/trade/latest")
+def api_trade_latest():
+    """数据处理·交易 Tab：10 指标最新值 + 原始数据覆盖概况 + 指标定义。"""
+    cfg = _cfg()
+    db = _require_db(cfg)
+    return trade_calc.latest_snapshot(db)
+
+
+@app.get("/api/trade/data")
+def api_trade_data(start: str | None = None, end: str | None = None):
+    """交易计算宽表数据（供看板与导出），按交易日升序。"""
+    cfg = _cfg()
+    db = _require_db(cfg)
+    df = storage.read_trade(db, start, end)
+    return {"total": len(df), "rows": _frame_to_records(df)}
+
+
+@app.post("/api/trade/recompute")
+def api_trade_recompute(payload: dict | None = None):
+    """手动触发交易指标重算；body 可选 {trade_date:'YYYY-MM-DD', full:bool}。"""
+    payload = payload or {}
+    trade_date = (payload.get("trade_date") or "").strip() or None
+    full = bool(payload.get("full", False))
+    if trade_date:
+        try:
+            datetime.strptime(trade_date[:10], "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="trade_date 格式应为 YYYY-MM-DD")
+    n = _recompute_trade(_cfg(), trigger="看板手动", trade_date=trade_date, full=full)
+    return {"ok": True, "rows": n, "trade_date": trade_date, "full": full}
+
+
+@app.post("/api/collect/trade")
+def api_collect_trade(payload: dict | None = None):
+    """精确采集交易原始数据（Web 后台任务）。body 可选 {sources:[], start, end}。"""
+    payload = payload or {}
+    sources = payload.get("sources") or None
+    if isinstance(sources, str):
+        sources = [s.strip() for s in sources.split(",") if s.strip()]
+    if sources:
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot")]
+    start = (payload.get("start") or "").strip() or None
+    end = (payload.get("end") or "").strip() or None
+    job_id = _submit("collect", lambda: _do_collect_trade(sources, start, end))
+    return {"job_id": job_id}
+
+
 @app.get("/api/dashboard")
 def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None,
                   etf_start: str | None = None, etf_end: str | None = None,
-                  overlay_index: str = "000001"):
+                  overlay_index: str = "000001", trade_days: int = 60):
     """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。
 
     months/etf_months 均为月份范围（0=全部），默认近一年；days 为兼容旧前端的别名。
@@ -825,6 +954,7 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
                                            etf_start, etf_end, index_df, overlay_index)},
+        "trade": {"charts": build_trade_charts(storage.read_trade(db), trade_days)},
     }
 
 
@@ -1046,10 +1176,29 @@ def api_catalog():
         item.setdefault("first_date", "")
         index_items.append(item)
 
+    # 交易：三类原始数据源
+    from collectors.trade import catalog as trade_source_catalog
+    trade_items = []
+    for it in trade_source_catalog():
+        item = dict(it)
+        item.setdefault("rows", 0)
+        item.setdefault("last_date", "")
+        item.setdefault("first_date", "")
+        try:
+            dates = storage.trade_raw_dates(_db_path(cfg), it["code"])
+            if dates:
+                item["rows"] = len(dates) if it["code"] != "snapshot" else "—"
+                item["first_date"] = dates[0]
+                item["last_date"] = dates[-1]
+        except Exception:
+            pass
+        trade_items.append(item)
+
     return {
         "macro": macro_items,
         "etf": etf_items,
         "index": index_items,
+        "trade": trade_items,
         "defaults": {
             "macro_start": cfg.get("macro", {}).get("start_date", ""),
             "etf_start": cfg.get("etf", {}).get("start_date", ""),
@@ -1304,8 +1453,17 @@ def api_index_config_set(payload: dict):
 def api_collect_interface(payload: dict):
     """按类别 + 指标/基金/指数代码 + 时间范围精确采集。"""
     category = payload.get("category")
+    if category == "trade":
+        sources = payload.get("codes") or payload.get("sources") or []
+        if isinstance(sources, str):
+            sources = [s.strip() for s in sources.split(",") if s.strip()]
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot")]
+        start = (payload.get("start") or "").strip() or None
+        end = (payload.get("end") or "").strip() or None
+        job_id = _submit("interface", lambda: _do_collect_trade(sources or None, start, end))
+        return {"job_id": job_id}
     if category not in ("macro", "etf", "index"):
-        raise HTTPException(status_code=400, detail="category 应为 macro、etf 或 index")
+        raise HTTPException(status_code=400, detail="category 应为 macro、etf、index 或 trade")
     raw_codes = payload.get("codes") or []
     if isinstance(raw_codes, str):
         raw_codes = [c.strip() for c in raw_codes.split(",") if c.strip()]

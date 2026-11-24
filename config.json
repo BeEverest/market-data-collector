@@ -178,6 +178,30 @@
     "end_date": "",
     "_date_help": "日频区间 YYYY-MM-DD；两者留空时取最近一个已结束交易日；仅单边留空时按 lookback_days 自然日补齐"
   },
+  "trade": {
+    "sources": [
+      "exchange",
+      "margin",
+      "snapshot"
+    ],
+    "start_date": "",
+    "end_date": "",
+    "_sources_help": "交易原始数据源：exchange=沪深交易所概况 / margin=两融账户 / snapshot=全A个股快照（派生集中度与涨跌家数）",
+    "_date_help": "交易日区间 YYYY-MM-DD；留空时默认最近一个已结束交易日；快照仅当日不可回溯"
+  },
+  "trade_policy": {
+    "margin_ratio": [
+      {
+        "effective": "2015-11-01",
+        "value": 100.0
+      },
+      {
+        "effective": "2023-08-28",
+        "value": 80.0
+      }
+    ],
+    "_margin_ratio_help": "融资保证金比例政策阶梯：生效日->比例(%)，按交易日匹配；政策调整时人工追加"
+  },
   "storage": {
     "backend": "sqlite",
     "db_path": "output/market_data.db",

@@ -525,3 +525,67 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
         },
         "range": scope,
     }
+
+
+# ---------------- 交易看板（2 图） ----------------
+TRADE_CHART_SPECS = [
+    {
+        "id": "trade_market", "title": "图1：市场成交与集中度",
+        "note": "全A成交额（左轴亿元）、成交集中度前5%（右轴%）、涨跌家数（第三轴家）",
+        "y_axes": [
+            {"name": "成交额 (亿元)", "position": "left"},
+            {"name": "集中度 (%)", "position": "right", "offset": 0},
+            {"name": "涨跌家数 (家)", "position": "right", "offset": 52},
+        ],
+    },
+    {
+        "id": "trade_margin", "title": "图2：两融核心指标",
+        "note": "两融余额（左轴亿元）；维持担保比例/融资保证金比例/占流通市值比/融资买入额占比（右轴%）；有负债投资者数（第三轴人）",
+        "y_axes": [
+            {"name": "亿元 / 人", "position": "left"},
+            {"name": "比例 (%)", "position": "right", "offset": 0},
+            {"name": "两融余额 (亿元)", "position": "right", "offset": 52},
+        ],
+    },
+]
+
+
+def build_trade_charts(trade_df: pd.DataFrame, days: int | None = 60) -> list[dict]:
+    """装配交易 2 图；days 控制展示最近 N 个交易日（None/0 为全部）。"""
+    if trade_df is None or trade_df.empty:
+        return [_chart(spec, []) for spec in TRADE_CHART_SPECS]
+
+    df = trade_df.sort_values("trade_date").reset_index(drop=True)
+    if days and days > 0 and len(df) > days:
+        df = df.tail(days).reset_index(drop=True)
+
+    def pairs(col: str) -> list[list]:
+        out = []
+        for _, r in df.iterrows():
+            v = r.get(col)
+            if v is None or pd.isna(v):
+                continue
+            out.append([str(r["trade_date"]), float(v)])
+        return out
+
+    def series(name: str, col: str, axis: int, chart_type: str = "line"):
+        return {"name": name, "data": pairs(col),
+                "y_axis_index": axis, "type": chart_type}
+
+    grouped = {
+        "trade_market": [
+            series("全A成交额", "total_amount", 0, "bar"),
+            series("成交集中度(前5%)", "concentration5", 1),
+            series("上涨家数", "up_count", 2),
+            series("下跌家数", "down_count", 2),
+        ],
+        "trade_margin": [
+            series("平均维持担保比例", "margin_ratio", 1),
+            series("融资保证金比例", "margin_financing_ratio", 1),
+            series("融资余额占流通市值比", "financing_to_float_mv", 1),
+            series("融资买入额占比", "financing_buy_pct", 1),
+            series("两融余额", "margin_balance", 0),
+            series("有负债投资者数", "debt_investors", 2),
+        ],
+    }
+    return [_chart(spec, grouped[spec["id"]]) for spec in TRADE_CHART_SPECS]

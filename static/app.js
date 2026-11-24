@@ -1246,6 +1246,7 @@ function switchModule(name) {
   $('collectModule').hidden = name !== 'collect';
   $('derivedModule').hidden = name !== 'derived';
   $('dashboardModule').hidden = name !== 'dashboard';
+  if (name === 'collect') { loadTradeRaw(); }
   if (name === 'derived') { loadDerived(); loadDerivedScheduler(); }
   if (name === 'dashboard') {
     loadDashboard().then(() => setTimeout(resizeDashboardCharts, 60));
@@ -1313,7 +1314,9 @@ function switchDerivedSubtab(name) {
     b.classList.toggle('active', b.dataset.subtab === name));
   $('derivedCalcPanel').hidden = name !== 'calc';
   $('etfCalcPanel').hidden = name !== 'etf';
+  $('tradeCalcPanel').hidden = name !== 'trade';
   if (name === 'etf') loadEtfCalc();
+  if (name === 'trade') loadTradeCalc();
 }
 document.querySelectorAll('#derivedSubTabs .tab').forEach(b =>
   b.addEventListener('click', () => switchDerivedSubtab(b.dataset.subtab)));
@@ -1410,6 +1413,81 @@ $('etfCalcExportBtn').addEventListener('click', () => {
   a.click();
   URL.revokeObjectURL(a.href);
 });
+
+/* ---------- 数据处理 · 交易计算 Tab（计算层） ---------- */
+const TRADE_LABELS = {
+  total_amount: '全A成交额', concentration5: '成交集中度(前5%)', margin_ratio: '平均维持担保比例',
+  margin_financing_ratio: '融资保证金比例', margin_balance: '两融余额',
+  financing_balance: '融资余额', securities_balance: '融券余额',
+  financing_to_float_mv: '融资余额占流通市值比', financing_buy_pct: '融资买入额占比',
+  debt_investors: '有负债投资者数', up_count: '上涨家数', down_count: '下跌家数', flat_count: '平盘家数',
+};
+
+async function loadTradeCalc() {
+  try {
+    const res = await api('/api/trade/latest');
+    const latest = res.latest || {};
+    const cov = res.coverage || {};
+    $('tradeCoverage').textContent = `计算 ${cov.trade_days} 个交易日（${cov.first_date || '—'} ~ ${cov.last_date || '—'}）· 原始：交易所 ${cov.raw_exchange} / 两融 ${cov.raw_margin} / 快照 ${cov.raw_snapshot} 行`;
+    $('tradeLatestMeta').textContent = `最新交易日 ${latest.trade_date || '—'} · 来源 ${latest.source_set || '—'}`;
+    const defs = res.indicators || [];
+    const rows = defs.map(d => {
+      const v = latest[d.code];
+      const shown = (v === null || v === undefined) ? '—'
+        : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
+      return `<tr><td>${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.unit || '')}</td><td class="num">${shown}</td><td class="formula-cell">${esc(d.formula || '')}</td></tr>`;
+    }).join('');
+    $('tradeLatestTable').innerHTML = rows
+      ? `<table><thead><tr><th>代码</th><th>指标</th><th>单位</th><th>最新值</th><th>计算口径</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<div class="empty">暂无计算数据，请先采集交易原始数据并执行重算</div>';
+  } catch (e) {
+    $('tradeLatestTable').innerHTML = `<div class="empty">交易数据加载失败：${esc(e.message)}</div>`;
+    flashLog(`交易数据加载失败：${e.message}`, 'ERROR');
+  }
+}
+
+async function recomputeTrade(payload, label) {
+  try {
+    flashLog(`交易计算开始：${label}`, 'INFO');
+    const res = await api('/api/trade/recompute', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    });
+    flashLog(`交易计算完成：${label}，写入 ${res.rows} 行`, 'INFO');
+    $('tradeCalcBadge').textContent = `已计算 ${res.rows} 交易日`;
+    loadTradeCalc();
+  } catch (e) {
+    flashLog(`交易计算失败：${e.message}`, 'ERROR');
+    alert('交易计算失败：' + e.message);
+  }
+}
+$('tradeRecomputeAllBtn')?.addEventListener('click', () => {
+  if (!confirm('全量重算将替换整张交易计算表，确认继续？')) return;
+  recomputeTrade({ full: true }, '全部交易日');
+});
+$('tradeRecalcDateBtn')?.addEventListener('click', () => {
+  const d = $('tradeRecalcDate').value.trim();
+  if (!d) { alert('请选择交易日'); return; }
+  recomputeTrade({ trade_date: d }, d);
+});
+
+/* ---------- 采集系统 · 交易原始数据预览 ---------- */
+async function loadTradeRaw() {
+  try {
+    const table = $('tradeRawTable').value;
+    const start = $('tradeRawStart').value.trim();
+    const end = $('tradeRawEnd').value.trim();
+    const qs = new URLSearchParams({ table });
+    if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
+    const res = await api('/api/trade/raw?' + qs.toString());
+    $('tradeRawMeta').textContent = `原始表 ${table} · 共 ${res.total} 行${res.total > 200 ? '（显示前 200 行）' : ''}`;
+    renderTable($('tradeRawTableWrap'), res.rows || []);
+  } catch (e) {
+    $('tradeRawTableWrap').innerHTML = `<div class="empty">原始数据加载失败：${esc(e.message)}</div>`;
+  }
+}
+$('tradeRawTable')?.addEventListener('change', loadTradeRaw);
+$('tradeRawRefreshBtn')?.addEventListener('click', loadTradeRaw);
 
 async function recomputeDerived(payload, label) {
   try {
@@ -2067,7 +2145,8 @@ async function loadDashboard() {
     const etfMonths = etfMonthsValue();
     const { start, end } = etfDateRange();
     const overlayIndex = $('dashboardOverlayIndex')?.value || '000001';
-    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex });
+    const tradeDays = $('dashboardTradeDays')?.value || '60';
+    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex, trade_days: tradeDays });
     if (start) qs.set('etf_start', start);
     if (end) qs.set('etf_end', end);
     const res = await api('/api/dashboard?' + qs.toString());
@@ -2103,7 +2182,8 @@ async function loadDashboard() {
     const etfRange = (shownStart || shownEnd) ? ` · ETF ${shownStart || '最早'}~${shownEnd || '最新'}` : '';
     const overlayChart = etf.find(c => c.layout === 'etf_overlay');
     const overlayNote = overlayChart ? ` · 叠加${(overlayChart.index_name || '').replace(/\s*\(点\)\s*$/, '')}` : '';
-    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange}`;
+    const trade = (res.trade && res.trade.charts) || [];
+    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange} · 交易 ${trade.length} 图`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
     flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
@@ -2114,6 +2194,8 @@ function renderDashboardTab() {
   if (!dashboardData) return;
   if (dashboardTab === 'macro') {
     renderDashboardCharts('macroCharts', (dashboardData.macro && dashboardData.macro.charts) || []);
+  } else if (dashboardTab === 'trade') {
+    renderDashboardCharts('tradeCharts', (dashboardData.trade && dashboardData.trade.charts) || []);
   } else {
     renderDashboardCharts('etfCharts', (dashboardData.etf && dashboardData.etf.charts) || []);
   }
@@ -2127,6 +2209,7 @@ document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
     dashboardTab = tab.dataset.tab;
     $('dashboardMacroPanel').hidden = dashboardTab !== 'macro';
     $('dashboardEtfPanel').hidden = dashboardTab !== 'etf';
+    $('dashboardTradePanel').hidden = dashboardTab !== 'trade';
     renderDashboardTab();
   });
 });
@@ -2139,6 +2222,7 @@ $('dashboardOverlayIndex').addEventListener('change', loadDashboard);
 $('dashboardEtfStart').addEventListener('change', onEtfDateChange);
 $('dashboardEtfEnd').addEventListener('change', onEtfDateChange);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
+$('dashboardTradeDays')?.addEventListener('change', loadDashboard);
 
 /* ---------- 定时刷新 ---------- */
 async function refresh() {
@@ -2159,6 +2243,7 @@ async function init() {
   monitorDefaultRange();
   await loadData();
   await loadDerived();
+  loadTradeRaw();  // 采集系统·交易原始数据预览（默认模块）
   await refresh();
   startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 5000 行
 }

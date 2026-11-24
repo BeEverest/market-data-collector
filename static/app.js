@@ -88,12 +88,39 @@ async function loadStatus() {
     rb.className = 'pill ' + (s.running ? 'warn' : 'ghost');
     setButtons(!s.running);
 
-    const last = s.last_run;
+    // 字段兼容：SQLite 模式返回 run_* 前缀，旧文件模式返回 id/date/time/type
+    const last = s.last_run || {};
+    const lastId = last.id || last.run_id || '';
+    const lastDate = last.date || last.run_date || '';
+    const lastTime = last.time || last.run_time || '';
+    const lastType = last.type || last.run_type || '';
+    // 最近一次运行的各项指标采集数量（来自 collection_stat）
+    const lc = s.last_counts || {};
+    const cntParts = [];
+    if (lc['宏观']) cntParts.push(`宏观 ${lc['宏观'].rows} 行`);
+    if (lc['ETF']) cntParts.push(`ETF ${lc['ETF'].rows} 行`);
+    if (lc['指数']) cntParts.push(`指数 ${lc['指数'].rows} 行`);
+    const cntText = cntParts.length ? '本次采集：' + cntParts.join(' · ') : '';
+    const cntTitle = cntParts.map(k => k).join('；');
+    const lastSub = lastId
+      ? [lastTime ? lastTime.slice(11) : '', lastType, cntText].filter(Boolean).join(' · ')
+      : '尚无运行记录';
+    // 当日各类别新增采集行数（来自 collection_stat，run_date=今天）
+    const tn = s.today_new || {};
+    // 三张数据卡统一结构：大数字=采集总数，下方两个小格=指标数 / 当日新增
+    const statCard = (label, total, unit, metricLabel, metricVal, newRows) => ({
+      label, value: total,
+      metrics: [
+        { k: metricLabel, v: `${metricVal} ${unit}` },
+        { k: '当日新增', v: `+${newRows} 行` },
+      ],
+      alert: false,
+    });
     const stats = [
-      { label: '最近采集', value: last.date || '—', sub: last.id ? `${last.time.slice(11)} · ${last.type}` : '尚无运行记录', alert: false },
-      { label: '宏观数据', value: s.macro_rows, sub: `${s.macro_indicators} 个指标 · 月度`, alert: false },
-      { label: 'ETF 日频', value: s.etf_rows, sub: `${s.etf_codes} 只 ETF · 逐交易日`, alert: false },
-      { label: '指数日线', value: s.index_rows || 0, sub: `${s.index_codes || 0} 个指数 · 近一年`, alert: false },
+      { label: '最近采集', value: lastDate || '—', sub: lastSub, title: cntTitle || '', alert: false },
+      statCard('宏观数据', s.macro_rows, '指标', '指标数', s.macro_indicators || 0, tn['宏观'] || 0),
+      statCard('ETF 日频', s.etf_rows, '只', '标的数', s.etf_codes || 0, tn['ETF'] || 0),
+      statCard('指数日线', s.index_rows || 0, '个', '指数数', s.index_codes || 0, tn['指数'] || 0),
       { label: '今日接口调用', value: s.today_calls, sub: '按接口逐次记录', alert: false },
       { label: '历史失败累计', value: s.failed_total, sub: s.failed_total ? '存在失败，请查看监控看板' : '全部成功', alert: s.failed_total > 0 },
     ];
@@ -101,7 +128,9 @@ async function loadStatus() {
       <div class="stat ${x.alert ? 'alert' : ''}">
         <div class="stat-label">${x.label}</div>
         <div class="stat-value">${x.value}</div>
-        <div class="stat-sub">${x.sub}</div>
+        ${x.metrics
+          ? `<div class="stat-metrics">${x.metrics.map(m => `<div class="metric"><span class="metric-k">${m.k}</span><span class="metric-v">${m.v}</span></div>`).join('')}</div>`
+          : `<div class="stat-sub"${x.title ? ` title="${x.title}"` : ''}>${x.sub}</div>`}
       </div>`).join('');
   } catch (e) { console.error(e); }
 }
@@ -1344,6 +1373,22 @@ async function loadEtfCalc() {
       ? `<table><thead><tr><th>交易日期</th><th>总份额变化(亿份)</th><th>累计份额变化(亿份)</th><th>总申赎净流入(亿元)</th><th>ETF数</th></tr></thead>
          <tbody>${body}</tbody></table>`
       : '<div class="empty">该范围暂无汇金 ETF 数据</div>';
+
+    // 汇金维度 · 每个交易日总份额（存量口径），与看板共用渲染逻辑
+    const sharesTotalBox = $('etfCalcSharesTotal');
+    const sharesTableBox = $('etfCalcSharesTable');
+    if (sharesTotalBox && sharesTableBox) {
+      const sRange = { months };
+      if (start) sRange.start = start;
+      if (end) sRange.end = end;
+      try {
+        const sQs = new URLSearchParams({ ...sRange, view: 'total' });
+        const sRes = await api('/api/dashboard/etf-daily?' + sQs.toString());
+        renderEtfSharesBlock(sharesTotalBox, sharesTableBox, sRes, sRange);
+      } catch (e2) {
+        sharesTableBox.innerHTML = `<div class="empty">总份额加载失败：${esc(e2.message || e2)}</div>`;
+      }
+    }
   } catch (e) {
     $('etfCalcTable').innerHTML = `<div class="empty">ETF 计算加载失败：${esc(e.message)}</div>`;
   }
@@ -1415,14 +1460,87 @@ let dashboardTab = 'macro';
 let dashboardData = null;
 const etfDetailState = { code: '', page: 1, start: '', end: '' };  // 当前展开的 ETF 每日明细
 
-/* ETF 维度自定义日期区间（YYYY-MM-DD），任一非空即优先于快捷月份范围 */
+/* ETF 维度范围联动：
+   - 下拉为数字（近半年/近1年/近3年/近5年/全部）= 快捷模式，etf_months 生效，
+     日期控件作为「实际展示区间」的镜像回填，不反向覆盖快捷范围；
+   - 下拉为 custom = 自定义模式，etf_start/etf_end 生效，etf_months 传占位整数
+     （后端 int(etf_months)，不能直接传 'custom'）。 */
+function etfIsCustom() {
+  return $('dashboardEtfMonths')?.value === 'custom';
+}
+function etfMonthsValue() {
+  const v = $('dashboardEtfMonths')?.value || '12';
+  return v === 'custom' ? '12' : v;  // 自定义模式传占位值，后端以 start/end 为准
+}
 function etfDateRange() {
+  // 快捷模式下忽略日期镜像，避免回填的日期反向覆盖 etf_months
+  if (!etfIsCustom()) return { start: '', end: '' };
   return {
     start: ($('dashboardEtfStart')?.value || '').trim(),
     end: ($('dashboardEtfEnd')?.value || '').trim(),
   };
 }
 const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
+
+/* 根据当前 ETF 图表数据反推实际展示起止交易日，用于把快捷范围回填到日期控件。
+   月份模式后端只给到起始月，这里从序列数据取真实首末交易日，保证联动后日期精确。 */
+function etfResolvedRange(res = null) {
+  const charts = ((res || dashboardData)?.etf?.charts) || [];
+  const dates = [];
+  charts.forEach(c => (c.series || []).forEach(s => (s.data || []).forEach(p => {
+    const d = String(p[0] || '').slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) dates.push(d);
+  })));
+  if (!dates.length) return { start: '', end: '' };
+  dates.sort();
+  return { start: dates[0], end: dates[dates.length - 1] };
+}
+
+/* 选择快捷范围：非自定义时清空日期并重载，加载后用实际区间回填；
+   选「自定义」时以当前展示区间为初始日期，便于在此基础上微调。 */
+function applyEtfPreset() {
+  const v = $('dashboardEtfMonths').value;
+  if (v === 'custom') {
+    const r = etfResolvedRange();
+    $('dashboardEtfStart').value = r.start;
+    $('dashboardEtfEnd').value = r.end;
+  } else {
+    $('dashboardEtfStart').value = '';
+    $('dashboardEtfEnd').value = '';
+  }
+  loadDashboard();
+}
+
+/* 快捷范围按钮状态：与隐藏下拉 etfMonths 同步高亮（custom/全部时无按钮高亮） */
+function syncEtfRangeBtns() {
+  const v = $('dashboardEtfMonths')?.value || '12';
+  document.querySelectorAll('#dashboardEtfRangeBtns .etf-range-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.months === v);
+  });
+}
+
+/* 点击快捷范围按钮：写入隐藏下拉并沿用既有联动加载 */
+function onEtfRangeBtnClick(ev) {
+  const btn = ev.target.closest('.etf-range-btn');
+  if (!btn) return;
+  const sel = $('dashboardEtfMonths');
+  if (sel) sel.value = btn.dataset.months;
+  applyEtfPreset();
+}
+
+/* 手动改日期：自动切到自定义模式再刷新；两个日期都清空则回到默认近1年 */
+function onEtfDateChange() {
+  const s = $('dashboardEtfStart').value.trim();
+  const e = $('dashboardEtfEnd').value.trim();
+  const sel = $('dashboardEtfMonths');
+  if (!s && !e) {
+    if (sel) sel.value = '12';
+  } else if (sel) {
+    sel.value = 'custom';
+  }
+  syncEtfRangeBtns();
+  loadDashboard();
+}
 
 function disposeDashboardCharts(containerId) {
   (dashboardInstances[containerId] || []).forEach(x => {
@@ -1583,6 +1701,8 @@ function renderDashboardCharts(containerId, charts) {
     return;
   }
   el.innerHTML = charts.map(c => {
+    // 每日总份额变化累计已并入「每个交易日总份额」卡片，不再单独成卡
+    if (c.id === 'etf_huijin_cumulative') return '';
     // 汇金净流入图：独立合计数字卡片（合计申赎净流入 / 份额变化）
     const totalCard = (c.layout === 'etf_rank' && c.total_cap_change != null) ? `
       <div class="etf-total-cards">
@@ -1617,6 +1737,15 @@ function renderDashboardCharts(containerId, charts) {
       </div>
       <div class="etf-daily-total" id="etfDailyTotal"></div>
       <div class="table-wrap" id="etfDailyTable"><div class="empty">加载中…</div></div>
+    </div>
+    <div class="chart-card chart-card-wide etf-daily-card" id="etfSharesCard">
+      <div class="chart-head">
+        <h4>汇金维度 · 每个交易日总份额（含累计变化）</h4>
+        <span>柱子为每日份额存量合计、折线为累计份额变化 · 点击柱子展开当日各 ETF 份额明细</span>
+      </div>
+      <div class="chart-box chart-box-cum" id="etfSharesCumChart"><div class="empty">曲线加载中…</div></div>
+      <div class="etf-daily-total" id="etfSharesTotal"><div class="empty">汇总加载中…</div></div>
+      <div class="table-wrap" id="etfSharesTable"><div class="empty">加载中…</div></div>
     </div>` : ''}`;
   }).join('');
   charts.forEach(c => {
@@ -1642,6 +1771,7 @@ function renderDashboardCharts(containerId, charts) {
     }
   });
   if (el.querySelector('#etfDailyCard')) loadEtfDailyDetail();
+  if (el.querySelector('#etfSharesCard')) loadEtfSharesDetail();
 }
 
 /* 汇金维度：按天汇总明细 + 区间合计 */
@@ -1654,7 +1784,7 @@ async function loadEtfDailyDetail() {
   const tableBox = document.getElementById('etfDailyTable');
   const totalBox = document.getElementById('etfDailyTotal');
   if (!tableBox || !totalBox) return;
-  const months = $('dashboardEtfMonths')?.value || '12';
+  const months = etfMonthsValue();
   const { start, end } = etfDateRange();
   try {
     const qs = new URLSearchParams({ months });
@@ -1704,7 +1834,7 @@ async function toggleEtfDayDetail(date) {
   const cell = detailRow.querySelector('td');
   cell.innerHTML = '<div class="empty">加载当日明细…</div>';
   try {
-    const months = $('dashboardEtfMonths')?.value || '12';
+    const months = etfMonthsValue();
     const { start, end } = etfDateRange();
     const qs = new URLSearchParams({ months, date });
     if (start) qs.set('start', start);
@@ -1720,6 +1850,133 @@ async function toggleEtfDayDetail(date) {
           <td class="num"><span class="${(r.net || 0) >= 0 ? 'up' : 'down'}">${r.net == null ? '折算日' : ((r.net >= 0 ? '+' : '') + fmtNum(r.net))}</span></td>
           <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
           <td class="num">${r.share_rate == null ? '—' : fmtNum(r.share_rate) + '%'}</td>
+        </tr>`).join('')}</tbody>
+      </table>`;
+  } catch (e) {
+    cell.innerHTML = `<div class="empty">加载失败：${esc(e.message || e)}</div>`;
+  }
+}
+
+/* ---------- 汇金总份额（存量口径）：看板与数据处理共用的通用区块 ---------- */
+/* 渲染「每个交易日总份额」：汇总卡片 + 每日表格（含累计变化列）+ 展开按钮。
+   rangeParams 为查询参数（months/start/end），展开明细时复用；返回升序行与累计末值供曲线使用。 */
+function renderEtfSharesBlock(totalBox, tableBox, res, rangeParams) {
+  const t = res.total || { shares: 0, days: 0 };
+  const asc = [...(res.rows || [])].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  let running = 0;
+  asc.forEach(r => {
+    running += (r.change || 0);
+    r._cum = Number(running.toFixed(4));
+  });
+  const cum = Number(running.toFixed(4));
+  if (totalBox) {
+    totalBox.innerHTML = `
+      <div class="etf-daily-total-card"><span>最新交易日总份额</span>
+        <b class="neutral">${fmtNum(t.shares)} <small>亿份</small></b></div>
+      <div class="etf-daily-total-card"><span>区间累计份额变化</span>
+        <b class="${cum >= 0 ? 'up' : 'down'}">${cum >= 0 ? '+' : ''}${fmtNum(cum)} <small>亿份</small></b></div>
+      <div class="etf-daily-total-card"><span>统计交易日数</span>
+        <b class="neutral">${t.days} 个交易日 · ${esc(res.range || '')}</b></div>`;
+  }
+  const desc = [...asc].reverse();  // 表格最新交易日在上
+  tableBox.innerHTML = `<table>
+    <thead><tr><th>交易日期</th><th>汇金总份额(亿份)</th><th>较上日变化(亿份)</th><th>累计份额变化(亿份)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
+    <tbody>${desc.map(r => `
+      <tr class="etf-shares-row" data-date="${esc(r.date)}">
+        <td>${esc(r.date)}</td>
+        <td class="num"><b>${fmtNum(r.shares)}</b></td>
+        <td class="num"><span class="${(r.change || 0) >= 0 ? 'up' : 'down'}">${r.change == null ? '—' : ((r.change >= 0 ? '+' : '') + fmtNum(r.change))}</span></td>
+        <td class="num"><span class="${r._cum >= 0 ? 'up' : 'down'}">${r._cum >= 0 ? '+' : ''}${fmtNum(r._cum)}</span></td>
+        <td class="num">${r.count}</td>
+        <td><button type="button" class="btn tiny etf-shares-toggle" data-date="${esc(r.date)}">展开</button></td>
+      </tr>
+      <tr class="etf-shares-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="6"></td></tr>`).join('')}</tbody>
+  </table>`;
+  tableBox.querySelectorAll('.etf-shares-toggle').forEach(b =>
+    b.addEventListener('click', () => toggleEtfSharesDayDetail(b.dataset.date, tableBox, rangeParams)));
+  return { asc, cum };
+}
+
+/* 汇金维度：每个交易日总份额柱状图（含累计变化折线）+ 点击柱子展开当日各 ETF 份额明细 */
+async function loadEtfSharesDetail() {
+  const tableBox = document.getElementById('etfSharesTable');
+  const totalBox = document.getElementById('etfSharesTotal');
+  if (!tableBox || !totalBox) return;
+  const months = etfMonthsValue();
+  const { start, end } = etfDateRange();
+  const rangeParams = { months };
+  if (start) rangeParams.start = start;
+  if (end) rangeParams.end = end;
+  try {
+    const qs = new URLSearchParams({ ...rangeParams, view: 'total' });
+    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
+    const { asc } = renderEtfSharesBlock(totalBox, tableBox, res, rangeParams);
+    // 柱状图：每日汇金总份额为主轴；累计份额变化为次轴折线。点击柱子展开当日 ETF 明细。
+    const box = document.getElementById('etfSharesCumChart');
+    if (box && window.echarts) {
+      let inst = echarts.getInstanceByDom(box);
+      if (!inst) {
+        inst = echarts.init(box);
+        dashboardInstances.etfCharts = dashboardInstances.etfCharts || [];
+        dashboardInstances.etfCharts.push({ id: 'etfSharesCumChart', inst });
+      }
+      inst.setOption(dashboardChartOption({
+        id: 'etfSharesCumChart',
+        y_axes: [
+          { name: '总份额 (亿份)', position: 'left' },
+          { name: '累计变化 (亿份)', position: 'right' },
+        ],
+        series: [
+          { name: '汇金总份额', data: asc.map(r => [r.date, r.shares]), y_axis_index: 0, type: 'bar' },
+          { name: '累计份额变化', data: asc.map(r => [r.date, r._cum]), y_axis_index: 1, type: 'line' },
+        ],
+      }), true);
+      // 单击柱子：展开对应交易日的 ETF 份额明细，并滚动到该行
+      inst.off('click');
+      inst.on('click', (p) => {
+        if (p.componentType !== 'series' || p.seriesType !== 'bar' || p.dataIndex == null) return;
+        const date = asc[p.dataIndex]?.date;
+        if (!date) return;
+        toggleEtfSharesDayDetail(date, tableBox, rangeParams);
+        const row = tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`);
+        if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    }
+  } catch (e) {
+    tableBox.innerHTML = `<div class="empty">总份额明细加载失败：${esc(e.message || e)}</div>`;
+  }
+}
+
+/* 展开/收起某交易日的 ETF 份额明细，限定在所属表格内，避免两处区块互相干扰 */
+async function toggleEtfSharesDayDetail(date, tableBox, rangeParams) {
+  const row = tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`);
+  const detailRow = tableBox.querySelector(`.etf-shares-detail-row[data-detail-date="${date}"]`);
+  if (!row || !detailRow) return;
+  const btn = row.querySelector('.etf-shares-toggle');
+  if (!detailRow.hidden) {
+    detailRow.hidden = true;
+    btn.textContent = '展开';
+    return;
+  }
+  detailRow.hidden = false;
+  btn.textContent = '收起';
+  const cell = detailRow.querySelector('td');
+  cell.innerHTML = '<div class="empty">加载当日明细…</div>';
+  try {
+    const qs = new URLSearchParams({ ...(rangeParams || {}), view: 'total', date });
+    ['start', 'end'].forEach(k => { if (!qs.get(k)) qs.delete(k); });
+    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
+    const rows = res.rows || [];
+    const totalShares = res.total_shares || 0;
+    cell.innerHTML = `
+      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 份额明细（按份额降序，共 ${rows.length} 只 · 合计 ${fmtNum(totalShares)} 亿份）· 占比=该 ETF 份额 / 汇金总份额</div>
+      <table class="etf-day-detail-table">
+        <thead><tr><th>ETF 名称</th><th>代码</th><th>份额(亿份)</th><th>占比</th><th>较上日变化(亿份)</th></tr></thead>
+        <tbody>${rows.map(r => `<tr>
+          <td>${esc(r.name)}</td><td>${esc(r.code)}</td>
+          <td class="num"><b>${fmtNum(r.shares)}</b></td>
+          <td class="num">${fmtNum(r.pct)}%</td>
+          <td class="num"><span class="${(r.change || 0) >= 0 ? 'up' : 'down'}">${r.change == null ? '—' : ((r.change >= 0 ? '+' : '') + fmtNum(r.change))}</span></td>
         </tr>`).join('')}</tbody>
       </table>`;
   } catch (e) {
@@ -1801,16 +2058,20 @@ async function renderEtfDetailPage(panel, chart, meta, netValue) {
   }
 }
 
+let dashboardLoadSeq = 0;  // 请求序号：只让最后一次请求的结果落地，避免快速切换时旧响应覆盖新状态
+
 async function loadDashboard() {
+  const seq = ++dashboardLoadSeq;
   try {
     const months = $('dashboardMonths').value || '12';
-    const etfMonths = $('dashboardEtfMonths').value || '12';
+    const etfMonths = etfMonthsValue();
     const { start, end } = etfDateRange();
     const overlayIndex = $('dashboardOverlayIndex')?.value || '000001';
     const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex });
     if (start) qs.set('etf_start', start);
     if (end) qs.set('etf_end', end);
     const res = await api('/api/dashboard?' + qs.toString());
+    if (seq !== dashboardLoadSeq) return;  // 已有更新的请求，丢弃过期响应
     // 叠加指数下拉：用接口返回的可用指数动态填充，保留当前选择
     const opts = res.index_options || [];
     const sel = $('dashboardOverlayIndex');
@@ -1824,11 +2085,22 @@ async function loadDashboard() {
     const macro = (res.macro && res.macro.charts) || [];
     const etf = (res.etf && res.etf.charts) || [];
     dashboardData = res;
+    // 快捷模式：用「本次响应」的实际展示区间回填日期控件，使「近一年」等预设与日期框联动。
+    // 必须从 res 计算（而非全局 dashboardData），否则并发时旧响应会回填过期区间。
+    if (!etfIsCustom()) {
+      const r = etfResolvedRange(res);
+      $('dashboardEtfStart').value = r.start || '';
+      $('dashboardEtfEnd').value = r.end || '';
+    }
+    syncEtfRangeBtns();
     // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
     renderDashboardTab();
     const etfNote = etf.filter(c => c.group !== 'huijin_detail' && c.id !== 'etf_huijin_cumulative')
       .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
-    const etfRange = (start || end) ? ` · ETF ${start || '最早'}~${end || '最新'}` : '';
+    const shown = etfDateRange();
+    const shownStart = shown.start || $('dashboardEtfStart').value.trim();
+    const shownEnd = shown.end || $('dashboardEtfEnd').value.trim();
+    const etfRange = (shownStart || shownEnd) ? ` · ETF ${shownStart || '最早'}~${shownEnd || '最新'}` : '';
     const overlayChart = etf.find(c => c.layout === 'etf_overlay');
     const overlayNote = overlayChart ? ` · 叠加${(overlayChart.index_name || '').replace(/\s*\(点\)\s*$/, '')}` : '';
     $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange}`;
@@ -1861,10 +2133,11 @@ document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
 
 window.addEventListener('resize', resizeDashboardCharts);
 $('dashboardMonths').addEventListener('change', loadDashboard);
-$('dashboardEtfMonths').addEventListener('change', loadDashboard);
+$('dashboardEtfMonths').addEventListener('change', () => { syncEtfRangeBtns(); applyEtfPreset(); });
+$('dashboardEtfRangeBtns').addEventListener('click', onEtfRangeBtnClick);
 $('dashboardOverlayIndex').addEventListener('change', loadDashboard);
-$('dashboardEtfStart').addEventListener('change', loadDashboard);
-$('dashboardEtfEnd').addEventListener('change', loadDashboard);
+$('dashboardEtfStart').addEventListener('change', onEtfDateChange);
+$('dashboardEtfEnd').addEventListener('change', onEtfDateChange);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
 
 /* ---------- 定时刷新 ---------- */

@@ -538,6 +538,13 @@
       </div>
       <div class="etf-calc-total" id="etfCalcTotal"></div>
       <div class="table-wrap tall" id="etfCalcTable"><div class="empty">加载中…</div></div>
+
+      <div class="etf-calc-subhead">
+        <h3>汇金维度 · 每个交易日总份额</h3>
+        <span class="hint">份额存量口径：按交易日汇总 23 只汇金 ETF 的份额合计 · 点击某天展开当日各 ETF 份额明细</span>
+      </div>
+      <div class="etf-calc-total" id="etfCalcSharesTotal"></div>
+      <div class="table-wrap tall" id="etfCalcSharesTable"><div class="empty">加载中…</div></div>
     </div>
   </section>
 
@@ -578,27 +585,35 @@
 
     <div id="dashboardEtfPanel" hidden>
       <div class="dashboard-controls">
-        <label class="prec-field">ETF 范围
-          <select id="dashboardEtfMonths" class="prec-input">
-            <option value="6">近半年</option>
-            <option value="12" selected>近1年</option>
-            <option value="36">近3年</option>
-            <option value="60">近5年</option>
-            <option value="0">全部</option>
-          </select>
-        </label>
         <label class="prec-field">叠加指数
           <select id="dashboardOverlayIndex" class="prec-input" title="汇金图上方叠加的指数日线">
             <option value="000001">上证指数</option>
           </select>
         </label>
         <label class="prec-field">开始日期
-          <input id="dashboardEtfStart" class="prec-input" type="date" title="自定义起始日期，优先于快捷范围">
+          <input id="dashboardEtfStart" class="prec-input" type="date" title="自定义起始日期">
         </label>
         <label class="prec-field">结束日期
-          <input id="dashboardEtfEnd" class="prec-input" type="date" title="自定义结束日期，优先于快捷范围">
+          <input id="dashboardEtfEnd" class="prec-input" type="date" title="自定义结束日期">
         </label>
-        <span class="hint">按汇金 / 黄金标签汇总较上一交易日的流通份额与申赎净流入；自定义日期优先于快捷范围</span>
+        <div class="etf-range-quick" id="dashboardEtfRangeBtns" role="group" aria-label="ETF 快捷范围">
+          <button type="button" class="etf-range-btn" data-months="6">近半年</button>
+          <button type="button" class="etf-range-btn active" data-months="12">近1年</button>
+          <button type="button" class="etf-range-btn" data-months="36">近3年</button>
+          <button type="button" class="etf-range-btn" data-months="60">近5年</button>
+          <button type="button" class="etf-range-btn" data-months="120">近10年</button>
+        </div>
+        <span class="hint">点选快捷范围后日期框自动回显真实区间；手改日期即进入自定义</span>
+        <!-- 隐藏状态载体：数字=快捷月份，custom=自定义，0=全部；供既有联动逻辑读取 -->
+        <select id="dashboardEtfMonths" style="display:none" aria-hidden="true">
+          <option value="6">近半年</option>
+          <option value="12" selected>近1年</option>
+          <option value="36">近3年</option>
+          <option value="60">近5年</option>
+          <option value="120">近10年</option>
+          <option value="0">全部</option>
+          <option value="custom">自定义</option>
+        </select>
       </div>
       <div class="dashboard-grid" id="etfCharts"></div>
     </div>

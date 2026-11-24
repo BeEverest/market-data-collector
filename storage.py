@@ -759,16 +759,40 @@ def status_counts(path: str | Path) -> dict:
         today_calls = conn.execute(
             "SELECT COUNT(*) AS n FROM interface_run WHERE run_date=?", (today,)
         ).fetchone()["n"]
+        # 当日各类别新增采集行数（按 run_date=今天 汇总 collection_stat）。
+        # 口径为「今日采集写入的行数」，重复采集同一历史区间会累加，属预期。
+        today_new: dict[str, int] = {}
+        for row in conn.execute(
+            "SELECT category, SUM(rows) AS rows FROM collection_stat "
+            "WHERE run_date=? GROUP BY category", (today,)
+        ):
+            today_new[row["category"]] = int(row["rows"] or 0)
         last = conn.execute(
             "SELECT run_id, run_date, run_time, run_type FROM interface_run "
             "ORDER BY run_time DESC LIMIT 1"
         ).fetchone()
+        last_run = dict(last) if last else {}
+        # 最近一次运行的各项指标采集数量（按 run_id 从 collection_stat 汇总）。
+        # 兼容：Choice 导入等 run 不写 collection_stat，此时 last_counts 为空。
+        last_counts: dict[str, dict[str, int]] = {}
+        if last_run.get("run_id"):
+            for row in conn.execute(
+                "SELECT category, COUNT(DISTINCT code) AS codes, "
+                "SUM(rows) AS rows FROM collection_stat WHERE run_id=? "
+                "GROUP BY category",
+                (last_run["run_id"],),
+            ):
+                last_counts[row["category"]] = {
+                    "codes": int(row["codes"]), "rows": int(row["rows"]),
+                }
     return {
         "macro_rows": int(macro["rows"]), "macro_indicators": int(macro["codes"]),
         "etf_rows": int(etf["rows"]), "etf_codes": int(etf["codes"]),
         "index_rows": int(index["rows"]), "index_codes": int(index["codes"]),
+        "today_new": today_new,
         "failed_total": int(failed), "today_calls": int(today_calls),
-        "last_run": dict(last) if last else {},
+        "last_run": last_run,
+        "last_counts": last_counts,
     }
 
 

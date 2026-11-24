@@ -522,16 +522,20 @@ def api_status():
     cfg = _cfg()
     db_path = _db_path(cfg)
     last_run = {}
+    last_counts = {}
     failed_count = 0
     today_calls = 0
+    today_new = {}
     if db_path:
         counts = storage.status_counts(db_path)
         last_run = counts.get("last_run") or {}
+        last_counts = counts.get("last_counts") or {}
         failed_count = counts["failed_total"]
         today_calls = counts["today_calls"]
         macro_rows, macro_indicators = counts["macro_rows"], counts["macro_indicators"]
         etf_rows, etf_codes = counts["etf_rows"], counts["etf_codes"]
         index_rows, index_codes = counts["index_rows"], counts["index_codes"]
+        today_new = counts.get("today_new", {})
     else:
         history = Monitor.load(_history_path(cfg))
         if not history.empty:
@@ -551,6 +555,7 @@ def api_status():
         index_codes = int(index["指数代码"].nunique()) if not index.empty else 0
     return {
         "last_run": last_run,
+        "last_counts": last_counts,
         "failed_total": failed_count,
         "today_calls": today_calls,
         "macro_rows": macro_rows,
@@ -559,6 +564,7 @@ def api_status():
         "etf_codes": etf_codes,
         "index_rows": index_rows,
         "index_codes": index_codes,
+        "today_new": today_new,
         "scheduler": {
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
             "time": cfg.get("scheduler", {}).get("time", "08:30"),
@@ -824,8 +830,10 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
 
 @app.get("/api/dashboard/etf-daily")
 def api_dashboard_etf_daily(months: int = 12, date: str | None = None,
-                            start: str | None = None, end: str | None = None):
-    """汇金维度按天明细：不带 date 返回每日汇总+区间合计；带 date 返回当日各 ETF 明细。
+                            start: str | None = None, end: str | None = None,
+                            view: str = "change"):
+    """汇金维度按天明细：不带 date 返回每日汇总+合计；带 date 返回当日各 ETF 明细。
+    view=change（默认）为份额变化/净流入口径；view=total 为每日份额存量合计口径。
     start/end 为 YYYY-MM-DD 精确日期区间，优先于 months。
     """
     cfg = _cfg()
@@ -833,7 +841,8 @@ def api_dashboard_etf_daily(months: int = 12, date: str | None = None,
     months = max(0, min(int(months or 0), 240))
     _, etf_df = storage.read_etf_with_changes(db, limit=None)
     etf_cfg = storage.get_etf_config(db, cfg.get("etf", {}))
-    return build_etf_daily_detail(etf_df, etf_cfg.get("tags", {}), months, date, start, end)
+    return build_etf_daily_detail(etf_df, etf_cfg.get("tags", {}), months, date,
+                                  start, end, view=view)
 
 
 @app.get("/api/files")

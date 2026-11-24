@@ -409,14 +409,18 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
 
 
 def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None = None,
-                           start: str | None = None, end: str | None = None) -> dict:
-    """汇金维度按天流通份额/申赎净流入明细。
+                           start: str | None = None, end: str | None = None,
+                           view: str = "change") -> dict:
+    """汇金维度按天明细。
 
-    - date 为空：按交易日倒序返回每日汇总（含当日各 ETF 只数）与区间合计。
-    - date 给定：返回该交易日各汇金 ETF 的份额变化/申赎净流入明细，按申赎净流入降序。
+    view='change'（默认，兼容原口径）：份额变化/申赎净流入明细。
+      - date 为空：按交易日倒序返回每日汇总与区间合计。
+      - date 给定：该交易日各汇金 ETF 的份额变化/申赎净流入，按净流入降序。
+    view='total'（总份额口径）：每日汇金 ETF 份额存量合计。
+      - date 为空：按交易日倒序返回每日份额合计、较上日变化、ETF 只数。
+      - date 给定：该交易日各汇金 ETF 的份额存量/占比/较上日变化，按份额降序。
     口径与 build_etf_charts 一致：变化基准来自全量历史，此处仅按窗口截取。
     start/end 为 YYYY-MM-DD 精确日期区间，优先于 months（任一给出即生效）。
-    注：返回字段中的 cap（规模变化）仅为兼容旧调用保留，前端展示统一使用 net（申赎净流入）。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
@@ -426,10 +430,54 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
     if etf_df is None or etf_df.empty or not codes:
         if date:
             return {"date": str(date)[:10], "rows": [], "range": scope}
+        if view == "total":
+            return {"rows": [], "total": {"shares": 0.0, "days": 0}, "range": scope}
         return {"rows": [], "total": {"share": 0.0, "cap": 0.0,
                                        "net": 0.0, "days": 0}, "range": scope}
 
     sub = etf_df[etf_df["基金代码"].astype(str).str.zfill(6).isin(codes)].copy()
+
+    # ---- 总份额口径：份额存量取 shares，变化取全量历史已算好的「份额变化(亿份)」列 ----
+    # 注意：不能用窗口内 shift 求上一日——窗口首日没有前一日，会把存量误当成变化量。
+    # read_etf_with_changes 返回的「份额变化(亿份)」基于全量历史计算，窗口截断不影响其正确性。
+    if view == "total":
+        if date:
+            target = str(date)[:10]
+            day = sub[sub["交易日期"].astype(str).str[:10] == target].copy()
+            total_shares = _clean_number(day["份额(亿份)"].sum()) or 0.0
+            rows = []
+            for _, r in day.iterrows():
+                shares = _clean_number(r.get("份额(亿份)"))
+                if shares is None:
+                    continue
+                rows.append({
+                    "code": str(r["基金代码"]).zfill(6),
+                    "name": str(r.get("基金简称") or r["基金代码"]),
+                    "shares": shares,
+                    "pct": (shares / total_shares * 100) if total_shares else 0.0,
+                    "change": _clean_number(r.get("份额变化(亿份)")),
+                })
+            rows.sort(key=lambda x: -x["shares"])
+            return {"date": target, "rows": rows, "range": scope,
+                    "total_shares": total_shares}
+        # 每日汇总（窗口内）
+        rows = []
+        for d, grp in sub.groupby("交易日期", sort=False):
+            ds = str(d)[:10]
+            shares = _clean_number(grp["份额(亿份)"].sum()) or 0.0
+            rows.append({
+                "date": ds,
+                "shares": shares,
+                "change": _clean_number(grp["份额变化(亿份)"].sum()),
+                "count": int(grp["基金代码"].nunique()),
+            })
+        rows.sort(key=lambda x: x["date"], reverse=True)
+        latest = rows[0]["shares"] if rows else 0.0
+        return {
+            "rows": rows,
+            "total": {"shares": latest, "days": len(rows)},
+            "range": scope,
+        }
 
     if date:
         target = str(date)[:10]

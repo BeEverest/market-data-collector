@@ -83,10 +83,19 @@ body {
   background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   padding: 16px 18px; box-shadow: var(--shadow);
 }
+.stat { display: flex; flex-direction: column; }
 .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 .stat-value { font-size: 26px; font-weight: 750; letter-spacing: -.5px; }
 .stat-sub { font-size: 11px; color: var(--muted); margin-top: 6px; }
 .stat.alert .stat-value { color: var(--danger); }
+/* 数据卡三栏：大数字=采集总数，下方两格=指标数 / 当日新增 */
+.stat-metrics { display: flex; gap: 8px; margin-top: 10px; }
+.stat-metrics .metric {
+  flex: 1; min-width: 0; background: var(--bg, #f6f7f9); border-radius: 7px;
+  padding: 6px 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.stat-metrics .metric-k { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.stat-metrics .metric-v { font-size: 14px; font-weight: 700; color: var(--text, #1f2430); white-space: nowrap; }
 
 .card {
   background: var(--card); border: 1px solid var(--line); border-radius: 12px;
@@ -542,6 +551,17 @@ tr.row-ok td { }
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 2px 0 4px;
 }
+/* ETF 快捷范围：结束日期后的一排按钮，选中项高亮 */
+.etf-range-quick { display: inline-flex; gap: 4px; align-items: center; }
+/* 与 .prec-input（日期框）同款：白底、细边框、深色常规字、相同内边距 */
+.etf-range-btn {
+  border: 1px solid var(--line); background: #fff; color: var(--ink);
+  padding: 5px 7px; height: 27px; border-radius: 5px;
+  font-size: 11px; font-weight: 400; line-height: 1.4;
+  cursor: pointer; font-family: inherit; white-space: nowrap;
+}
+.etf-range-btn:hover { border-color: var(--brand); color: var(--brand); }
+.etf-range-btn.active { background: var(--brand-soft); color: var(--brand); border-color: var(--brand); font-weight: 600; }
 .dashboard-section-title {
   display: flex; align-items: baseline; gap: 10px;
   margin-top: 6px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
@@ -656,6 +676,20 @@ tr.row-ok td { }
 #etfCalcTable .up { color: #c0392b; font-weight: 600; }
 #etfCalcTable .down { color: #16855b; font-weight: 600; }
 #etfCalcTable tbody tr:nth-child(odd) > td { background: #fafbff; }
+/* 数据处理 ETF：每个交易日总份额（存量口径）子区块 */
+.etf-calc-subhead {
+  margin: 20px 14px 10px; padding-top: 16px; border-top: 1px dashed var(--line);
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.etf-calc-subhead h3 { margin: 0; font-size: 14px; }
+#etfCalcSharesTable { margin: 0 14px 14px; }
+#etfCalcSharesTable th, #etfCalcSharesTable td { text-align: center; font-variant-numeric: tabular-nums; }
+#etfCalcSharesTable th { font-weight: 600; color: var(--text); }
+#etfCalcSharesTable .up { color: #c0392b; font-weight: 600; }
+#etfCalcSharesTable .down { color: #16855b; font-weight: 600; }
+#etfCalcSharesTable tbody tr:nth-child(odd) > td { background: #fafbff; }
+/* 看板：总份额卡片内嵌的累计变化曲线 */
+.chart-box-cum { height: 250px; }
 #etfCalcTable tbody tr:hover > td { background: #eef3ff; }
 
 @media (max-width: 860px) {

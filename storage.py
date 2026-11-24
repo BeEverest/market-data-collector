@@ -185,6 +185,81 @@ def init_schema(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_derived_date ON derived_indicator(date DESC, code);
             CREATE INDEX IF NOT EXISTS idx_derived_code ON derived_indicator(code, date DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_exchange_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                sse_amount REAL,
+                sse_volume REAL,
+                sse_float_mv REAL,
+                sse_total_mv REAL,
+                szse_amount REAL,
+                szse_float_mv REAL,
+                szse_total_mv REAL,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tex_date ON trade_exchange_raw(trade_date DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_margin_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                financing_balance REAL,
+                securities_balance REAL,
+                financing_buy REAL,
+                securities_sell REAL,
+                margin_ratio REAL,
+                debt_investors INTEGER,
+                collateral_value REAL,
+                active_investors INTEGER,
+                individual_investors INTEGER,
+                institutional_investors INTEGER,
+                broker_count INTEGER,
+                branch_count INTEGER,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tmargin_date ON trade_margin_raw(trade_date DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_snapshot_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT,
+                pct_change REAL,
+                volume REAL,
+                amount REAL,
+                last_price REAL,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tsnap_date ON trade_snapshot_raw(trade_date DESC);
+            CREATE INDEX IF NOT EXISTS idx_tsnap_code_date ON trade_snapshot_raw(code, trade_date DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_observation (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                total_amount REAL,
+                concentration5 REAL,
+                margin_ratio REAL,
+                margin_financing_ratio REAL,
+                margin_balance REAL,
+                financing_balance REAL,
+                securities_balance REAL,
+                financing_to_float_mv REAL,
+                financing_buy_pct REAL,
+                debt_investors REAL,
+                up_count INTEGER,
+                down_count INTEGER,
+                flat_count INTEGER,
+                source_set TEXT,
+                computed_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tobs_date ON trade_observation(trade_date DESC);
             """
         )
         conn.execute(
@@ -228,6 +303,21 @@ def etf_biz_key(code: str, trade_date: str) -> str:
 
 def index_biz_key(code: str, trade_date: str) -> str:
     return f"{str(code).zfill(6)}_{str(trade_date).replace('-', '')}"
+
+
+def trade_raw_biz_key(prefix: str, trade_date: str) -> str:
+    """交易原始表主键：EX_{YYYYMMDD} / MG_{YYYYMMDD}。"""
+    return f"{prefix}_{str(trade_date).replace('-', '')}"
+
+
+def trade_snapshot_biz_key(code: str, trade_date: str) -> str:
+    """个股快照原始表主键：{6位代码}_{YYYYMMDD}。"""
+    return f"{str(code).zfill(6)}_{str(trade_date).replace('-', '')}"
+
+
+def trade_biz_key(trade_date: str) -> str:
+    """交易计算宽表主键：{YYYYMMDD}（一交易日一行）。"""
+    return str(trade_date).replace('-', '')
 
 
 def run_biz_key(run_id: str, interface_key: str, run_time: str, seq: int) -> str:
@@ -415,6 +505,236 @@ def upsert_index(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
             records,
         )
     return len(records)
+
+
+# ---------- 交易原始数据层（采集只落库，不计算） ----------
+def upsert_trade_exchange(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入交易所每日概况原始表（保留接口原单位：沪亿元/深元）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_raw_biz_key("EX", date), date,
+            _clean(r.get("sse_amount")), _clean(r.get("sse_volume")),
+            _clean(r.get("sse_float_mv")), _clean(r.get("sse_total_mv")),
+            _clean(r.get("szse_amount")), _clean(r.get("szse_float_mv")),
+            _clean(r.get("szse_total_mv")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_exchange_raw(
+                biz_key, trade_date, sse_amount, sse_volume, sse_float_mv, sse_total_mv,
+                szse_amount, szse_float_mv, szse_total_mv, source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                sse_amount=excluded.sse_amount, sse_volume=excluded.sse_volume,
+                sse_float_mv=excluded.sse_float_mv, sse_total_mv=excluded.sse_total_mv,
+                szse_amount=excluded.szse_amount, szse_float_mv=excluded.szse_float_mv,
+                szse_total_mv=excluded.szse_total_mv, source=excluded.source,
+                collected_at=excluded.collected_at, run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
+def upsert_trade_margin(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入两融账户原始表（13 列原样，单位由计算层处理）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_raw_biz_key("MG", date), date,
+            _clean(r.get("financing_balance")), _clean(r.get("securities_balance")),
+            _clean(r.get("financing_buy")), _clean(r.get("securities_sell")),
+            _clean(r.get("margin_ratio")), _clean(r.get("debt_investors")),
+            _clean(r.get("collateral_value")), _clean(r.get("active_investors")),
+            _clean(r.get("individual_investors")), _clean(r.get("institutional_investors")),
+            _clean(r.get("broker_count")), _clean(r.get("branch_count")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_margin_raw(
+                biz_key, trade_date, financing_balance, securities_balance,
+                financing_buy, securities_sell, margin_ratio, debt_investors,
+                collateral_value, active_investors, individual_investors,
+                institutional_investors, broker_count, branch_count,
+                source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                financing_balance=excluded.financing_balance,
+                securities_balance=excluded.securities_balance,
+                financing_buy=excluded.financing_buy,
+                securities_sell=excluded.securities_sell,
+                margin_ratio=excluded.margin_ratio,
+                debt_investors=excluded.debt_investors,
+                collateral_value=excluded.collateral_value,
+                active_investors=excluded.active_investors,
+                individual_investors=excluded.individual_investors,
+                institutional_investors=excluded.institutional_investors,
+                broker_count=excluded.broker_count, branch_count=excluded.branch_count,
+                source=excluded.source, collected_at=excluded.collected_at,
+                run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
+def upsert_trade_snapshot(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入全A个股快照原始表（逐股一行）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        code = str(r.get("code", "")).strip().zfill(6)
+        date = str(r.get("trade_date", ""))[:10]
+        if not code or not date:
+            continue
+        records.append((
+            trade_snapshot_biz_key(code, date), date, code,
+            str(r.get("name", "") or ""),
+            _clean(r.get("pct_change")), _clean(r.get("volume")),
+            _clean(r.get("amount")), _clean(r.get("last_price")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_snapshot_raw(
+                biz_key, trade_date, code, name, pct_change, volume, amount,
+                last_price, source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                name=excluded.name, pct_change=excluded.pct_change,
+                volume=excluded.volume, amount=excluded.amount,
+                last_price=excluded.last_price, source=excluded.source,
+                collected_at=excluded.collected_at, run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
+def read_trade_raw(path: str | Path, table: str, start: str | None = None,
+                   end: str | None = None) -> pd.DataFrame:
+    """读取交易原始表（table: exchange/margin/snapshot），可按日期范围过滤。"""
+    init_schema(path)
+    allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
+               "snapshot": "trade_snapshot_raw"}
+    if table not in allowed:
+        return pd.DataFrame()
+    sql = f"SELECT * FROM {allowed[table]}"
+    args: list = []
+    where = []
+    if start:
+        where.append("trade_date>=?"); args.append(str(start)[:10])
+    if end:
+        where.append("trade_date<=?"); args.append(str(end)[:10])
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY trade_date DESC"
+    with connect(path) as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+def trade_raw_dates(path: str | Path, table: str) -> list[str]:
+    """返回某原始表已落库的交易日列表（升序）。"""
+    init_schema(path)
+    allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
+               "snapshot": "trade_snapshot_raw"}
+    if table not in allowed:
+        return []
+    with connect(path) as conn:
+        rows = conn.execute(
+            f"SELECT DISTINCT trade_date FROM {allowed[table]} ORDER BY trade_date"
+        ).fetchall()
+    return [r["trade_date"] for r in rows]
+
+
+# ---------- 交易计算宽表 ----------
+def upsert_trade(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入交易计算宽表；df 每行为一交易日的 10 指标 + 涨跌家数。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_biz_key(date), date,
+            _clean(r.get("total_amount")), _clean(r.get("concentration5")),
+            _clean(r.get("margin_ratio")), _clean(r.get("margin_financing_ratio")),
+            _clean(r.get("margin_balance")), _clean(r.get("financing_balance")),
+            _clean(r.get("securities_balance")), _clean(r.get("financing_to_float_mv")),
+            _clean(r.get("financing_buy_pct")), _clean(r.get("debt_investors")),
+            _clean(r.get("up_count")), _clean(r.get("down_count")), _clean(r.get("flat_count")),
+            str(r.get("source_set", "") or ""), str(r.get("computed_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_observation(
+                biz_key, trade_date, total_amount, concentration5, margin_ratio,
+                margin_financing_ratio, margin_balance, financing_balance,
+                securities_balance, financing_to_float_mv, financing_buy_pct,
+                debt_investors, up_count, down_count, flat_count,
+                source_set, computed_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                total_amount=excluded.total_amount, concentration5=excluded.concentration5,
+                margin_ratio=excluded.margin_ratio,
+                margin_financing_ratio=excluded.margin_financing_ratio,
+                margin_balance=excluded.margin_balance,
+                financing_balance=excluded.financing_balance,
+                securities_balance=excluded.securities_balance,
+                financing_to_float_mv=excluded.financing_to_float_mv,
+                financing_buy_pct=excluded.financing_buy_pct,
+                debt_investors=excluded.debt_investors,
+                up_count=excluded.up_count, down_count=excluded.down_count,
+                flat_count=excluded.flat_count, source_set=excluded.source_set,
+                computed_at=excluded.computed_at, run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
+def replace_trade(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """全量替换交易计算宽表（手动全量重算时清理陈旧行）。"""
+    init_schema(path)
+    with connect(path) as conn:
+        conn.execute("DELETE FROM trade_observation")
+    return upsert_trade(path, df, run_id)
+
+
+def read_trade(path: str | Path, start: str | None = None,
+               end: str | None = None) -> pd.DataFrame:
+    """读取交易计算宽表，按交易日升序，可按日期范围过滤。"""
+    init_schema(path)
+    sql = "SELECT * FROM trade_observation"
+    args: list = []
+    where = []
+    if start:
+        where.append("trade_date>=?"); args.append(str(start)[:10])
+    if end:
+        where.append("trade_date<=?"); args.append(str(end)[:10])
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY trade_date"
+    with connect(path) as conn:
+        rows = conn.execute(sql, args).fetchall()
+    return pd.DataFrame([dict(r) for r in rows])
 
 
 def append_interface_runs(path: str | Path, records: list[dict]) -> int:
@@ -753,6 +1073,15 @@ def status_counts(path: str | Path) -> dict:
         index = conn.execute(
             "SELECT COUNT(*) AS rows, COUNT(DISTINCT code) AS codes FROM index_observation"
         ).fetchone()
+        trade = conn.execute(
+            "SELECT COUNT(*) AS rows FROM trade_observation"
+        ).fetchone()
+        raw_rows = {}
+        for tname, tkey in [("exchange", "trade_exchange_raw"), ("margin", "trade_margin_raw"),
+                            ("snapshot", "trade_snapshot_raw")]:
+            raw_rows[tname] = int(conn.execute(
+                f"SELECT COUNT(*) AS n FROM {tkey}"
+            ).fetchone()["n"])
         failed = conn.execute(
             "SELECT COUNT(*) AS n FROM interface_run WHERE status='failed'"
         ).fetchone()["n"]
@@ -789,6 +1118,7 @@ def status_counts(path: str | Path) -> dict:
         "macro_rows": int(macro["rows"]), "macro_indicators": int(macro["codes"]),
         "etf_rows": int(etf["rows"]), "etf_codes": int(etf["codes"]),
         "index_rows": int(index["rows"]), "index_codes": int(index["codes"]),
+        "trade_rows": int(trade["rows"]), "trade_raw_rows": raw_rows,
         "today_new": today_new,
         "failed_total": int(failed), "today_calls": int(today_calls),
         "last_run": last_run,
@@ -1030,6 +1360,7 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
 # ---------- 全量清空（按需调用，服务启动不会触发） ----------
 CLEAR_TABLES = [
     "macro_observation", "etf_observation", "index_observation",
+    "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw",
     "interface_run", "etf_config", "index_config", "meta", "export_log",
     "collection_stat",
 ]

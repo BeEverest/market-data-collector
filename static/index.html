@@ -77,6 +77,7 @@
               <option value="macro">宏观指标</option>
               <option value="etf">ETF 基金</option>
               <option value="index">指数</option>
+              <option value="trade">交易（原始数据）</option>
             </select>
             <span class="date-sep">→</span>
             <select id="precCode" class="prec-input s-code" title="第二步：选择该类别下的具体口径"><option value="">加载中…</option></select>
@@ -410,6 +411,31 @@
       <div class="clean-result" id="cleanResult">—</div>
     </div>
   </section>
+
+  <!-- 交易原始数据预览 -->
+  <section class="card module-trade-preview">
+    <div class="card-head">
+      <div class="title-group">
+        <h2>交易 · 原始数据预览</h2>
+        <span class="module-chip part">采集只读</span>
+      </div>
+      <span class="hint">采集系统「交易」类别落库的原始数据（保留接口原单位）· 计算请到「数据处理·交易计算」Tab</span>
+    </div>
+    <div class="etf-calc-controls">
+      <label class="prec-field">原始表
+        <select id="tradeRawTable" class="prec-input">
+          <option value="exchange">交易所每日概况</option>
+          <option value="margin">两融账户</option>
+          <option value="snapshot">全A个股快照</option>
+        </select>
+      </label>
+      <label class="prec-field">起始日期 <input id="tradeRawStart" class="prec-input" type="date"></label>
+      <label class="prec-field">结束日期 <input id="tradeRawEnd" class="prec-input" type="date"></label>
+      <button type="button" class="btn tiny" id="tradeRawRefreshBtn">刷新</button>
+      <span class="hint" id="tradeRawMeta">加载中…</span>
+    </div>
+    <div class="table-wrap tall" id="tradeRawTableWrap"><div class="empty">加载中…</div></div>
+  </section>
   </div><!-- /collectModule -->
 
   <!-- 数据处理模块：与采集系统共用本页，顶部导航切换 -->
@@ -425,6 +451,7 @@
     <div class="tabs" id="derivedSubTabs" style="padding: 4px 14px 0">
       <button type="button" class="tab active" data-subtab="calc">派生指标</button>
       <button type="button" class="tab" data-subtab="etf">ETF 计算</button>
+      <button type="button" class="tab" data-subtab="trade">交易计算</button>
     </div>
     <div id="derivedCalcPanel">
     <!-- 触发控制区：定时调度（主）+ 手动重算（兜底） -->
@@ -546,13 +573,54 @@
       <div class="etf-calc-total" id="etfCalcSharesTotal"></div>
       <div class="table-wrap tall" id="etfCalcSharesTable"><div class="empty">加载中…</div></div>
     </div>
+
+    <!-- 交易计算子面板（计算层：从原始表派生 10 指标） -->
+    <div id="tradeCalcPanel" hidden>
+      <div class="etf-calc-head">
+        <h3>交易计算 · 从原始表派生 10 项指标</h3>
+        <span class="hint">原始数据由采集系统「交易」Tab 落库 · 本页计算后写入 trade_observation 宽表 · 看板「交易」Tab 读取</span>
+      </div>
+      <div class="trigger-grid">
+        <div class="trigger-card">
+          <div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="pill" id="tradeCalcBadge">--</span></div>
+          <div class="tc-body">
+            <div class="tc-row">
+              <button type="button" class="btn tiny primary" id="tradeRecomputeAllBtn">重新计算全部</button>
+              <label class="prec-field">按交易日
+                <input id="tradeRecalcDate" class="prec-input" type="date">
+              </label>
+              <button type="button" class="btn tiny" id="tradeRecalcDateBtn">重算该日</button>
+            </div>
+            <div class="tc-note">全量重算整表替换（清理陈旧行）；按日重算只覆盖该交易日，不影响其他日。差分/占比分母始终基于原始值计算。</div>
+          </div>
+        </div>
+        <div class="trigger-card">
+          <div class="tc-head"><h3>📊 原始数据覆盖</h3></div>
+          <div class="tc-body">
+            <div class="tc-row"><span class="hint" id="tradeCoverage">加载中…</span></div>
+            <div class="tc-note">三类原始表：交易所概况 / 两融账户 / 全A个股快照。快照仅当日不可回溯，集中度与涨跌家数自采集日起累计。</div>
+          </div>
+        </div>
+      </div>
+      <div class="etf-formula-note">
+        <div><b>全A成交额</b> = 沪成交金额(亿元) + 深成交金额(元)÷1e8</div>
+        <div><b>成交集中度(前5%)</b> = 个股成交额降序前 5% 之和 ÷ 全A成交额 ×100% · <b>两融余额</b> = 融资余额 + 融券余额</div>
+        <div><b>融资余额占流通市值比</b> = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100% · <b>融资买入额占比</b> = 融资买入额 ÷ 全A成交额 ×100%</div>
+        <div><b>融资保证金比例</b> 为政策阶梯常量（当前 80%），按交易日匹配生效值 · <b>涨跌家数</b> 由快照涨跌幅统计</div>
+      </div>
+      <div class="etf-calc-subhead">
+        <h3>10 项指标最新值</h3>
+        <span class="hint" id="tradeLatestMeta">加载中…</span>
+      </div>
+      <div class="table-wrap tall" id="tradeLatestTable"><div class="empty">加载中…</div></div>
+    </div>
   </section>
 
   <!-- 数据看板：与采集系统共用本页，顶部导航切换 -->
   <section class="card module-dashboard" id="dashboardModule" hidden>
     <div class="card-head">
       <div class="title-group">
-        <span class="module-chip auto">宏观 8 图 · ETF 4 图</span>
+        <span class="module-chip auto">宏观 8 图 · ETF 4 图 · 交易 2 图</span>
       </div>
       <span class="hint">与采集系统共用数据源 · 图表随派生指标定时重算自动更新</span>
     </div>
@@ -560,6 +628,7 @@
       <div class="tabs" id="dashboardTabs">
         <button class="tab active" data-tab="macro">宏观指标</button>
         <button class="tab" data-tab="etf">ETF 维度</button>
+        <button class="tab" data-tab="trade">交易</button>
       </div>
       <div class="dashboard-toolbar-right">
         <button type="button" class="btn tiny" id="dashboardRefreshBtn">刷新图表</button>
@@ -616,6 +685,21 @@
         </select>
       </div>
       <div class="dashboard-grid" id="etfCharts"></div>
+    </div>
+
+    <div id="dashboardTradePanel" hidden>
+      <div class="dashboard-controls">
+        <label class="prec-field">交易日范围
+          <select id="dashboardTradeDays" class="prec-input" title="展示最近 N 个交易日">
+            <option value="60" selected>近60交易日</option>
+            <option value="20">近20交易日</option>
+            <option value="120">近120交易日</option>
+            <option value="0">全部</option>
+          </select>
+        </label>
+        <span class="hint">数据来源：交易原始表经数据处理·交易 Tab 计算 · 图1 成交/集中度/涨跌家数、图2 两融核心指标</span>
+      </div>
+      <div class="dashboard-grid" id="tradeCharts"></div>
     </div>
   </section>
 </main>

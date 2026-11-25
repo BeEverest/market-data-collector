@@ -58,7 +58,7 @@ class TestEtfUsesAnchor:
             return "2026-11-20"
 
         monkeypatch.setattr(etf_mod, "resolve_default_end", fake_resolve)
-        monkeypatch.setattr(etf_mod, "get_listing_dates", lambda codes, monitor=None: {})
+        monkeypatch.setattr(etf_mod, "get_listing_dates", lambda codes, monitor=None, known=None: {})
         monkeypatch.setattr(
             etf_mod, "get_trade_dates",
             lambda start, end, monitor=None: ["2026-11-20"] if "2000" not in start else ["2026-11-20"],
@@ -73,3 +73,51 @@ class TestEtfUsesAnchor:
         seen.clear()
         etf_mod.collect_etf(codes=["510300"], end_date="2026-01-05")
         assert seen["end_date"] == "2026-01-05"  # 显式优先传入
+
+
+class TestListingDateCache:
+    def test_known_cache_avoids_network(self, monkeypatch):
+        """持久化缓存中的成立日期应直接命中，不再联网请求档案页。"""
+        from collectors import etf as etf_mod
+
+        called = []
+
+        def fake_get(url, *a, **k):
+            called.append(url)
+            raise AssertionError("不应联网请求已缓存代码的档案页")
+
+        monkeypatch.setattr(etf_mod.requests, "get", fake_get)
+        etf_mod._listing_date_cache.clear()
+        known = {"510050": "2004-12-30", "159915": "2011-09-20"}
+        result = etf_mod.get_listing_dates(["510050", "159915"], known=known)
+        assert result == known
+        assert called == []
+        # 模块缓存也被预热，后续无 known 调用同样不联网
+        assert etf_mod.get_listing_dates(["510050"]) == {"510050": "2004-12-30"}
+        etf_mod._listing_date_cache.clear()
+
+    def test_only_missing_codes_hit_network(self, monkeypatch):
+        """仅缺失的代码联网，已缓存代码直接返回。"""
+        from collectors import etf as etf_mod
+
+        called = []
+
+        class Resp:
+            status_code = 200
+            encoding = "utf-8"
+            text = '<label>成立日期：<span>2011-09-20</span></label>'
+
+        def fake_get(url, *a, **k):
+            called.append(url)
+            return Resp()
+
+        monkeypatch.setattr(etf_mod.requests, "get", fake_get)
+        monkeypatch.setattr(etf_mod, "throttle_wait", lambda: None)
+        etf_mod._listing_date_cache.clear()
+        known = {"510050": "2004-12-30"}
+        result = etf_mod.get_listing_dates(["510050", "159915"], known=known)
+        assert result["510050"] == "2004-12-30"
+        assert result["159915"] == "2011-09-20"
+        assert len(called) == 1, "仅 159915 应联网"
+        assert "159915" in called[0]
+        etf_mod._listing_date_cache.clear()

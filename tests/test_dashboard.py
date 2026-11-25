@@ -9,6 +9,7 @@ import storage
 import web_app
 from processors.dashboard import (
     build_etf_charts, build_etf_daily_detail, build_macro_charts,
+    build_trade_charts,
 )
 
 
@@ -447,3 +448,44 @@ class TestDashboardApi:
         assert isinstance(day["rows"], list)
         if day["rows"]:
             assert "code" in day["rows"][0] and "cap" in day["rows"][0]
+
+
+class TestTradeDashboardLayout:
+    """交易看板：市场图 + 两融上下联动双 grid 图。"""
+
+    def setup_method(self):
+        dates = [f"2026-11-{d:02d}" for d in range(10, 20)]
+        self.df = pd.DataFrame({
+            "trade_date": dates,
+            "total_amount": [1000 + i for i in range(len(dates))],
+            "concentration5": [45 + i * 0.1 for i in range(len(dates))],
+            "up_count": [2000 + i for i in range(len(dates))],
+            "down_count": [1500 - i for i in range(len(dates))],
+            "margin_balance": [18000 + i for i in range(len(dates))],
+            "margin_ratio": [280 + i for i in range(len(dates))],
+            "margin_financing_ratio": [80.0] * len(dates),
+            "financing_to_float_mv": [2.3] * len(dates),
+            "financing_buy_pct": [8.5] * len(dates),
+            "debt_investors": [500000 + i for i in range(len(dates))],
+        })
+
+    def test_two_charts_with_margin_split_layout(self):
+        charts = build_trade_charts(self.df, days=60)
+        assert [c["id"] for c in charts] == ["trade_market", "trade_margin"]
+        assert charts[0].get("layout") is None
+        assert charts[1]["layout"] == "trade_margin_split"
+        names = {s["name"] for s in charts[1]["series"]}
+        assert {"两融余额", "有负债投资者数", "平均维持担保比例", "融资买入额占比"} <= names
+
+    def test_margin_series_keep_axis_index_for_split(self):
+        charts = build_trade_charts(self.df, days=60)
+        margin = {s["name"]: s for s in charts[1]["series"]}
+        assert margin["两融余额"]["y_axis_index"] == 0
+        assert margin["有负债投资者数"]["y_axis_index"] == 2
+        assert margin["平均维持担保比例"]["y_axis_index"] == 1
+
+    def test_empty_df_still_returns_two_charts(self):
+        charts = build_trade_charts(pd.DataFrame(), days=60)
+        assert len(charts) == 2
+        assert charts[1]["layout"] == "trade_margin_split"
+        assert charts[0]["series"] == []

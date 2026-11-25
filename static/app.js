@@ -57,6 +57,28 @@ async function api(url, opts={}) {
   if (!r.ok) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
   return body;
 }
+/* 带超时与重试的请求：看板等并发加载场景，个别请求可能在连接复用时被丢弃/挂起，
+   这里用 AbortController 限时，失败后重试，保证首屏明细一定能加载出来。 */
+async function apiRetry(url, opts={}, attempts=3, timeoutMs=6000){
+  let lastErr;
+  for(let i=0;i<attempts;i++){
+    let ctrl, tid;
+    try{
+      ctrl = new AbortController();
+      tid = setTimeout(()=>ctrl.abort(), timeoutMs);
+      const r = await fetch(url, {...opts, cache:'no-store', signal:ctrl.signal});
+      clearTimeout(tid);
+      let body; try{ body = await r.json(); }catch{ body={}; }
+      if(!r.ok) throw new Error(body.detail||body.error||`HTTP ${r.status}`);
+      return body;
+    }catch(e){
+      if(tid) clearTimeout(tid);
+      lastErr = e;
+      if(i<attempts-1) await new Promise(res=>setTimeout(res, 250*(i+1)));
+    }
+  }
+  throw lastErr;
+}
 const postJSON = (url, payload) => api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload||{})});
 
 /* 全局数据：从真实 API 加载后填充（视图函数读取这些变量） */
@@ -68,6 +90,11 @@ let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
 let LAST = '';
 let MACRO_INDS = [], ETF_ITEMS = [], INDEX_ITEMS = [], TRADE_LATEST = [];
 let MONITOR_DATA = {overview:[],failures:[],health:[],detail:[],stats:[]};
+let MONITOR_RAW = {overview:[],failures:[],health:[],detail:[],stats:[]};
+const MONITOR_STATE = Object.fromEntries(['overview','failures','health','detail','stats'].map(k=>
+  [k,{page:1,size:25,keyword:'',run_type:'',category:'',status:'',start:'',end:''}]));
+const PREVIEW_STATE = Object.fromEntries(['macro','etf','index','trade','files'].map(k=>
+  [k,{page:1,size:25,pages:1,total:0,code:'',start:'',end:'',order:'desc'}]));
 let DATA_TABS = {macro:[['月份','指标代码','指标名称','数值','单位','数据源'],[]],
   etf:[['交易日期','基金代码','基金名称','份额(亿份)','单位净值','净流入(亿元)'],[]],
   index:[['交易日期','指数代码','指数名称','开盘','最高','最低','收盘','涨跌幅(%)'],[]],
@@ -160,6 +187,8 @@ async function loadStatus(){
     LAST = S.last_trade_date || '';
     const scheduler = S.scheduler || {};
     if($('#dpSchedEnabled')) $('#dpSchedEnabled').checked = !!scheduler.enabled;
+    if($('#dpSchedTime') && scheduler.time) $('#dpSchedTime').value = scheduler.time;
+    if($('#dpSchedRunType') && scheduler.run_type) $('#dpSchedRunType').value = scheduler.run_type;
     if($('#dpSchedNext')) $('#dpSchedNext').textContent = scheduler.next_run || '-';
     const hdStatus = $('#hdStatus');
     if(hdStatus) hdStatus.textContent = S.running ? '采集中…' : '系统正常';
@@ -211,7 +240,11 @@ async function loadMonitor(){
   try {
     const rep = await api('/api/monitor/report');
     const map = {overview:'运行总览', failures:'失败明细', health:'接口健康度', detail:'调用明细', stats:'采集量统计'};
-    Object.entries(map).forEach(([k,cn])=>{ MONITOR_DATA[k] = rep[cn] ? rep[cn].map(r=>Object.values(r).map(v=>v==null?'—':v)) : []; });
+    Object.entries(map).forEach(([k,cn])=>{
+      const rows = (rep[cn]||[]).filter(r=>!r['提示']);
+      MONITOR_RAW[k] = rows;
+      MONITOR_DATA[k] = rows.map(r=>Object.values(r).map(v=>v==null?'—':v));
+    });
     const box = $('[data-recent-runs]'); if(box) box.innerHTML = recentRunsTable();
   } catch(e){ console.warn('loadMonitor', e); }
 }
@@ -223,7 +256,7 @@ function recentRunsTable(){
     const tmap={scheduled:'调度',interface:'接口',full:'全量'};
     const cost=r[8]||'—';
     const status=fail>0?'失败':'成功';
-    return [rid.length>18?'…'+rid.slice(-18):rid, rt.slice(11)||rt, tmap[type]||type, `<span class="tag ${fail>0?'danger':'success'}">${status}</span>`, String(cost).replace('秒','s')];
+    return [rid.length>18?'…'+rid.slice(-18):rid, rt.slice(11)||rt, tmap[type]||type, `<span class="tag ${fail>0?'failed':'success'}">${status}</span>`, String(cost).replace('秒','s')];
   });
   return rows.length ? tbl(['运行ID','时间','类型','状态','耗时'], rows)
     : '<p class="hint">暂无运行记录（监控库为空）</p>';
@@ -247,15 +280,21 @@ async function loadPreview(kind, opts={}){
   try {
     if(kind==='files'){
       const res = await api('/api/files');
-      DATA_TABS.files = [['文件名','大小(KB)','修改时间','操作'],
-        (res.files||[]).map(f=>[f.name, f.size, f.mtime, `<a class="link" href="/api/download?name=${encodeURIComponent(f.name)}">下载</a>`])];
+      const fileRows = (res.files||[]).map(f=>[f.name, f.size, f.mtime, `<a class="link" href="/api/download?name=${encodeURIComponent(f.name)}">下载</a>`]);
+      DATA_TABS.files = [['文件名','大小(KB)','修改时间','操作'], fileRows];
+      Object.assign(PREVIEW_STATE.files,{page:1,pages:1,total:fileRows.length,page_size:fileRows.length||25});
       return;
     }
     const params = new URLSearchParams({page:String(opts.page||1), page_size:String(opts.page_size||25)});
     if(opts.code) params.set('code', opts.code);
     if(opts.start) params.set('start', opts.start);
     if(opts.end) params.set('end', opts.end);
+    if(opts.order) params.set('order', opts.order);
     const res = await api(`/api/data/${kind}?` + params.toString());
+    if(PREVIEW_STATE[kind]) Object.assign(PREVIEW_STATE[kind],{
+      page:res.page||1, pages:res.pages||1, total:res.total||0, page_size:res.page_size||PREVIEW_STATE[kind].size,
+      code:opts.code||'', start:opts.start||'', end:opts.end||'', order:opts.order||PREVIEW_STATE[kind].order,
+    });
     const rows = (res.rows||[]).map(r=>Object.values(r).map(v=>v==null?'—':v));
     const colsMap = {
       macro:['日期','指标代码','指标名称','数值','单位','数据源'],
@@ -270,10 +309,15 @@ async function loadPreview(kind, opts={}){
     return res;
   } catch(e){ console.warn('loadPreview '+kind, e); }
 }
+let dashLoadSeq = 0;
 async function loadDashboard(){
+  const seq = ++dashLoadSeq;
   try {
     const params = new URLSearchParams({months:'12', etf_months:'12', trade_months:'12'});
+    const overlay = activeView()?.querySelector('[data-act="overlay-index"]')?.value;
+    if(overlay) params.set('overlay_index',overlay);
     const res = await api('/api/dashboard?' + params.toString());
+    if(seq !== dashLoadSeq) return;  // 过期请求：视图已切换，丢弃，避免重复重建 DOM
     DB = { macro:res.macro||{charts:[]}, etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]} };
     if(res.index_options && res.index_options.length){
       $$('[data-act="overlay-index"]').forEach(sel=>{
@@ -342,7 +386,15 @@ const statCard = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-3"><div
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
 const head = (t,d) => ''; // 视图标题条已移除，导航与卡片标题即可标识当前位置
 const tbl = (cols, rows, opts={}) => {
-  const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map(c=>`<th>${esc(c)}</th>`), ...(opts.action?['<th>操作</th>']:[])];
+  const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map((c,ci)=>{
+    if(opts.sortFirst && ci===0){
+      const ord = opts.sortOrder||'desc';
+      const icon = ord==='asc'?'↑':'↓';
+      const next = ord==='asc'?'降序':'升序';
+      return `<th><button class="th-sort" data-act="sort-date" data-kind="${esc(opts.sortFirst)}" title="点击切换日期${next}">${esc(c)} <span class="sort-ico">${icon}</span></button></th>`;
+    }
+    return `<th>${esc(c)}</th>`;
+  }), ...(opts.action?['<th>操作</th>']:[])];
   const h = `<thead><tr>${headCells.join('')}</tr></thead>`;
   const b = rows.map((r,i)=>{
     const lead = opts.expand ? `<td><button class="btn btn-sm" data-act="row-expand" data-i="${i}">▸</button></td>` : '';
@@ -352,9 +404,32 @@ const tbl = (cols, rows, opts={}) => {
   }).join('');
   return `<div class="table-responsive"><table class="table table-hover">${h}<tbody>${b}</tbody></table></div>`;
 };
-const pagerBar = (total=2889, page=1, pages=116) => `<div class="pager" data-pager>共 <b>${fmt(total)}</b> 条 · <span class="pgn" data-act="page-first">«</span><span class="pgn" data-act="page-prev">‹</span>${Array.from({length:Math.min(5,pages)},(_,i)=>`<span class="pg ${i+1===page?'active':''}" data-act="page-go" data-p="${i+1}">${i+1}</span>`).join('')}<span class="pgn" data-act="page-next">›</span><span class="pgn" data-act="page-last">»</span> 每页 <select class="form-select" style="width:74px;padding:2px 4px"><option>25 行/页</option><option>50 行/页</option><option>100 行/页</option></select></div>`;
+const pagerBar = (total=0, page=1, pages=1, scope='', size=25) => {
+  const cur = Math.max(1, page), all = Math.max(1, pages);
+  const from = Math.max(1, Math.min(cur-2, all-4));
+  const nums = Array.from({length:Math.min(5,all)},(_,i)=>from+i);
+  return `<div class="pager" data-pager data-scope="${esc(scope)}">共 <b>${fmt(total)}</b> 条 · `+
+    `<span class="pgn" data-act="page-first">«</span><span class="pgn" data-act="page-prev">‹</span>`+
+    nums.map(n=>`<span class="pg ${n===cur?'active':''}" data-act="page-go" data-p="${n}">${n}</span>`).join('')+
+    `<span class="pgn" data-act="page-next">›</span><span class="pgn" data-act="page-last">»</span> 每页 `+
+    `<select class="form-select" data-page-size data-scope="${esc(scope)}" style="width:82px;padding:2px 4px">`+
+    [25,50,100].map(n=>`<option value="${n}" ${n===size?'selected':''}>${n} 行/页</option>`).join('')+`</select></div>`;
+};
 const rangeQuick = (prefix, active=12) => `<span class="seg">${[[6,'近半年'],[12,'近1年'],[36,'近3年'],[60,'近5年'],[120,'近10年']].map(([m,n])=>`<button class="seg-btn ${m===active?'active':''}" data-act="range" data-prefix="${prefix}" data-months="${m}">${n}</button>`).join('')}</span>`;
-const filterBar = (withCode=true) => `<div class="ctl-params">${withCode?`<input class="prec-input" list="filterCodeOptions" placeholder="选择或输入代码" style="width:150px">`:''}<input class="prec-input" type="date" value="${LAST}" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:130px">${rangeQuick('data',12)}<select class="form-select" style="width:88px"><option>25 行/页</option><option>50 行/页</option><option>100 行/页</option></select><button class="btn btn-primary btn-sm" data-act="filter">筛选</button><button class="btn btn-sm" data-act="filter-reset">默认区间</button><span class="hint" data-filter-count>共 ${fmt(2889)} 条</span></div>`;
+const filterBar = (kind='macro') => {
+  const st = PREVIEW_STATE[kind] || {code:'',start:'',end:'',size:25,total:0};
+  return `<div class="ctl-params" data-preview-filter data-kind="${esc(kind)}">`+
+    `<input class="prec-input" list="filterCodeOptions" data-filter-code placeholder="选择或输入代码" style="width:150px" value="${esc(st.code)}">`+
+    `<input class="prec-input" type="date" data-filter-start style="width:130px" value="${esc(st.start||LAST)}">`+
+    `<span class="hint">~</span>`+
+    `<input class="prec-input" type="date" data-filter-end style="width:130px" value="${esc(st.end||LAST)}">`+
+    rangeQuick('data',12)+
+    `<select class="form-select" data-filter-size style="width:88px">`+
+      [25,50,100].map(n=>`<option value="${n}" ${n===st.size?'selected':''}>${n} 行/页</option>`).join('')+`</select>`+
+    `<button class="btn btn-primary btn-sm" data-act="filter">筛选</button>`+
+    `<button class="btn btn-sm" data-act="filter-reset">默认区间</button>`+
+    `<span class="hint" data-filter-count>共 ${fmt(st.total)} 条</span></div>`;
+};
 const exportBtns = () => `<div class="ctl-params"><button class="btn btn-sm" data-act="export" data-k="macro"><i class="ti ti-file-export"></i> 导出宏观</button><button class="btn btn-sm" data-act="export" data-k="etf"><i class="ti ti-file-export"></i> 导出 ETF</button><button class="btn btn-sm" data-act="export" data-k="index"><i class="ti ti-file-export"></i> 导出指数</button><button class="btn btn-primary btn-sm" data-act="export" data-k="full"><i class="ti ti-file-zip"></i> 导出全量</button></div>`;
 
 /* ==========================================================================
@@ -362,19 +437,18 @@ const exportBtns = () => `<div class="ctl-params"><button class="btn btn-sm" dat
  * ========================================================================== */
 function previewView(kind){
   const names = {macro:'宏观数据',etf:'ETF 日频',index:'指数日线',trade:'日交易',files:'输出文件'};
-  const [cols, rows] = DATA_TABS[kind];
   return head(`采集数据 · ${names[kind]}`,'筛选 / 排序 / 分页 / 导出 · 数据读取自业务库')
     + `<div class="card"><div class="card-header"><h3><i class="ti ti-table" style="color:var(--blue)"></i> ${names[kind]}</h3><div style="margin-left:auto">${exportBtns()}</div></div>
-    <div class="card-body"><div style="margin-bottom:10px">${filterBar()}</div>
-    ${tbl(cols, rows, {action: kind==='files'?'download':null, actionLabel:'下载'})}
-    ${pagerBar()}</div></div>`;
+    <div class="card-body"><div style="margin-bottom:10px">${filterBar(kind)}</div>
+    <div data-preview-table="${kind}"></div><div data-preview-pager="${kind}"></div></div></div>`;
 }
 function monitorView(kind){
   const names = {overview:'运行总览',failures:'失败明细',health:'接口健康度',detail:'调用明细',stats:'采集量统计'};
-  const failMap = {overview:[],failures:[],health:[],detail:[],stats:[]};
-  const opts = kind==='overview' ? {expand:true,expandKey:'run'}
-    : kind==='failures' ? {action:'retry-one',actionLabel:'重跑此条'}
-    : {};
+  const st = MONITOR_STATE[kind];
+  const opts = (arr,val) => arr.map(([v,l])=>`<option value="${esc(v)}" ${v===val?'selected':''}>${l}</option>`).join('');
+  const runTypes = [['','全部运行类型'],['full','全量 full'],['scheduled','定时 scheduled'],['interface','精确采集 interface'],['import','文件导入 import'],['retry','重跑 retry']];
+  const cats = [['','全部类别'],['宏观','宏观'],['ETF','ETF'],['指数','指数'],['交易','交易']];
+  const states = [['','全部状态'],['success','成功'],['failed','失败']];
   return head(`接口监控 · ${names[kind]}`,'成功率 / 失败明细 / 接口健康度 / 调用明细 / 采集量统计')
     + statRow(
       statCard('api','ic-blue',fmt(S.today_calls),'今日调用','全通道','')+
@@ -394,28 +468,129 @@ function monitorView(kind){
         <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">关键词 <span class="muted-inline">接口名 / 接口键 / 失败原因</span></label><input class="prec-input" placeholder="留空不限" style="width:220px"></div>
         <div class="ctl-params"><button class="btn btn-sm" data-act="mc-preview">预览影响</button><button class="btn btn-danger btn-sm" data-act="mc-exec">执行清理</button><button class="btn btn-sm" data-act="mc-reset">重置</button></div>
         <div class="clean-result" data-mc-result>—</div></div></div>
-      <div class="ctl-params" style="margin-bottom:10px">
-        <input class="prec-input" placeholder="接口名/接口键/失败原因 关键词" style="width:200px">
-        <select class="form-select" style="width:120px"><option>全部运行类型</option><option>全量 full</option><option>定时 scheduled</option><option>精确采集 interface</option></select>
-        <select class="form-select" style="width:100px"><option>全部类别</option><option>宏观</option><option>ETF</option></select>
-        <select class="form-select" style="width:100px"><option>全部状态</option><option>成功</option><option>失败</option></select>
-        <input class="prec-input" type="date" value="${LAST}" style="width:125px">
-        <button class="btn btn-sm" data-act="filter"><i class="ti ti-filter"></i> 筛选</button><button class="btn btn-sm" data-act="filter-reset">重置</button>
-        <span class="hint" data-filter-count>共 ${fmt(MONITOR_DATA[kind].length)} 行</span>${kind==='failures'?'<span class="hint">失败明细每行可单独重跑</span>':''}</div>
-      ${tbl(MONITOR_HEADERS[kind], MONITOR_DATA[kind], opts)}
-      ${pagerBar(MONITOR_DATA[kind].length,1,1)}</div></div>`;
+      <div class="ctl-params" style="margin-bottom:10px" data-monitor-filter data-kind="${kind}">
+        <input class="prec-input" data-mon-keyword placeholder="接口名/接口键/失败原因 关键词" style="width:200px" value="${esc(st.keyword)}">
+        <select class="form-select" data-mon-run-type style="width:135px">${opts(runTypes,st.run_type)}</select>
+        <select class="form-select" data-mon-category style="width:105px">${opts(cats,st.category)}</select>
+        <select class="form-select" data-mon-status style="width:100px">${opts(states,st.status)}</select>
+        <input class="prec-input" type="date" data-mon-start style="width:125px" value="${esc(st.start)}">
+        <span class="hint">~</span><input class="prec-input" type="date" data-mon-end style="width:125px" value="${esc(st.end)}">
+        <select class="form-select" data-mon-size style="width:88px">${[25,50,100].map(n=>`<option value="${n}" ${n===st.size?'selected':''}>${n} 行/页</option>`).join('')}</select>
+        <button class="btn btn-primary btn-sm" data-act="monitor-filter"><i class="ti ti-filter"></i> 筛选</button>
+        <button class="btn btn-sm" data-act="monitor-reset">重置</button>
+        <span class="hint" data-filter-count>共 ${fmt(MONITOR_RAW[kind].length)} 行</span>${kind==='failures'?'<span class="hint">失败明细每行可单独重跑</span>':''}</div>
+      <div data-monitor-table="${kind}"></div><div data-monitor-pager="${kind}"></div></div></div>`;
 }
 const MONITOR_HEADERS = {
-  overview:['运行ID','运行时间','运行类型','调用数','成功数','失败数','成功率','耗时'],
-  failures:['任务ID','接口名称','类别','发生时间','失败原因','重跑结果','状态'],
-  health:['接口名称','接口键','类别','累计调用','成功','成功率','失败数','状态'],
-  detail:['运行ID','运行时间','接口名称','类别','状态','数据行数','耗时','失败原因'],
-  stats:['类别','标的数','今日新增','累计行数','频率','最新日期'],
+  overview:['运行ID','运行日期','运行时间','运行类型','接口调用数','成功数','失败数','成功率(%)','总耗时(秒)'],
+  failures:['任务ID','失败日期','运行ID','类别','接口名称','调用参数','尝试次数','失败原因','重跑结果','失败详情'],
+  health:['接口键','接口名称','类别','累计调用','成功数','失败数','成功率(%)','最近失败日期','最近失败原因'],
+  detail:['运行日期','运行时间','运行ID','运行类型','类别','接口键','接口名称','调用参数','状态','尝试次数','数据行数','失败原因','耗时(秒)'],
+  stats:['运行日期','运行ID','运行类型','类别口径','细分口径','名称','采集行数','统计时间'],
 };
+function monitorStatus(row, kind){
+  if(kind==='failures') return 'failed';
+  if(row['状态'] != null && row['状态'] !== '') return String(row['状态']);
+  if(row['失败数'] != null) return Number(row['失败数'])>0 ? 'failed' : 'success';
+  return '';
+}
+function monitorFilteredRows(kind){
+  const st = MONITOR_STATE[kind];
+  const kw = String(st.keyword||'').trim().toLowerCase();
+  return (MONITOR_RAW[kind]||[]).filter(r=>{
+    if(kw && !Object.values(r).some(v=>String(v ?? '').toLowerCase().includes(kw))) return false;
+    if(st.run_type && String(r['运行类型']||'')!==st.run_type) return false;
+    if(st.category && String(r['类别']||r['类别口径']||'')!==st.category) return false;
+    if(st.status && monitorStatus(r,kind)!==st.status) return false;
+    const date = String(r['运行日期']||r['失败日期']||r['最近失败日期']||r['运行时间']||'').slice(0,10);
+    if(st.start && date && date<st.start) return false;
+    if(st.end && date && date>st.end) return false;
+    return true;
+  });
+}
+function renderMonitorTable(kind){
+  const box=document.querySelector(`[data-monitor-table="${kind}"]`); if(!box) return;
+  const st=MONITOR_STATE[kind], rows=monitorFilteredRows(kind);
+  const size=Math.min(Math.max(1,Number(st.size)||25),100);
+  const pages=Math.max(1,Math.ceil(rows.length/size));
+  if(st.page>pages) st.page=pages;
+  const slice=rows.slice((st.page-1)*size, st.page*size);
+  const cols=MONITOR_HEADERS[kind]||[];
+  const view=box.closest('.view');
+  const hint=view?.querySelector('[data-filter-count]');
+  const active=['keyword','run_type','category','status','start','end'].some(k=>st[k]);
+  if(hint) hint.textContent=`${active?'筛选后':'共'} ${fmt(rows.length)} 行`;
+  if(!slice.length){ box.innerHTML='<p class="hint">无匹配记录，请调整筛选条件</p>'; return; }
+  const headCells=(kind==='overview'?['']:[]).concat(cols,kind==='failures'?['操作']:[]);
+  const body=slice.map(r=>{
+    const status=monitorStatus(r,kind);
+    const fail=status==='failed' || !!(r['失败原因'] && !String(r['重跑结果']||'').startsWith('已'));
+    let cells=cols.map(c=>{
+      const v=r[c]==null?'':String(r[c]);
+      let inner=v?`<div class="cell-clip" title="${esc(v)}">${esc(v)}</div>`:'<span class="hint">—</span>';
+      if(c==='状态') inner=`<span class="tag ${status==='success'?'success':'failed'}">${status==='success'?'成功':'失败'}</span>`;
+      if(c==='重跑结果' && v) inner=`<span class="tag ${v.startsWith('已')?'success':'failed'}">${esc(v)}</span>`;
+      if(c==='成功率(%)' && v) inner=`<span class="${Number(v)>=100?'up':'down'}">${esc(v)}%</span>`;
+      return `<td>${inner}</td>`;
+    }).join('');
+    if(kind==='overview'){
+      const runId=esc(r['运行ID']||'');
+      cells=`<td><button class="btn btn-sm" data-act="monitor-expand" data-run-id="${runId}">▸</button></td>`+cells;
+      return `<tr class="${fail?'row-fail':''}">${cells}</tr>`;
+    }
+    if(kind==='failures'){
+      const done=String(r['重跑结果']||'').startsWith('已重跑成功');
+      cells+=`<td><button class="btn btn-sm" data-act="retry-one" data-task-id="${esc(r['任务ID']||'')}">${done?'再次重跑':'重跑此条'}</button></td>`;
+    }
+    return `<tr class="${fail?'row-fail':''}">${cells}</tr>`;
+  }).join('');
+  box.innerHTML=`<div class="table-responsive"><table class="table table-hover"><thead><tr>${headCells.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+function renderMonitorPager(kind){
+  const box=document.querySelector(`[data-monitor-pager="${kind}"]`); if(!box) return;
+  const st=MONITOR_STATE[kind], rows=monitorFilteredRows(kind);
+  const size=Math.min(Math.max(1,Number(st.size)||25),100);
+  const pages=Math.max(1,Math.ceil(rows.length/size));
+  if(st.page>pages) st.page=pages;
+  box.innerHTML=pagerBar(rows.length,st.page,pages,'mon:'+kind,size);
+}
+function monitorGo(kind,page,size){
+  const st=MONITOR_STATE[kind]; if(!st) return;
+  st.page=Math.max(1,Number(page)||1);
+  if(size) st.size=Math.min(Math.max(1,Number(size)||25),100);
+  renderMonitorTable(kind); renderMonitorPager(kind);
+}
+function renderPreviewTable(kind){
+  const box=document.querySelector(`[data-preview-table="${kind}"]`); if(!box) return;
+  const [cols,rows]=DATA_TABS[kind]||[[],[]];
+  const sortOpts = kind==='files' ? {} : {sortFirst:kind, sortOrder:PREVIEW_STATE[kind]?.order||'desc'};
+  box.innerHTML=rows.length ? tbl(cols,rows,{...sortOpts,action:kind==='files'?'download':null,actionLabel:'下载'})
+    : '<p class="hint">暂无数据，请调整筛选条件</p>';
+}
+function renderPreviewPager(kind){
+  const box=document.querySelector(`[data-preview-pager="${kind}"]`); if(!box) return;
+  const st=PREVIEW_STATE[kind]; if(!st) return;
+  box.innerHTML=pagerBar(st.total,st.page,st.pages,'prev:'+kind,st.size);
+  // 同步当前视图顶部筛选条计数，避免快捷范围/排序后仍显示旧总数
+  const filterBar = document.querySelector(`[data-preview-filter][data-kind="${kind}"]`);
+  const cnt = filterBar?.querySelector('[data-filter-count]');
+  if(cnt) cnt.textContent = `共 ${fmt(st.total)} 条`;
+}
+function previewGo(kind,page,size){
+  const st=PREVIEW_STATE[kind]; if(!st) return;
+  st.page=Math.max(1,Number(page)||1);
+  if(size){ st.size=Math.min(Math.max(1,Number(size)||25),100); st.page=1; }
+  loadPreview(kind,{page:st.page,page_size:st.size,code:st.code,start:st.start,end:st.end,order:st.order})
+    .then(()=>{ renderPreviewTable(kind); renderPreviewPager(kind); });
+}
+function hydrateTables(){
+  Object.keys(MONITOR_STATE).forEach(k=>{ renderMonitorTable(k); renderMonitorPager(k); });
+  Object.keys(PREVIEW_STATE).forEach(k=>{ renderPreviewTable(k); renderPreviewPager(k); });
+}
 function dashShell(grp){
   const ctl = grp==='macro'
     ? `<label class="prec-field">宏观范围 <select class="form-select" style="width:100px" data-act="dash-macro-range"><option>近一年</option><option>近6个月</option><option>近3年</option><option>近5年</option><option>全部</option></select></label><span class="hint">数据来源：派生指标 / 宏观观测 / 上交所日线</span>`
-    : `${grp==='etf'?`<label class="prec-field">叠加指数 <select class="form-select" style="width:120px"><option>上证指数 000001</option><option>沪深300 000300</option><option>科创50 000688</option><option>创业板指 399006</option></select></label>`:''}
+    : `${grp==='etf'?`<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="汇金图上方叠加的指数日线"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`:''}
        <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
        <label class="prec-field">结束 <input class="prec-input" type="date" data-range-end value="${LAST}" style="width:125px"></label>
        ${rangeQuick('dash-'+grp,12)}`;
@@ -545,7 +720,7 @@ const VIEWS = {
 
   tasksched:()=>head('任务调度','每日定时调度 · 采集完成后自动增量重算')+`<div class="trigger-grid" style="grid-template-columns:1fr">
     <div class="trigger-card"><div class="tc-head"><h3>⏰ 定时调度 <small>主触发</small></h3><label class="switch-row"><input type="checkbox" id="dpSchedEnabled" checked> 启用</label></div><div class="tc-body">
-      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" style="width:160px"><option>全量 full</option><option>仅宏观 macro（当月）</option><option>仅 ETF etf</option><option>仅指数 index</option></select><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
+      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" id="dpSchedTime" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" id="dpSchedRunType" style="width:160px"><option value="full">全量 full</option><option value="macro">仅宏观 macro（当月）</option><option value="etf">仅 ETF etf</option><option value="index">仅指数 index</option></select><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
       <div class="tc-row tc-row-foot"><button class="btn btn-primary btn-sm" data-act="save-sched">保存调度配置</button><button class="btn btn-sm" data-act="sched-run-now"><i class="ti ti-player-play"></i> 立即触发一次</button></div>
       <div class="tc-note">采集完成后自动执行步骤 6/6 增量重算（只算本次变更涉及的指标/月份）· 每天仅触发一次 · 忙时跳过不补跑</div></div></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
@@ -581,6 +756,7 @@ function buildSidebar(){
 }
 function renderViews(){
   $('#views').innerHTML = Object.entries(VIEWS).map(([k,v])=>`<section class="view ${k===curView?'active':''}" id="v-${k}">${v()}</section>`).join('');
+  hydrateTables();
 }
 function switchView(id){
   if(!VIEWS[id]) return;
@@ -600,6 +776,7 @@ function rerenderView(id){
   if(curView!==id) return;
   const el = byId('v-'+id); if(!el || !VIEWS[id]) return;
   el.innerHTML = VIEWS[id]();
+  hydrateTables();
   if(id.startsWith('dash')) renderDash();
 }
 async function refreshViewData(id){
@@ -774,13 +951,16 @@ function renderEtfChartNode(node, chart, months){
 let etfDetailState = {code:'', page:1, start:'', end:''};
 
 async function etfLoadDailyDetail(){
-  const tableBox = byId('etfDailyTable'), totalBox = byId('etfDailyTotal');
+  let tableBox = byId('etfDailyTable'), totalBox = byId('etfDailyTotal');
   if(!tableBox||!totalBox) return;
   const p = ETF_RANGE();
   const qs = new URLSearchParams({months:String(p.months||12)});
   if(p.start) qs.set('start',p.start); if(p.end) qs.set('end',p.end);
   try{
-    const res = await api('/api/dashboard/etf-daily?'+qs.toString());
+    const res = await apiRetry('/api/dashboard/etf-daily?'+qs.toString());
+    // DOM 可能在 await 期间被重建，重新取当前文档中的节点
+    totalBox = byId('etfDailyTotal') || totalBox;
+    tableBox = byId('etfDailyTable') || tableBox;
     const t=res.total||{share:0,cap:0,net:0,days:0};
     totalBox.innerHTML=`
       <div class="etf-daily-total-card"><span>区间合计申赎净流入</span><b class="${t.net>=0?'up':'down'}">${t.net>=0?'+':''}${fmtNum(t.net)} <small>亿元</small></b></div>
@@ -862,13 +1042,16 @@ function etfRenderSharesBlock(totalBox, tableBox, res, rangeParams){
   return {asc,cum};
 }
 async function etfLoadSharesDetail(){
-  const tableBox=byId('etfSharesTable'), totalBox=byId('etfSharesTotal');
+  let tableBox=byId('etfSharesTable'), totalBox=byId('etfSharesTotal');
   if(!tableBox||!totalBox) return;
   const p=ETF_RANGE(); const rangeParams={months:p.months||12};
   if(p.start)rangeParams.start=p.start; if(p.end)rangeParams.end=p.end;
   try{
     const qs=new URLSearchParams({...rangeParams,view:'total'});
-    const res=await api('/api/dashboard/etf-daily?'+qs.toString());
+    const res=await apiRetry('/api/dashboard/etf-daily?'+qs.toString());
+    // DOM 可能在 await 期间被重建，重新取当前文档中的节点
+    totalBox = byId('etfSharesTotal') || totalBox;
+    tableBox = byId('etfSharesTable') || tableBox;
     const {asc}=etfRenderSharesBlock(totalBox,tableBox,res,rangeParams);
     const box=byId('etfSharesCumChart');
     if(box){
@@ -1008,56 +1191,88 @@ function applyQuickRange(btn){
   const view = activeView(); if(!view) return;
   const months = Number(btn.dataset.months||12);
   $$('.seg-btn[data-months]',view).forEach(x=>x.classList.toggle('active',x===btn));
+  const end = new Date(LAST);
+  const start = new Date(LAST);
+  if(months>=999) start.setFullYear(start.getFullYear()-20); else start.setMonth(start.getMonth()-months);
+  const lo = start.toISOString().slice(0,10);
+  // 看板视图：data-range-start/end，直接重绘
   const s = view.querySelector('[data-range-start]'), e = view.querySelector('[data-range-end]');
   if(s && e){
-    const end = new Date(LAST);
-    const start = new Date(LAST);
-    if(months>=999) start.setFullYear(start.getFullYear()-20); else start.setMonth(start.getMonth()-months);
-    const lo = start.toISOString().slice(0,10);
     s.value = lo; e.value = LAST;
     const hint = view.querySelector('[data-range-hint]');
     if(hint) hint.textContent = `已回显 ${lo} ~ ${LAST}（快捷范围）`;
-  } else {
-    const hint = view.querySelector('[data-filter-count]');
-    if(hint) hint.textContent = `已选择 ${btn.textContent.trim()} · 共 ${fmt(Math.round(2889*months/12))} 条`;
+    if(curView.startsWith('dash')) renderDash();
+    toast(`已切换范围：${btn.textContent.trim()}`, 'info');
+    return;
   }
-  if(curView.startsWith('dash')) renderDash();
+  // 预览视图：data-filter-start/end，写入状态并真实重载
+  const fs = view.querySelector('[data-filter-start]'), fe = view.querySelector('[data-filter-end]');
+  const bar = view.querySelector('[data-preview-filter]');
+  if(fs && fe && bar){
+    fs.value = lo; fe.value = LAST;
+    const kind = bar.dataset.kind||curView.replace('prev-','');
+    const st = PREVIEW_STATE[kind]; if(!st) return;
+    st.start = lo; st.end = LAST; st.page = 1;
+    loadPreview(kind,{page:st.page,page_size:st.size,code:st.code,start:st.start,end:st.end,order:st.order})
+      .then(()=>{ renderPreviewTable(kind); renderPreviewPager(kind); });
+    toast(`已切换范围：${btn.textContent.trim()}（${lo} ~ ${LAST}）`, 'info');
+    return;
+  }
   toast(`已切换范围：${btn.textContent.trim()}`, 'info');
 }
 function setPagerActive(btn){
   const bar = btn.closest('[data-pager]'); if(!bar) return;
-  const act = btn.dataset.act, cur = bar.querySelector('.pg.active');
-  let target = cur;
-  if(act==='page-go') target = btn;
-  else if(act==='page-first') target = bar.querySelector('.pg');
-  else if(act==='page-last') target = Array.from(bar.querySelectorAll('.pg')).pop();
-  else if(act==='page-prev') target = cur?.previousElementSibling?.classList.contains('pg') ? cur.previousElementSibling : cur;
-  else if(act==='page-next') target = cur?.nextElementSibling?.classList.contains('pg') ? cur.nextElementSibling : cur;
-  if(target && target!==cur){
-    $$('.pg',bar).forEach(x=>x.classList.remove('active')); target.classList.add('active');
-    toast(`已切换到第 ${target.textContent.trim()} 页`,'info');
-  }
+  const [scope,kind] = String(bar.dataset.scope||'').split(':');
+  const st = scope==='mon' ? MONITOR_STATE[kind] : scope==='prev' ? PREVIEW_STATE[kind] : null;
+  if(!st) return;
+  const act = btn.dataset.act;
+  const pages = scope==='mon'
+    ? Math.max(1,Math.ceil(monitorFilteredRows(kind).length/(Number(st.size)||25)))
+    : (Number(st.pages)||1);
+  let page = Number(st.page)||1;
+  if(act==='page-go') page = Number(btn.dataset.p)||1;
+  else if(act==='page-first') page = 1;
+  else if(act==='page-last') page = pages;
+  else if(act==='page-prev') page = Math.max(1,page-1);
+  else if(act==='page-next') page = Math.min(pages,page+1);
+  if(scope==='mon') monitorGo(kind,page); else previewGo(kind,page);
 }
 function handleTableAction(act, btn){
   const view = activeView(); if(!view) return;
   const row = btn.closest('tr');
-  if(act==='row-expand'){
-    const next = row?.nextElementSibling;
-    if(next && next.classList.contains('log-detail')){ next.remove(); btn.textContent='▸'; return; }
-    const div = document.createElement('tr'); div.className='log-detail';
-    const cells = row?.querySelectorAll('td');
-    const runId = cells?.[0]?.textContent?.trim()||'';
-    div.innerHTML = `<td colspan="${row?.children.length||8}"><div class="log-detail" style="margin:0">运行 ${esc(runId)} 的接口调用明细（见「调用明细」视图）。数据读取自监控记录。</div></td>`;
-    row?.after(div); btn.textContent='▾'; return;
+  if(act==='monitor-expand'){
+    let next=row?.nextElementSibling;
+    if(next?.hasAttribute('data-monitor-detail') && !next.hidden){
+      next.hidden=true; btn.textContent='▸'; return;
+    }
+    const runId=btn.dataset.runId||'';
+    if(!next?.hasAttribute('data-monitor-detail')){
+      next=document.createElement('tr');
+      next.className='etf-day-detail-row';
+      next.setAttribute('data-monitor-detail',runId);
+      next.innerHTML=`<td colspan="${row?.children.length||10}"></td>`;
+      row?.after(next);
+    }
+    const details=(MONITOR_RAW.detail||[]).filter(d=>String(d['运行ID']||'')===runId);
+    const cols=['运行时间','接口名称','类别','状态','数据行数','失败原因','耗时(秒)'];
+    const head=`<div class="etf-day-detail-title">运行 ${esc(runId)} · 接口调用明细（${details.length} 条）</div>`+
+      `<table class="etf-day-detail-table"><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>`;
+    const body=details.map(d=>'<tr>'+cols.map(c=>{
+      const v=d[c]==null?'':String(d[c]);
+      if(c==='状态') return `<td><span class="tag ${v==='success'?'success':'failed'}">${v==='success'?'成功':'失败'}</span></td>`;
+      return `<td>${v?esc(v):'—'}</td>`;
+    }).join('')+'</tr>').join('');
+    const td=next?.querySelector('td');
+    if(td){ td.innerHTML=details.length?head+body+'</tbody></table>':`<div class="hint">运行 ${esc(runId)} 无接口调用明细</div>`; next.hidden=false; btn.textContent='▾'; }
+    return;
   }
   if(act==='retry-one'){
     const cells = row?.querySelectorAll('td');
-    const taskId = cells?.[0]?.textContent?.trim()||'';
+    const taskId = btn.dataset.taskId || cells?.[0]?.textContent?.trim()||'';
     if(!taskId){ toast('缺少任务ID','warn'); return; }
     btn.textContent='重跑中…'; btn.disabled=true;
     submitJob('/api/retry/task', {task_id:taskId}, `重跑任务 ${taskId}`).then(()=>{
       btn.textContent='再次重跑'; btn.disabled=false;
-      const st=cells?.[5]; if(st) st.innerHTML='<span class="tag success">已重跑</span>';
     });
     return;
   }
@@ -1134,8 +1349,8 @@ function handleAction(act, btn, e){
     }
     case 'save-sched': {
       const en = $('#dpSchedEnabled')?.checked ?? true;
-      const tm = view?.querySelector('input[type="time"]')?.value || '03:17';
-      const rt = view?.querySelector('select')?.value?.split(' ')[0] || 'full';
+      const tm = $('#dpSchedTime')?.value || '03:17';
+      const rt = $('#dpSchedRunType')?.value || 'full';
       postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt})
         .then(()=>{ toast('调度配置已保存','ok'); loadStatus(); })
         .catch(err=>toast('保存失败：'+err.message,'err'));
@@ -1184,22 +1399,62 @@ function handleAction(act, btn, e){
     }
     /* 预览 */
     case 'filter': {
-      const code = view?.querySelector('input[list]')?.value?.trim()||'';
-      const dates = view?.querySelectorAll('input[type="date"]');
-      const start=dates?.[0]?.value||'', end=dates?.[1]?.value||'';
-      const kind = curView.replace('prev-','');
-      const c = view?.querySelector('[data-filter-count]');
-      loadPreview(kind, {code,start,end}).then(res=>{
-        rerenderView(curView);
-        const cnt=c||view?.querySelector('[data-filter-count]');
-        if(cnt) cnt.textContent=`共 ${fmt(res?.total||DATA_TABS[kind]?.[1]?.length||0)} 条`;
-        toast('筛选条件已应用','ok');
+      const bar=view?.querySelector('[data-preview-filter]'); if(!bar) break;
+      const kind=bar.dataset.kind||curView.replace('prev-','');
+      const st=PREVIEW_STATE[kind]; if(!st) break;
+      st.code=bar.querySelector('[data-filter-code]')?.value?.trim()||'';
+      st.start=bar.querySelector('[data-filter-start]')?.value||'';
+      st.end=bar.querySelector('[data-filter-end]')?.value||'';
+      st.size=Number(bar.querySelector('[data-filter-size]')?.value)||st.size;
+      st.page=1;
+      loadPreview(kind,{page:st.page,page_size:st.size,code:st.code,start:st.start,end:st.end,order:st.order}).then(()=>{
+        rerenderView(curView); toast('筛选条件已应用','ok');
       });
       break;
     }
     case 'filter-reset': {
-      $$('input[type="date"]',view).forEach(x=>x.value=LAST);
-      loadPreview(curView.replace('prev-','')).then(()=>{ rerenderView(curView); toast('已恢复默认区间','info'); });
+      const bar=view?.querySelector('[data-preview-filter]'); if(!bar) break;
+      const kind=bar.dataset.kind||curView.replace('prev-','');
+      const st=PREVIEW_STATE[kind]; if(!st) break;
+      Object.assign(st,{page:1,code:'',start:LAST,end:LAST});
+      st.order='desc';
+      loadPreview(kind,{page:st.page,page_size:st.size,code:'',start:LAST,end:LAST,order:st.order}).then(()=>{
+        rerenderView(curView); toast('已恢复默认区间','info');
+      });
+      break;
+    }
+    case 'sort-date': {
+      const kind = btn.dataset.kind || curView.replace('prev-','');
+      const st = PREVIEW_STATE[kind]; if(!st) break;
+      st.order = st.order==='asc' ? 'desc' : 'asc';
+      st.page = 1;
+      loadPreview(kind,{page:st.page,page_size:st.size,code:st.code,start:st.start,end:st.end,order:st.order})
+        .then(()=>{ renderPreviewTable(kind); renderPreviewPager(kind); toast(`日期已切换为${st.order==='asc'?'升序':'降序'}`,'info'); });
+      break;
+    }
+    /* 接口监控筛选 */
+    case 'monitor-filter': {
+      const bar=view?.querySelector('[data-monitor-filter]'); if(!bar) break;
+      const kind=bar.dataset.kind||curView.replace('mon-','');
+      const st=MONITOR_STATE[kind]; if(!st) break;
+      st.keyword=bar.querySelector('[data-mon-keyword]')?.value?.trim()||'';
+      st.run_type=bar.querySelector('[data-mon-run-type]')?.value||'';
+      st.category=bar.querySelector('[data-mon-category]')?.value||'';
+      st.status=bar.querySelector('[data-mon-status]')?.value||'';
+      st.start=bar.querySelector('[data-mon-start]')?.value||'';
+      st.end=bar.querySelector('[data-mon-end]')?.value||'';
+      st.size=Number(bar.querySelector('[data-mon-size]')?.value)||st.size;
+      st.page=1;
+      renderMonitorTable(kind); renderMonitorPager(kind);
+      toast('筛选条件已应用','ok');
+      break;
+    }
+    case 'monitor-reset': {
+      const bar=view?.querySelector('[data-monitor-filter]'); if(!bar) break;
+      const kind=bar.dataset.kind||curView.replace('mon-','');
+      const st=MONITOR_STATE[kind]; if(!st) break;
+      Object.assign(st,{page:1,keyword:'',run_type:'',category:'',status:'',start:'',end:''});
+      rerenderView(curView); toast('已重置筛选','info');
       break;
     }
     case 'export': {
@@ -1300,7 +1555,7 @@ function handleAction(act, btn, e){
       submitJob('/api/trade/recompute', {trade_date:d}, `交易指标重算(${d})`); break;
     }
     /* 表格内操作 */
-    case 'row-expand': case 'retry-one': case 'etf-share-detail': case 'download': handleTableAction(act,btn); break;
+    case 'row-expand': case 'monitor-expand': case 'retry-one': case 'etf-share-detail': case 'download': handleTableAction(act,btn); break;
     /* 弹窗 */
     case 'modal-cancel': closeModal(); break;
     case 'modal-ok': { const cb=byId('modalRoot')._onOk; closeModal(); if(cb) cb(); break; }
@@ -1361,11 +1616,22 @@ function bindEvents(){
       toast(`类别已切换为「${t.selectedOptions[0]?.text}」，口径已联动（共 ${opts.length} 项）`,'info');
     }
     if(t.matches('[data-act="dash-macro-range"]')) renderDash();
+    if(t.matches('[data-act="overlay-index"]')) loadDashboard();
     if(t.matches('[data-range-start],[data-range-end]')){
       const view=activeView();
       $$('.seg-btn[data-months]',view).forEach(x=>x.classList.remove('active'));
       const hint=view?.querySelector('[data-range-hint]'); if(hint) hint.textContent='已进入自定义日期范围';
       if(curView.startsWith('dash')) renderDash();
+    }
+    if(t.matches('[data-page-size]')){
+      const [scope,kind] = String(t.dataset.scope||'').split(':');
+      const size = Number(t.value)||25;
+      if(scope==='mon' && MONITOR_STATE[kind]){
+        Object.assign(MONITOR_STATE[kind],{page:1,size});
+        renderMonitorTable(kind); renderMonitorPager(kind);
+      } else if(scope==='prev' && PREVIEW_STATE[kind]){
+        previewGo(kind,1,size);
+      }
     }
     if(t.matches('[data-clean-cat] [data-act="clean-cat"]')) handleAction('clean-cat',t,e);
   });

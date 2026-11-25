@@ -283,7 +283,13 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 .log-panel,.log-head,.log-strip,.log-detail{border-color:#23324a!important}
 .modal-mask{background:rgba(2,8,18,.68)!important}
 .modal-body{color:#c8d8ee!important}
+.toast-box{min-width:260px}
+.toast{display:flex!important;visibility:visible!important;opacity:1!important}
 .etf-day-detail-row>td,.etf-shares-detail-row>td{background:rgba(91,155,255,.07)!important}
 .up,.etf-day-detail-table .up,.etf-daily-total-card .up,.table-wrap .up{color:#ff6b6b!important}
 .down,.etf-day-detail-table .down,.etf-daily-total-card .down,.table-wrap .down{color:#35c98b!important}
 .placeholder{color:var(--muted)!important;border-color:var(--line)!important}
+/* 表头日期排序按钮 */
+.th-sort{background:none;border:0;color:inherit;cursor:pointer;font:inherit;padding:0;display:inline-flex;align-items:center;gap:4px}
+.th-sort:hover{color:var(--blue)}
+.th-sort .sort-ico{color:var(--blue);font-size:12px}

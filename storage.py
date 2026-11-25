@@ -239,6 +239,31 @@ def init_schema(path: str | Path) -> None:
             CREATE INDEX IF NOT EXISTS idx_tsnap_date ON trade_snapshot_raw(trade_date DESC);
             CREATE INDEX IF NOT EXISTS idx_tsnap_code_date ON trade_snapshot_raw(code, trade_date DESC);
 
+            CREATE TABLE IF NOT EXISTS trade_breadth_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                up_count INTEGER,
+                down_count INTEGER,
+                flat_count INTEGER,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tbreadth_date ON trade_breadth_raw(trade_date DESC);
+
+            CREATE TABLE IF NOT EXISTS trade_congestion_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                close_price REAL,
+                top5_amount_yi REAL,
+                total_amount_yi REAL,
+                concentration5 REAL,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_tcongestion_date ON trade_congestion_raw(trade_date DESC);
+
             CREATE TABLE IF NOT EXISTS trade_observation (
                 biz_key TEXT PRIMARY KEY,
                 trade_date TEXT NOT NULL,
@@ -306,7 +331,7 @@ def index_biz_key(code: str, trade_date: str) -> str:
 
 
 def trade_raw_biz_key(prefix: str, trade_date: str) -> str:
-    """交易原始表主键：EX_{YYYYMMDD} / MG_{YYYYMMDD}。"""
+    """交易原始表主键：EX/MG/BR/CG_{YYYYMMDD}。"""
     return f"{prefix}_{str(trade_date).replace('-', '')}"
 
 
@@ -625,12 +650,78 @@ def upsert_trade_snapshot(path: str | Path, df: pd.DataFrame, run_id: str = "") 
     return len(records)
 
 
+def upsert_trade_breadth(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入东方财富 MCP 市场宽度原始表（每日涨跌家数）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_raw_biz_key("BR", date), date,
+            _clean(r.get("up_count")), _clean(r.get("down_count")),
+            _clean(r.get("flat_count")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_breadth_raw(
+                biz_key, trade_date, up_count, down_count, flat_count,
+                source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                up_count=excluded.up_count, down_count=excluded.down_count,
+                flat_count=excluded.flat_count, source=excluded.source,
+                collected_at=excluded.collected_at, run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
+def upsert_trade_congestion(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入乐咕大盘拥挤度原始表（前5%个股成交额占比）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_raw_biz_key("CG", date), date,
+            _clean(r.get("close_price")), _clean(r.get("top5_amount_yi")),
+            _clean(r.get("total_amount_yi")), _clean(r.get("concentration5")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_congestion_raw(
+                biz_key, trade_date, close_price, top5_amount_yi, total_amount_yi,
+                concentration5, source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                close_price=excluded.close_price,
+                top5_amount_yi=excluded.top5_amount_yi,
+                total_amount_yi=excluded.total_amount_yi,
+                concentration5=excluded.concentration5,
+                source=excluded.source, collected_at=excluded.collected_at,
+                run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
 def read_trade_raw(path: str | Path, table: str, start: str | None = None,
                    end: str | None = None) -> pd.DataFrame:
-    """读取交易原始表（table: exchange/margin/snapshot），可按日期范围过滤。"""
+    """读取交易原始表（table: exchange/margin/snapshot/breadth/congestion），可按日期范围过滤。"""
     init_schema(path)
     allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
-               "snapshot": "trade_snapshot_raw"}
+               "snapshot": "trade_snapshot_raw", "breadth": "trade_breadth_raw",
+               "congestion": "trade_congestion_raw"}
     if table not in allowed:
         return pd.DataFrame()
     sql = f"SELECT * FROM {allowed[table]}"
@@ -652,7 +743,8 @@ def trade_raw_dates(path: str | Path, table: str) -> list[str]:
     """返回某原始表已落库的交易日列表（升序）。"""
     init_schema(path)
     allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
-               "snapshot": "trade_snapshot_raw"}
+               "snapshot": "trade_snapshot_raw", "breadth": "trade_breadth_raw",
+               "congestion": "trade_congestion_raw"}
     if table not in allowed:
         return []
     with connect(path) as conn:
@@ -1078,7 +1170,8 @@ def status_counts(path: str | Path) -> dict:
         ).fetchone()
         raw_rows = {}
         for tname, tkey in [("exchange", "trade_exchange_raw"), ("margin", "trade_margin_raw"),
-                            ("snapshot", "trade_snapshot_raw")]:
+                            ("snapshot", "trade_snapshot_raw"), ("breadth", "trade_breadth_raw"),
+                            ("congestion", "trade_congestion_raw")]:
             raw_rows[tname] = int(conn.execute(
                 f"SELECT COUNT(*) AS n FROM {tkey}"
             ).fetchone()["n"])
@@ -1360,7 +1453,8 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
 # ---------- 全量清空（按需调用，服务启动不会触发） ----------
 CLEAR_TABLES = [
     "macro_observation", "etf_observation", "index_observation",
-    "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw",
+    "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw", "trade_breadth_raw",
+    "trade_congestion_raw",
     "interface_run", "etf_config", "index_config", "meta", "export_log",
     "collection_stat",
 ]

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投研大盘数据平台 · 交互原型 v5.3</title>
+<style>/*__TABLER_CSS__*/</style>
+<style>/*__ICONS_CSS__*/</style>
+<style>/*__APP_CSS__*/</style>
+</head>
+<body>
+<div class="app-shell">
+  <header class="topnav">
+    <div class="brand"><div class="brand-mark"><i class="ti ti-chart-dots-3"></i></div><div><b>投研大盘数据平台</b><small>MARKET DATA PLATFORM</small></div></div>
+    <nav class="mods" id="topMods">
+      <div class="mod active" data-mod="overview"><i class="ti ti-layout-dashboard"></i>总览</div>
+      <div class="mod" data-mod="collect"><i class="ti ti-database-import"></i>数据采集</div>
+      <div class="mod" data-mod="derived"><i class="ti ti-calculator"></i>数据处理</div>
+      <div class="mod" data-mod="dashboard"><i class="ti ti-chart-line"></i>数据看板</div>
+      <div class="mod" data-mod="ops"><i class="ti ti-activity"></i>运维监控</div>
+    </nav>
+    <div class="spacer"></div>
+    <div class="status"><span class="dot"></span><span id="hdStatus">系统正常</span></div>
+    <div class="hd-chip"><i class="ti ti-clock" style="font-size:13px"></i> <span id="hdTime">--:--:--</span></div>
+    <div class="hd-chip"><i class="ti ti-calendar-event" style="font-size:13px"></i> <span id="hdDate">--</span></div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar" id="sidebar"></aside>
+    <main class="main">
+      <div class="proto-banner"><i class="ti ti-info-circle"></i><div><b>交互原型 v5.3</b> · 单文件自包含 · 覆盖原系统全部功能 · 侧边栏导航 + 所有按钮 / 筛选 / 分页 / 图表联动均可操作 · 少量样例数据</div><div class="spacer"></div><span class="ver">PROTOTYPE v5.3</span></div>
+      <div id="views"></div>
+    </main>
+  </div>
+</div>
+<div id="toastBox" class="toast-box"></div>
+<div id="modalRoot"></div>
+<script>/*__ECHARTS_JS__*/</script>
+<script>/*__DATA_JS__*/</script>
+<script>/*__APP_JS__*/</script>
+</body>
+</html>

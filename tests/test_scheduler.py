@@ -60,3 +60,24 @@ def test_scheduled_collection_recomputes_derived(base, config_file, monkeypatch)
     assert called[0][1]  # run_id 非空，供增量识别本次变更
     web_app._do_collect(trigger="Web")
     assert len(called) == 1  # 手动/普通采集不触发派生重算
+
+
+def test_scheduled_macro_uses_current_month_only(base, config_file, monkeypatch):
+    """定时调度传 macro_current_month=True，手动采集传 False。"""
+    monkeypatch.setattr(web_app, "CONFIG_PATH", config_file)
+    monkeypatch.setattr(web_app, "BASE_DIR", base)
+    captured = {}
+    monkeypatch.setattr(
+        web_app, "_collect",
+        lambda *a, **k: captured.update(k) or (pd.DataFrame(), pd.DataFrame(), pd.DataFrame()),
+    )
+    monkeypatch.setattr(web_app, "_finish", lambda *a, **k: None)
+    monkeypatch.setattr(web_app.storage, "status_counts", lambda path: {
+        "macro_rows": 0, "etf_rows": 0, "index_rows": 0,
+    })
+    monkeypatch.setattr(web_app, "_recompute_derived", lambda *a, **k: 0)
+
+    web_app._do_collect(trigger="定时调度")
+    assert captured["macro_current_month"] is True
+    web_app._do_collect(trigger="Web")
+    assert captured["macro_current_month"] is False

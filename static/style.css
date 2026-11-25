@@ -576,6 +576,10 @@ tr.row-ok td { }
 #etfCharts .chart-box:not(.chart-box-tall):not(.chart-box-overlay) { height: 360px; }
 /* 汇金叠加图：上下双 grid，需要更高画布容纳指数折线与净流入柱 */
 #etfCharts .chart-box-overlay { height: 470px; }
+/* 交易维度：一行一个图，日期轴有充足空间；两融双 grid 联动图额外加高 */
+#tradeCharts { grid-template-columns: 1fr; }
+#tradeCharts .chart-box { height: 360px; }
+#tradeCharts [data-chart-id="trade_margin"] { height: 460px; }
 .chart-card {
   border: 1px solid var(--line); border-radius: 10px; background: #fff;
   overflow: hidden; box-shadow: var(--shadow);

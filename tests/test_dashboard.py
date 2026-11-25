@@ -483,9 +483,35 @@ class TestTradeDashboardLayout:
         assert margin["两融余额"]["y_axis_index"] == 0
         assert margin["有负债投资者数"]["y_axis_index"] == 2
         assert margin["平均维持担保比例"]["y_axis_index"] == 1
+        assert margin["融资保证金比例"]["y_axis_index"] == 1
+
+    def test_small_ratio_series_on_secondary_axis(self):
+        """占流通市值比/融资买入额占比走下图右轴（次坐标 y_axis_index=3）。"""
+        charts = build_trade_charts(self.df, days=60)
+        margin = {s["name"]: s for s in charts[1]["series"]}
+        assert margin["融资余额占流通市值比"]["y_axis_index"] == 3
+        assert margin["融资买入额占比"]["y_axis_index"] == 3
 
     def test_empty_df_still_returns_two_charts(self):
         charts = build_trade_charts(pd.DataFrame(), days=60)
         assert len(charts) == 2
         assert charts[1]["layout"] == "trade_margin_split"
         assert charts[0]["series"] == []
+
+    def _dates(self, charts):
+        return sorted({p[0] for s in charts[0]["series"] for p in s["data"]})
+
+    def test_months_window_like_etf(self):
+        """与 ETF 同口径：months=1 只保留最大交易日所在月及前推 0 个月。"""
+        charts = build_trade_charts(self.df, months=12)   # 全部在近 12 月内
+        assert self._dates(charts) == sorted(self.df["trade_date"].tolist())
+
+    def test_exact_date_range_overrides_months(self):
+        charts = build_trade_charts(
+            self.df, months=12, start="2026-11-14", end="2026-11-16")
+        assert self._dates(charts) == ["2026-11-14", "2026-11-15", "2026-11-16"]
+
+    def test_days_compat_still_works(self):
+        """旧参数 days 显式传入仍按最近 N 个交易日截取。"""
+        charts = build_trade_charts(self.df, days=3, months=12)
+        assert self._dates(charts) == ["2026-11-17", "2026-11-18", "2026-11-19"]

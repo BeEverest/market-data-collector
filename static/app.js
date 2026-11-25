@@ -1519,32 +1519,38 @@ let dashboardTab = 'macro';
 let dashboardData = null;
 const etfDetailState = { code: '', page: 1, start: '', end: '' };  // 当前展开的 ETF 每日明细
 
-/* ETF 维度范围联动：
-   - 下拉为数字（近半年/近1年/近3年/近5年/全部）= 快捷模式，etf_months 生效，
-     日期控件作为「实际展示区间」的镜像回填，不反向覆盖快捷范围；
-   - 下拉为 custom = 自定义模式，etf_start/etf_end 生效，etf_months 传占位整数
-     （后端 int(etf_months)，不能直接传 'custom'）。 */
-function etfIsCustom() {
-  return $('dashboardEtfMonths')?.value === 'custom';
+/* 看板日期范围联动（ETF 维度 / 交易维度共用，控件与参数完全一致）：
+   - 隐藏下拉 {prefix}Months 为数字（近半年/近1年/近3年/近5年/近10年/全部）= 快捷模式，
+     {prefix}_months 生效，日期控件作为「实际展示区间」镜像回填；
+   - 为 custom = 自定义模式，{prefix}_start/{prefix}_end 生效，months 传占位整数
+     （后端 int(months)，不能直接传 'custom'）。
+   prefix: 'Etf' → etf_* 参数；'Trade' → trade_* 参数。 */
+function rangeIsCustom(prefix) {
+  return $(`dashboard${prefix}Months`)?.value === 'custom';
 }
-function etfMonthsValue() {
-  const v = $('dashboardEtfMonths')?.value || '12';
+function rangeMonthsValue(prefix) {
+  const v = $(`dashboard${prefix}Months`)?.value || '12';
   return v === 'custom' ? '12' : v;  // 自定义模式传占位值，后端以 start/end 为准
 }
-function etfDateRange() {
-  // 快捷模式下忽略日期镜像，避免回填的日期反向覆盖 etf_months
-  if (!etfIsCustom()) return { start: '', end: '' };
+function rangeDateRange(prefix) {
+  // 快捷模式下忽略日期镜像，避免回填的日期反向覆盖 months
+  if (!rangeIsCustom(prefix)) return { start: '', end: '' };
   return {
-    start: ($('dashboardEtfStart')?.value || '').trim(),
-    end: ($('dashboardEtfEnd')?.value || '').trim(),
+    start: ($(`dashboard${prefix}Start`)?.value || '').trim(),
+    end: ($(`dashboard${prefix}End`)?.value || '').trim(),
   };
 }
+// ETF 专用别名，保持既有调用点不变
+const etfIsCustom = () => rangeIsCustom('Etf');
+const etfMonthsValue = () => rangeMonthsValue('Etf');
+const etfDateRange = () => rangeDateRange('Etf');
 const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
 
-/* 根据当前 ETF 图表数据反推实际展示起止交易日，用于把快捷范围回填到日期控件。
+/* 根据当前维度图表数据反推实际展示起止交易日，用于把快捷范围回填到日期控件。
    月份模式后端只给到起始月，这里从序列数据取真实首末交易日，保证联动后日期精确。 */
-function etfResolvedRange(res = null) {
-  const charts = ((res || dashboardData)?.etf?.charts) || [];
+function resolvedRange(prefix, res = null) {
+  const key = prefix.toLowerCase();  // 'etf' / 'trade'
+  const charts = ((res || dashboardData)?.[key]?.charts) || [];
   const dates = [];
   charts.forEach(c => (c.series || []).forEach(s => (s.data || []).forEach(p => {
     const d = String(p[0] || '').slice(0, 10);
@@ -1554,52 +1560,58 @@ function etfResolvedRange(res = null) {
   dates.sort();
   return { start: dates[0], end: dates[dates.length - 1] };
 }
+const etfResolvedRange = (res = null) => resolvedRange('Etf', res);
 
 /* 选择快捷范围：非自定义时清空日期并重载，加载后用实际区间回填；
    选「自定义」时以当前展示区间为初始日期，便于在此基础上微调。 */
-function applyEtfPreset() {
-  const v = $('dashboardEtfMonths').value;
+function applyPreset(prefix) {
+  const sel = $(`dashboard${prefix}Months`);
+  const v = sel.value;
   if (v === 'custom') {
-    const r = etfResolvedRange();
-    $('dashboardEtfStart').value = r.start;
-    $('dashboardEtfEnd').value = r.end;
+    const r = resolvedRange(prefix);
+    $(`dashboard${prefix}Start`).value = r.start;
+    $(`dashboard${prefix}End`).value = r.end;
   } else {
-    $('dashboardEtfStart').value = '';
-    $('dashboardEtfEnd').value = '';
+    $(`dashboard${prefix}Start`).value = '';
+    $(`dashboard${prefix}End`).value = '';
   }
   loadDashboard();
 }
+const applyEtfPreset = () => applyPreset('Etf');
 
-/* 快捷范围按钮状态：与隐藏下拉 etfMonths 同步高亮（custom/全部时无按钮高亮） */
-function syncEtfRangeBtns() {
-  const v = $('dashboardEtfMonths')?.value || '12';
-  document.querySelectorAll('#dashboardEtfRangeBtns .etf-range-btn').forEach(b => {
+/* 快捷范围按钮状态：与隐藏下拉同步高亮（custom/全部时无按钮高亮） */
+function syncRangeBtns(prefix) {
+  const v = $(`dashboard${prefix}Months`)?.value || '12';
+  document.querySelectorAll(`#dashboard${prefix}RangeBtns .etf-range-btn`).forEach(b => {
     b.classList.toggle('active', b.dataset.months === v);
   });
 }
+const syncEtfRangeBtns = () => syncRangeBtns('Etf');
 
 /* 点击快捷范围按钮：写入隐藏下拉并沿用既有联动加载 */
-function onEtfRangeBtnClick(ev) {
+function onRangeBtnClick(prefix, ev) {
   const btn = ev.target.closest('.etf-range-btn');
   if (!btn) return;
-  const sel = $('dashboardEtfMonths');
+  const sel = $(`dashboard${prefix}Months`);
   if (sel) sel.value = btn.dataset.months;
-  applyEtfPreset();
+  applyPreset(prefix);
 }
+const onEtfRangeBtnClick = (ev) => onRangeBtnClick('Etf', ev);
 
 /* 手动改日期：自动切到自定义模式再刷新；两个日期都清空则回到默认近1年 */
-function onEtfDateChange() {
-  const s = $('dashboardEtfStart').value.trim();
-  const e = $('dashboardEtfEnd').value.trim();
-  const sel = $('dashboardEtfMonths');
+function onDateChange(prefix) {
+  const s = $(`dashboard${prefix}Start`).value.trim();
+  const e = $(`dashboard${prefix}End`).value.trim();
+  const sel = $(`dashboard${prefix}Months`);
   if (!s && !e) {
     if (sel) sel.value = '12';
   } else if (sel) {
     sel.value = 'custom';
   }
-  syncEtfRangeBtns();
+  syncRangeBtns(prefix);
   loadDashboard();
 }
+const onEtfDateChange = () => onDateChange('Etf');
 
 function disposeDashboardCharts(containerId) {
   (dashboardInstances[containerId] || []).forEach(x => {
@@ -1686,9 +1698,12 @@ function dashboardChartOption(chart) {
   }
 
   // 两融核心指标：上下两个 grid 联动（上=两融余额/有负债投资者数，下=各类比例）
+  // 下图双 Y 轴：左轴=维持担保比例/融资保证金比例(比例%)，
+  //              右轴次坐标=占流通市值比/融资买入额占比(%)（量级小，独立刻度更清晰）
   if (chart.layout === 'trade_margin_split') {
-    const upper = (chart.series || []).filter(s => s.y_axis_index !== 1);
+    const upper = (chart.series || []).filter(s => s.y_axis_index !== 1 && s.y_axis_index !== 3);
     const lower = (chart.series || []).filter(s => s.y_axis_index === 1);
+    const lowerRight = (chart.series || []).filter(s => s.y_axis_index === 3);
     const dataOf = s => {
       const lookup = new Map(s.data || []);
       return categories.map(c => (lookup.has(c) ? lookup.get(c) : null));
@@ -1726,6 +1741,8 @@ function dashboardChartOption(chart) {
         { type: 'value', name: '比例 (%)', position: 'left', gridIndex: 1,
           nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 },
           splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } } },
+        { type: 'value', name: '占比 (%)', position: 'right', gridIndex: 1,
+          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
       ],
       dataZoom: [
         { type: 'inside', xAxisIndex: [0, 1] },
@@ -1736,6 +1753,7 @@ function dashboardChartOption(chart) {
       series: [
         ...upper.map((s, i) => line(s, i, 0, s.y_axis_index === 2 ? 1 : 0)),
         ...lower.map((s, i) => line(s, i + upper.length, 1, 2)),
+        ...lowerRight.map((s, i) => line(s, i + upper.length + lower.length, 1, 3)),
       ],
     };
   }
@@ -2180,11 +2198,14 @@ async function loadDashboard() {
     const months = $('dashboardMonths').value || '12';
     const etfMonths = etfMonthsValue();
     const { start, end } = etfDateRange();
+    const tradeMonths = rangeMonthsValue('Trade');
+    const tradeDate = rangeDateRange('Trade');
     const overlayIndex = $('dashboardOverlayIndex')?.value || '000001';
-    const tradeDays = $('dashboardTradeDays')?.value || '60';
-    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex, trade_days: tradeDays });
+    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex, trade_months: tradeMonths });
     if (start) qs.set('etf_start', start);
     if (end) qs.set('etf_end', end);
+    if (tradeDate.start) qs.set('trade_start', tradeDate.start);
+    if (tradeDate.end) qs.set('trade_end', tradeDate.end);
     const res = await api('/api/dashboard?' + qs.toString());
     if (seq !== dashboardLoadSeq) return;  // 已有更新的请求，丢弃过期响应
     // 叠加指数下拉：用接口返回的可用指数动态填充，保留当前选择
@@ -2207,7 +2228,13 @@ async function loadDashboard() {
       $('dashboardEtfStart').value = r.start || '';
       $('dashboardEtfEnd').value = r.end || '';
     }
+    if (!rangeIsCustom('Trade')) {
+      const r = resolvedRange('Trade', res);
+      $('dashboardTradeStart').value = r.start || '';
+      $('dashboardTradeEnd').value = r.end || '';
+    }
     syncEtfRangeBtns();
+    syncRangeBtns('Trade');
     // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
     renderDashboardTab();
     const etfNote = etf.filter(c => c.group !== 'huijin_detail' && c.id !== 'etf_huijin_cumulative')
@@ -2219,7 +2246,11 @@ async function loadDashboard() {
     const overlayChart = etf.find(c => c.layout === 'etf_overlay');
     const overlayNote = overlayChart ? ` · 叠加${(overlayChart.index_name || '').replace(/\s*\(点\)\s*$/, '')}` : '';
     const trade = (res.trade && res.trade.charts) || [];
-    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange} · 交易 ${trade.length} 图`;
+    const tradeShown = rangeDateRange('Trade');
+    const ts = tradeShown.start || $('dashboardTradeStart')?.value.trim();
+    const te = tradeShown.end || $('dashboardTradeEnd')?.value.trim();
+    const tradeRange = (ts || te) ? ` · 交易 ${ts || '最早'}~${te || '最新'}` : '';
+    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange}${tradeRange} · 交易 ${trade.length} 图`;
   } catch (e) {
     $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
     flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
@@ -2258,7 +2289,10 @@ $('dashboardOverlayIndex').addEventListener('change', loadDashboard);
 $('dashboardEtfStart').addEventListener('change', onEtfDateChange);
 $('dashboardEtfEnd').addEventListener('change', onEtfDateChange);
 $('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
-$('dashboardTradeDays')?.addEventListener('change', loadDashboard);
+$('dashboardTradeMonths')?.addEventListener('change', () => { syncRangeBtns('Trade'); applyPreset('Trade'); });
+$('dashboardTradeRangeBtns')?.addEventListener('click', (ev) => onRangeBtnClick('Trade', ev));
+$('dashboardTradeStart')?.addEventListener('change', () => onDateChange('Trade'));
+$('dashboardTradeEnd')?.addEventListener('change', () => onDateChange('Trade'));
 
 /* ---------- 定时刷新 ---------- */
 async function refresh() {

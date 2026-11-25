@@ -163,11 +163,14 @@ def _index_daily_window(index_df, low: str, high: str, code: str = "000001") -> 
     return out
 
 
-def _etf_window(df, months: int, start: str | None, end: str | None):
-    """按精确日期区间(start/end)或近 N 个月截取 ETF 数据。
+def _date_window(df, months: int, start: str | None, end: str | None,
+                 date_col: str = "交易日期"):
+    """按精确日期区间(start/end)或近 N 个月截取时间序列数据（ETF/交易共用）。
 
     - start/end 为 YYYY-MM-DD，任一给出则按精确区间过滤，优先于 months。
     - 否则按近 months 个月（基于数据最大交易日回推，0=全部）。
+    - date_col 指定日期列名：ETF 为「交易日期」，交易宽表为 trade_date。
+
     返回 (过滤后df, 范围描述, low, high)：low/high 为精确起止日（精确模式），
     月份模式下 low 为起始月 YYYY-MM、high 为空。供细分图每日明细沿用同口径。
     """
@@ -176,8 +179,10 @@ def _etf_window(df, months: int, start: str | None, end: str | None):
     default_scope = "全部" if not months else "近 %d 个月" % months
     if df is None or getattr(df, "empty", True):
         return df, default_scope, start, end
+    if date_col not in df.columns:
+        return df, default_scope, start, end
     if start or end:
-        dates = df["交易日期"].astype(str).str[:10]
+        dates = df[date_col].astype(str).str[:10]
         mask = pd.Series(True, index=df.index)
         if start:
             mask &= dates >= start
@@ -186,12 +191,17 @@ def _etf_window(df, months: int, start: str | None, end: str | None):
         return df[mask], f"{start or '最早'} ~ {end or '最新'}", start, end
     cutoff = ""
     if months:
-        valid = sorted(d for d in df["交易日期"].astype(str).str[:10] if d >= "2000-01-01")
+        valid = sorted(d for d in df[date_col].astype(str).str[:10] if d >= "2000-01-01")
         if valid:
             cutoff = _shift_month(valid[-1][:7], -(int(months) - 1))
     if cutoff:
-        df = df[df["交易日期"].astype(str).str[:7] >= cutoff]
+        df = df[df[date_col].astype(str).str[:7] >= cutoff]
     return df, default_scope, cutoff, ""
+
+
+def _etf_window(df, months: int, start: str | None, end: str | None):
+    """ETF 日期窗口：复用通用 _date_window，日期列为「交易日期」。"""
+    return _date_window(df, months, start, end, "交易日期")
 
 
 def _cutoff_date(series_list: list[list[list]], months: int | None) -> str:
@@ -552,14 +562,27 @@ TRADE_CHART_SPECS = [
 ]
 
 
-def build_trade_charts(trade_df: pd.DataFrame, days: int | None = 60) -> list[dict]:
-    """装配交易 2 图；days 控制展示最近 N 个交易日（None/0 为全部）。"""
+def build_trade_charts(trade_df: pd.DataFrame, days: int | None = None,
+                       months: int = 12, start: str | None = None,
+                       end: str | None = None) -> list[dict]:
+    """装配交易 2 图，日期口径与 ETF 维度一致。
+
+    - start/end（YYYY-MM-DD）任一给出即按精确区间过滤，优先于 months 与 days。
+    - 否则按近 months 个月（基于最大交易日回推，0=全部）——与 ETF 完全同口径。
+    - days 为旧参数「最近 N 个交易日」：仅显式传入（非 None）时按旧口径截取，
+      保持旧调用兼容；新前端不传 days，一律用 months/start/end。
+    """
     if trade_df is None or trade_df.empty:
         return [_chart(spec, []) for spec in TRADE_CHART_SPECS]
 
     df = trade_df.sort_values("trade_date").reset_index(drop=True)
-    if days and days > 0 and len(df) > days:
-        df = df.tail(days).reset_index(drop=True)
+    if start or end:
+        df, _, _, _ = _date_window(df, 0, start, end, "trade_date")
+    elif days is not None:
+        if days > 0 and len(df) > days:
+            df = df.tail(days).reset_index(drop=True)
+    else:
+        df, _, _, _ = _date_window(df, months, None, None, "trade_date")
 
     def pairs(col: str) -> list[list]:
         out = []
@@ -582,10 +605,12 @@ def build_trade_charts(trade_df: pd.DataFrame, days: int | None = 60) -> list[di
             series("下跌家数", "down_count", 2),
         ],
         "trade_margin": [
+            # y_axis_index: 0=上图左轴(两融余额亿元), 2=上图右轴(投资者数人),
+            #              1=下图左轴(比例%), 3=下图右轴次坐标(占流通市值比/融资买入额占比%)
             series("平均维持担保比例", "margin_ratio", 1),
             series("融资保证金比例", "margin_financing_ratio", 1),
-            series("融资余额占流通市值比", "financing_to_float_mv", 1),
-            series("融资买入额占比", "financing_buy_pct", 1),
+            series("融资余额占流通市值比", "financing_to_float_mv", 3),
+            series("融资买入额占比", "financing_buy_pct", 3),
             series("两融余额", "margin_balance", 0),
             series("有负债投资者数", "debt_investors", 2),
         ],

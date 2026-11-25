@@ -1107,6 +1107,7 @@ async function loadData() {
   const start = $('filterStart').value.trim();
   const end = $('filterEnd').value.trim();
   const pageSize = Math.min(Math.max(parseInt($('filterPageSize').value, 10) || 25, 1), MAX_PAGE_SIZE);
+  const dateCol = dataTab === 'macro' ? '日期' : (dataTab === 'trade' ? 'trade_date' : '交易日期');
   const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}&order=${dataDateOrder}`;
   try {
     const res = await api(url);
@@ -1114,7 +1115,7 @@ async function loadData() {
     dataTotalRows = res.total || 0;
     if (dataPage > dataPages) { dataPage = dataPages; return loadData(); }
     $('dataTotal').textContent = `共 ${res.total} 行 · 第 ${res.page}/${res.pages} 页`;
-    renderTable(el, res.rows, false, { dateCol: dataTab === 'macro' ? '日期' : '交易日期', dateOrder: dataDateOrder, onSortDate: toggleDateOrder });
+    renderTable(el, res.rows, false, { dateCol, dateOrder: dataDateOrder, onSortDate: toggleDateOrder });
     renderPager();
   } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
 }
@@ -1246,7 +1247,6 @@ function switchModule(name) {
   $('collectModule').hidden = name !== 'collect';
   $('derivedModule').hidden = name !== 'derived';
   $('dashboardModule').hidden = name !== 'dashboard';
-  if (name === 'collect') { loadTradeRaw(); }
   if (name === 'derived') { loadDerived(); loadDerivedScheduler(); }
   if (name === 'dashboard') {
     loadDashboard().then(() => setTimeout(resizeDashboardCharts, 60));
@@ -1469,27 +1469,6 @@ $('tradeRecalcDateBtn')?.addEventListener('click', () => {
   if (!d) { alert('请选择交易日'); return; }
   recomputeTrade({ trade_date: d }, d);
 });
-
-/* ---------- 采集系统 · 交易原始数据预览 ---------- */
-async function loadTradeRaw() {
-  try {
-    const sel = $('tradeRawTable');
-    const table = sel.value;
-    const label = sel.options[sel.selectedIndex]?.textContent || table;
-    const start = $('tradeRawStart').value.trim();
-    const end = $('tradeRawEnd').value.trim();
-    const qs = new URLSearchParams({ table });
-    if (start) qs.set('start', start);
-    if (end) qs.set('end', end);
-    const res = await api('/api/trade/raw?' + qs.toString());
-    $('tradeRawMeta').textContent = `${label} · 共 ${res.total} 行${res.total > 200 ? '（显示前 200 行）' : ''}`;
-    renderTable($('tradeRawTableWrap'), res.rows || []);
-  } catch (e) {
-    $('tradeRawTableWrap').innerHTML = `<div class="empty">原始数据加载失败：${esc(e.message)}</div>`;
-  }
-}
-$('tradeRawTable')?.addEventListener('change', loadTradeRaw);
-$('tradeRawRefreshBtn')?.addEventListener('click', loadTradeRaw);
 
 async function recomputeDerived(payload, label) {
   try {
@@ -1723,8 +1702,9 @@ function dashboardChartOption(chart) {
     return {
       animation: false,
       grid: [
-        { left: 66, right: 66, top: 54, height: '27%' },
-        { left: 66, right: 66, top: '50%', bottom: 96 },
+        // 与图1（3 轴图 left62/right158）保持左右绘图区对齐，上下两子图共享同一水平边界
+        { left: 62, right: 158, top: 54, height: '27%' },
+        { left: 62, right: 158, top: '50%', bottom: 96 },
       ],
       axisPointer: { link: [{ xAxisIndex: 'all' }] },
       legend: { top: 4, type: 'scroll', textStyle: { fontSize: 11 } },
@@ -2299,7 +2279,6 @@ async function init() {
   monitorDefaultRange();
   await loadData();
   await loadDerived();
-  loadTradeRaw();  // 采集系统·交易原始数据预览（默认模块）
   await refresh();
   startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 5000 行
 }

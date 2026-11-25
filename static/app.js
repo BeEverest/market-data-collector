@@ -3,6 +3,43 @@
  * 生产静态资源：Tabler 风格 UI，数据层与动作层均对接后端接口。
  * ========================================================================== */
 const CLR = ['#2563eb','#16a36a','#ea8c28','#8056d8','#e0484b','#0d9a9a','#db2777','#64748b'];
+const CHART_INK = '#d7e3f4';
+const CHART_GRID = '#223852';
+function darkenChartOption(opt){
+  if(!opt || typeof opt!=='object') return opt;
+  const o = {...opt};
+  o.backgroundColor = 'transparent';
+  o.textStyle = {...(o.textStyle||{}), color: CHART_INK};
+  if(o.title) o.title = {...o.title, textStyle:{...(o.title.textStyle||{}), color:'#eaf1fb'}};
+  if(o.legend) o.legend = {...o.legend, textStyle:{...(o.legend.textStyle||{}), color:'#a8bad4'}};
+  if(o.tooltip) o.tooltip = {...o.tooltip, backgroundColor:'#0d1d33', borderColor:'#2b4467', textStyle:{...(o.tooltip.textStyle||{}), color:'#eaf1fb'}};
+  const darkAxis = a => {
+    if(!a) return a;
+    const x = {...a};
+    x.axisLabel = {...(x.axisLabel||{}), color:(x.axisLabel&&x.axisLabel.color)||'#9fb3d1'};
+    x.nameTextStyle = {...(x.nameTextStyle||{}), color:(x.nameTextStyle&&x.nameTextStyle.color)||'#9fb3d1'};
+    if(x.splitLine) x.splitLine = {...x.splitLine, lineStyle:{...(x.splitLine.lineStyle||{}), color:CHART_GRID}};
+    return x;
+  };
+  ['xAxis','yAxis'].forEach(k=>{
+    if(Array.isArray(o[k])) o[k] = o[k].map(darkAxis);
+    else if(o[k]) o[k] = darkAxis(o[k]);
+  });
+  if(o.dataZoom) o.dataZoom = (Array.isArray(o.dataZoom)?o.dataZoom:[o.dataZoom]).map(z=>({
+    ...z, backgroundColor:z.backgroundColor||'#10243d', fillerColor:z.fillerColor||'rgba(91,155,255,.18)',
+    borderColor:z.borderColor||'#2b4467', textStyle:{...(z.textStyle||{}), color:(z.textStyle&&z.textStyle.color)||'#9fb3d1'}
+  }));
+  return o;
+}
+function initChart(node){
+  const ins = echarts.getInstanceByDom(node) || echarts.init(node);
+  if(!ins.__darkReady){
+    const rawSet = ins.setOption.bind(ins);
+    ins.setOption = (opt, ...rest) => rawSet(darkenChartOption(opt), ...rest);
+    ins.__darkReady = true;
+  }
+  return ins;
+}
 const $ = (s, r=document) => r.querySelector(s);
 const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
 const byId = id => document.getElementById(id);
@@ -303,7 +340,7 @@ let curMod = 'overview', curView = 'ovCollect';
 /* ---------------- 通用组件 ---------------- */
 const statCard = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-3"><div class="stat-card"><div class="ic ${c}"><i class="ti ti-${ic}"></i></div><div class="val">${val}</div><div class="lbl">${lbl}</div>${trend?`<span class="trend ${tc}">${trend}</span>`:''}</div></div>`;
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
-const head = (t,d) => `<div class="pg-head"><div><h1>${t}</h1><p>${d}</p></div></div>`;
+const head = (t,d) => ''; // 视图标题条已移除，导航与卡片标题即可标识当前位置
 const tbl = (cols, rows, opts={}) => {
   const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map(c=>`<th>${esc(c)}</th>`), ...(opts.action?['<th>操作</th>']:[])];
   const h = `<thead><tr>${headCells.join('')}</tr></thead>`;
@@ -349,7 +386,7 @@ function monitorView(kind){
       <button class="btn btn-sm" ${kind!=='failures'?'style="margin-left:auto"':''} data-act="export" data-k="monitor"><i class="ti ti-file-export"></i> 导出监控</button>
       <button class="btn btn-danger btn-sm" data-act="monitor-clean-toggle"><i class="ti ti-eraser"></i> 清理监控</button></div>
     <div class="card-body">
-      <div class="card" data-monitor-clean style="display:none;background:#fbfcfe;margin-bottom:12px"><div class="card-body">
+      <div class="card" data-monitor-clean style="display:none;background:#132842;margin-bottom:12px"><div class="card-body">
         <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">时间范围</label><input class="prec-input" type="date" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" style="width:130px">
           <select class="form-select" style="width:100px"><option>全部状态</option><option>成功</option><option>失败</option></select>
           <select class="form-select" style="width:110px"><option>全部类型</option><option>全量</option><option>定时</option></select>
@@ -407,7 +444,7 @@ const VIEWS = {
     statCard('chart-line','ic-purple',fmt(S.index_rows),'指数数据',fmt(S.index_codes)+' 指数','t-blue')+
     statCard('alert-triangle','ic-red',fmt(S.failed_total),'累计失败','需关注','t-orange'))
     +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>
-      <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#9aabc2;padding:0 0 6px;border-bottom:1px solid #edf1f7"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
+      <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#8fa6c4;padding:0 0 6px;border-bottom:1px solid #243a59"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>
         <div class="ctl-params"><input class="prec-input" type="date" value="${LAST}" style="width:120px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:120px"><button class="btn btn-sm" data-act="date-default">默认</button></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-full">立即采集</button></div></div>
@@ -423,7 +460,7 @@ const VIEWS = {
 
   /* ---------------- 数据采集：配置 ---------------- */
   maccfg:()=>head('宏观采集配置','指标可增删 · 数据源与区间配置')+`<div class="card"><div class="card-header"><h3><i class="ti ti-adjustments" style="color:var(--ok)"></i> 宏观指标配置</h3><span class="sub">17 原指标 + GDP + 海外 · 可增删 / 启停</span></div><div class="card-body">
-    <div class="ctl-params" style="margin-bottom:11px;padding:9px 10px;background:#f7f9fd;border:1px solid var(--line);border-radius:7px">
+    <div class="ctl-params" style="margin-bottom:11px;padding:9px 10px;background:#132842;border:1px solid var(--line);border-radius:7px">
       <label class="prec-field"><b>新增指标</b></label>
       <input class="prec-input" placeholder="指标代码" style="width:125px" data-macro-code>
       <input class="prec-input" placeholder="名称" style="width:135px" data-macro-name>
@@ -603,7 +640,7 @@ function axisOpt(ax,i){
 }
 function renderChartNode(node, chart, months){
   if(!node) return;
-  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const ins = initChart(node);
   const categories = filteredData(chart, months);
   const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
   const series = (chart.series||[]).map((s,i)=>({
@@ -626,7 +663,7 @@ function renderChartNode(node, chart, months){
 /* 两融图 1:1 复刻生产 trade_margin_split：2 grid / 4 Y轴 / 2 X轴 / 2 dataZoom / 联动 */
 function renderMarginSplitNode(node, chart, months){
   if(!node) return;
-  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const ins = initChart(node);
   const categories = filteredData(chart, months);
   const upper = chart.series.filter(s=>s.y_axis_index!==1 && s.y_axis_index!==3);
   const lower = chart.series.filter(s=>s.y_axis_index===1);
@@ -680,7 +717,7 @@ const signed = (v, unit) => { const n=Number(v||0); return `<span class="${n>=0?
 
 function renderEtfChartNode(node, chart, months){
   if(!node) return null;
-  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const ins = initChart(node);
   const isRank = chart.layout==='etf_rank';
   const allCats = [...new Set((chart.series||[]).flatMap(s=>(s.data||[]).map(p=>p[0])))];
   const categories = isRank ? allCats : allCats.sort();
@@ -835,7 +872,7 @@ async function etfLoadSharesDetail(){
     const {asc}=etfRenderSharesBlock(totalBox,tableBox,res,rangeParams);
     const box=byId('etfSharesCumChart');
     if(box){
-      const ins=echarts.getInstanceByDom(box)||echarts.init(box);
+      const ins=initChart(box);
       ins.setOption({animation:false,color:CLR,
         grid:{left:62,right:44,top:30,bottom:70},
         legend:{top:2,type:'scroll',textStyle:{fontSize:9}},tooltip:{trigger:'axis',axisPointer:{type:'shadow'},confine:true},
@@ -896,7 +933,7 @@ function renderDash(){
         <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 每日总份额（含累计变化）</h3><span class="hint" style="margin-left:auto">柱子=每日份额存量，折线=累计变化，点击柱子展开当日 ETF 明细</span></div>
         <div class="card-body"><div class="chart-box" id="etfSharesCumChart" style="height:300px"></div><div class="etf-daily-total" id="etfSharesTotal"></div><div class="table-wrap" id="etfSharesTable"><div class="hint">加载中…</div></div></div></div>` : '';
     const rankDetail = c.layout==='etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : '';
-    return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#9aabc2" title="${esc(c.note)}"></i>`:''}</div>
+    return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#8fa6c4" title="${esc(c.note)}"></i>`:''}</div>
       <div class="card-body" style="padding:6px"><div class="chart-box ${tall?'tall':''} ${c.layout==='etf_overlay'?'overlay':''}"></div>${rankDetail}</div></div>${extra}`;
   };
   box.innerHTML = list.map(cardHtml).join('');
@@ -930,7 +967,7 @@ function renderDash(){
 }
 function renderOverview(){
   const node = byId('ovAssetChart'); if(!node) return;
-  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const ins = initChart(node);
   const data=[{name:'宏观观测',v:S.macro_rows},{name:'ETF 日频',v:S.etf_rows},{name:'指数日线',v:S.index_rows},{name:'交易观测',v:S.trade_rows}];
   ins.setOption({
     animation:false, color:CLR,

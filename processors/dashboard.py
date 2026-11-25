@@ -220,6 +220,7 @@ def _chart(spec: dict, series: list[dict]) -> dict:
         "note": spec["note"],
         "y_axes": spec["y_axes"],
         "series": [s for s in series if s["data"]],
+        **({"layout": spec["layout"]} if spec.get("layout") else {}),
     }
 
 
@@ -540,7 +541,8 @@ TRADE_CHART_SPECS = [
     },
     {
         "id": "trade_margin", "title": "图2：两融核心指标",
-        "note": "两融余额（左轴亿元）；维持担保比例/融资保证金比例/占流通市值比/融资买入额占比（右轴%）；有负债投资者数（第三轴人）",
+        "note": "上下两图联动（共享交易日轴）：上图 两融余额(亿元)/有负债投资者数(人)；下图 维持担保比例/融资保证金比例/占流通市值比/融资买入额占比(%)",
+        "layout": "trade_margin_split",
         "y_axes": [
             {"name": "亿元 / 人", "position": "left"},
             {"name": "比例 (%)", "position": "right", "offset": 0},

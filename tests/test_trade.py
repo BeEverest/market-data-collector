@@ -25,14 +25,31 @@ def _snapshot(n=100):
 
 class TestMarginPolicy:
     def test_policy_by_date(self):
+        # 用权威阶梯（与 DEFAULT_MARGIN_POLICY/config.json 一致）验证五段生效日
         policy = [
-            {"effective": "2015-11-01", "value": 100.0},
-            {"effective": "2023-08-28", "value": 80.0},
+            {"effective": "2010-03-31", "value": 50.0},
+            {"effective": "2015-11-23", "value": 100.0},
+            {"effective": "2023-09-11", "value": 80.0},
+            {"effective": "2026-01-19", "value": 100.0},
+            {"effective": "2026-11-30", "value": 80.0},
         ]
+        assert margin_policy_for(policy, "2015-01-05") == 50.0
+        assert margin_policy_for(policy, "2015-11-22") == 50.0
+        assert margin_policy_for(policy, "2015-11-23") == 100.0
         assert margin_policy_for(policy, "2020-01-01") == 100.0
-        assert margin_policy_for(policy, "2023-08-28") == 80.0
-        assert margin_policy_for(policy, "2026-11-24") == 80.0
-        assert margin_policy_for(policy, "2010-01-01") is None
+        assert margin_policy_for(policy, "2023-09-08") == 100.0
+        assert margin_policy_for(policy, "2023-09-11") == 80.0
+        assert margin_policy_for(policy, "2026-01-16") == 80.0
+        assert margin_policy_for(policy, "2026-01-19") == 100.0
+        assert margin_policy_for(policy, "2026-11-24") == 100.0  # 11/30 尚未生效
+        assert margin_policy_for(policy, "2026-11-30") == 80.0
+
+    def test_default_policy_matches_authoritative_steps(self):
+        from processors.trade import DEFAULT_MARGIN_POLICY
+        assert [(s["effective"], s["value"]) for s in DEFAULT_MARGIN_POLICY] == [
+            ("2010-03-31", 50.0), ("2015-11-23", 100.0), ("2023-09-11", 80.0),
+            ("2026-01-19", 100.0), ("2026-11-30", 80.0),
+        ]
 
 
 class TestComputeTrade:

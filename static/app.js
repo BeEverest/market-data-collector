@@ -1473,14 +1473,16 @@ $('tradeRecalcDateBtn')?.addEventListener('click', () => {
 /* ---------- 采集系统 · 交易原始数据预览 ---------- */
 async function loadTradeRaw() {
   try {
-    const table = $('tradeRawTable').value;
+    const sel = $('tradeRawTable');
+    const table = sel.value;
+    const label = sel.options[sel.selectedIndex]?.textContent || table;
     const start = $('tradeRawStart').value.trim();
     const end = $('tradeRawEnd').value.trim();
     const qs = new URLSearchParams({ table });
     if (start) qs.set('start', start);
     if (end) qs.set('end', end);
     const res = await api('/api/trade/raw?' + qs.toString());
-    $('tradeRawMeta').textContent = `原始表 ${table} · 共 ${res.total} 行${res.total > 200 ? '（显示前 200 行）' : ''}`;
+    $('tradeRawMeta').textContent = `${label} · 共 ${res.total} 行${res.total > 200 ? '（显示前 200 行）' : ''}`;
     renderTable($('tradeRawTableWrap'), res.rows || []);
   } catch (e) {
     $('tradeRawTableWrap').innerHTML = `<div class="empty">原始数据加载失败：${esc(e.message)}</div>`;
@@ -1700,6 +1702,60 @@ function dashboardChartOption(chart) {
             itemStyle: { color: DASH_PALETTE[(i + 1) % DASH_PALETTE.length] },
           };
         }),
+      ],
+    };
+  }
+
+  // 两融核心指标：上下两个 grid 联动（上=两融余额/有负债投资者数，下=各类比例）
+  if (chart.layout === 'trade_margin_split') {
+    const upper = (chart.series || []).filter(s => s.y_axis_index !== 1);
+    const lower = (chart.series || []).filter(s => s.y_axis_index === 1);
+    const dataOf = s => {
+      const lookup = new Map(s.data || []);
+      return categories.map(c => (lookup.has(c) ? lookup.get(c) : null));
+    };
+    const line = (s, i, gridIdx, yIdx) => ({
+      name: s.name, type: s.type || 'line', xAxisIndex: gridIdx, yAxisIndex: yIdx,
+      data: dataOf(s), smooth: true, showSymbol: false, symbolSize: 5, connectNulls: true,
+      lineStyle: { width: 2, color: DASH_PALETTE[i % DASH_PALETTE.length] },
+      itemStyle: { color: DASH_PALETTE[i % DASH_PALETTE.length] },
+    });
+    return {
+      animation: false,
+      grid: [
+        { left: 66, right: 66, top: 54, height: '27%' },
+        { left: 66, right: 66, top: '50%', bottom: 96 },
+      ],
+      axisPointer: { link: [{ xAxisIndex: 'all' }] },
+      legend: { top: 4, type: 'scroll', textStyle: { fontSize: 11 } },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
+      xAxis: [
+        { type: 'category', gridIndex: 0, data: categories, boundaryGap: hasBar,
+          axisLabel: { show: false }, axisTick: { show: false },
+          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } } },
+        { type: 'category', gridIndex: 1, data: categories, boundaryGap: hasBar,
+          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
+          axisLabel: { fontSize: 10, hideOverlap: true, rotate: categories.length > 36 ? 30 : 0, margin: 14 } },
+      ],
+      yAxis: [
+        { type: 'value', name: '两融余额 (亿元)', position: 'left', gridIndex: 0,
+          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 },
+          splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } } },
+        { type: 'value', name: '投资者数 (人)', position: 'right', gridIndex: 0,
+          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
+        { type: 'value', name: '比例 (%)', position: 'left', gridIndex: 1,
+          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 },
+          splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } } },
+      ],
+      dataZoom: [
+        { type: 'inside', xAxisIndex: [0, 1] },
+        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 8, brushSelect: false,
+          showDetail: true, handleSize: '110%',
+          dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
+      ],
+      series: [
+        ...upper.map((s, i) => line(s, i, 0, s.y_axis_index === 2 ? 1 : 0)),
+        ...lower.map((s, i) => line(s, i + upper.length, 1, 2)),
       ],
     };
   }

@@ -1,2320 +1,1123 @@
-'use strict';
+/* ==========================================================================
+ * 投研大盘数据平台 · 生产版（Tabler 风格 UI + 真实 API）
+ * UI 骨架来自交互原型 v5.3；数据层与动作层已对接后端真实接口。
+ * ========================================================================== */
+const CLR = ['#2563eb','#16a36a','#ea8c28','#8056d8','#e0484b','#0d9a9a','#db2777','#64748b'];
+const $ = (s, r=document) => r.querySelector(s);
+const $$ = (s, r=document) => Array.from(r.querySelectorAll(s));
+const byId = id => document.getElementById(id);
+const fmt = n => (n == null ? 0 : n).toLocaleString('zh-CN');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+const now = () => new Date().toLocaleTimeString('zh-CN', {hour12:false});
+const pad = n => String(n).padStart(2, '0');
+const runId = () => `20261126_${now().replace(/:/g,'')}_manual`;
 
-const $ = (id) => document.getElementById(id);
-const api = async (url, opts) => {
+/* ---------------- API 层 ---------------- */
+async function api(url, opts={}) {
   const r = await fetch(url, opts);
-  if (!r.ok) {
-    let msg = r.statusText;
-    try { msg = (await r.json()).detail || msg; } catch (_) {}
-    throw new Error(msg);
-  }
-  return r.json();
-};
-
-let monitorData = null;
-let currentJobId = null;
-let jobPollTimer = null;
-let monitorTab = 'overview';
-let dataTab = 'macro';
-let catalogData = null;
-let precCategory = 'macro';
-let dataPage = 1;
-let dataPages = 1;
-let dataTotalRows = 0;
-let dataDateOrder = 'desc';  // 采集数据日期排序方向：desc 最新在前 / asc 最早在前
-const MAX_PAGE_SIZE = 100;
-
-function dateText(d) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  let body;
+  try { body = await r.json(); } catch { body = {}; }
+  if (!r.ok) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
+  return body;
 }
-function todayText() {
-  return dateText(new Date());
-}
-// 从今天往前推 N 个月（ clamp 到目标月的最后一天，避免 1/31 -> 2/31 溢出）
-function monthsAgoText(months) {
-  const d = new Date();
-  const day = d.getDate();
-  d.setDate(1);
-  d.setMonth(d.getMonth() - months);
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  d.setDate(Math.min(day, lastDay));
-  return dateText(d);
-}
-// 日期控件默认值：优先用后端返回的「最近一个已结束交易日」，未加载时用当天
-let lastTradeDate = '';               // 由 /api/status 注入，形如 2026-11-20
-const DEFAULT_START_DATE = todayText();
+const postJSON = (url, payload) => api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload||{})});
 
-function defaultTradeDay() {
-  return lastTradeDate || todayText();
-}
-function applyDefaultRange(startId, endId) {
-  const d = defaultTradeDay();
-  $(startId).value = d;
-  $(endId).value = d;
-}
-let monitorPage = 1;
-let monitorPages = 1;
-let monitorTotalRows = 0;
-let monitorPageSize = 25;
-let renderedLogCount = 0;
-let logAutoScroll = true;
-let liveLogSeq = 0;          // 全局实时日志已渲染到的序号
-let liveLogTimer = null;     // 常驻轮询：含定时调度在内的所有线程日志
-const LIVE_LOG_LIMIT = 5000;  // 与后端环形缓冲一致：保留最近 5000 行
+/* 全局数据：从真实 API 加载后填充（视图函数读取这些变量） */
+let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows:0, macro_indicators:0,
+  etf_rows:0, etf_codes:0, index_rows:0, index_codes:0, trade_rows:0, trade_raw_rows:{},
+  today_new:{}, scheduler:{enabled:true,time:'03:17',run_type:'full',next_run:'-'},
+  running:false, server_time:'', last_trade_date:'' };
+let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
+let LAST = '';
+let MACRO_INDS = [], ETF_ITEMS = [], INDEX_ITEMS = [], TRADE_LATEST = [];
+let MONITOR_DATA = {overview:[],failures:[],health:[],detail:[],stats:[]};
+let DATA_TABS = {macro:[['月份','指标代码','指标名称','数值','单位','数据源'],[]],
+  etf:[['交易日期','基金代码','基金名称','份额(亿份)','单位净值','净流入(亿元)'],[]],
+  index:[['交易日期','指数代码','指数名称','开盘','最高','最低','收盘','涨跌幅(%)'],[]],
+  trade:[['交易日期','全A成交额(亿元)','成交集中度(%)','两融余额(亿元)','上涨家数','下跌家数','融资保证金比例(%)'],[]],
+  files:[['文件名','大小(KB)','修改时间','操作'],[]]};
+let CATALOG = {macro:[],etf:[],index:[]};
+let ETF_CFG = {codes:[],items:[]}, INDEX_CFG = {codes:[],items:[],start_date:'',end_date:'',lookback_days:1};
+let MACRO_CFG = {start:'',end:''};
+let DERIVED_ROWS = [], DERIVED_MONTH = '';
+let liveLogSeq = 0;
+const num = v => (v==null || v==='' ? '—' : (typeof v === 'number' ? (Number.isInteger(v)?fmt(v):v.toLocaleString('zh-CN',{maximumFractionDigits:2})) : v));
 
-/* ---------- 概览 ---------- */
-async function loadStatus() {
-  try {
-    const s = await api('/api/status');
-    if (s.last_trade_date) lastTradeDate = s.last_trade_date;
-    $('sysTime').textContent = s.server_time;
-    const sched = s.scheduler;
-    const sb = $('schedBadge');
-    sb.textContent = sched.enabled ? `定时 ${sched.time} 已启用` : '定时未启用';
-    sb.className = 'pill ' + (sched.enabled ? 'ok' : 'ghost');
-    $('schedEnabled').checked = sched.enabled;
-    $('schedTime').value = sched.time;
-    $('schedType').value = sched.run_type;
-    $('schedNext').textContent = '下次运行：' + sched.next_run;
-    // 数据处理页的触发控制区同步显示（采集页同名字段已只读，仅作展示）
-    if ($('dpSchedEnabled')) {
-      $('dpSchedEnabled').checked = sched.enabled;
-      $('dpSchedTime').value = sched.time;
-      $('dpSchedType').value = sched.run_type;
-      $('dpSchedNext').textContent = '下次运行：' + sched.next_run;
-    }
-    const rb = $('runBadge');
-    rb.textContent = s.running ? '采集中…' : '空闲';
-    rb.className = 'pill ' + (s.running ? 'warn' : 'ghost');
-    setButtons(!s.running);
-
-    // 字段兼容：SQLite 模式返回 run_* 前缀，旧文件模式返回 id/date/time/type
-    const last = s.last_run || {};
-    const lastId = last.id || last.run_id || '';
-    const lastDate = last.date || last.run_date || '';
-    const lastTime = last.time || last.run_time || '';
-    const lastType = last.type || last.run_type || '';
-    // 最近一次运行的各项指标采集数量（来自 collection_stat）
-    const lc = s.last_counts || {};
-    const cntParts = [];
-    if (lc['宏观']) cntParts.push(`宏观 ${lc['宏观'].rows} 行`);
-    if (lc['ETF']) cntParts.push(`ETF ${lc['ETF'].rows} 行`);
-    if (lc['指数']) cntParts.push(`指数 ${lc['指数'].rows} 行`);
-    const cntText = cntParts.length ? '本次采集：' + cntParts.join(' · ') : '';
-    const cntTitle = cntParts.map(k => k).join('；');
-    const lastSub = lastId
-      ? [lastTime ? lastTime.slice(11) : '', lastType, cntText].filter(Boolean).join(' · ')
-      : '尚无运行记录';
-    // 当日各类别新增采集行数（来自 collection_stat，run_date=今天）
-    const tn = s.today_new || {};
-    // 三张数据卡统一结构：大数字=采集总数，下方两个小格=指标数 / 当日新增
-    const statCard = (label, total, unit, metricLabel, metricVal, newRows) => ({
-      label, value: total,
-      metrics: [
-        { k: metricLabel, v: `${metricVal} ${unit}` },
-        { k: '当日新增', v: `+${newRows} 行` },
-      ],
-      alert: false,
-    });
-    const stats = [
-      { label: '最近采集', value: lastDate || '—', sub: lastSub, title: cntTitle || '', alert: false },
-      statCard('宏观数据', s.macro_rows, '指标', '指标数', s.macro_indicators || 0, tn['宏观'] || 0),
-      statCard('ETF 日频', s.etf_rows, '只', '标的数', s.etf_codes || 0, tn['ETF'] || 0),
-      statCard('指数日线', s.index_rows || 0, '个', '指数数', s.index_codes || 0, tn['指数'] || 0),
-      { label: '今日接口调用', value: s.today_calls, sub: '按接口逐次记录', alert: false },
-      { label: '历史失败累计', value: s.failed_total, sub: s.failed_total ? '存在失败，请查看监控看板' : '全部成功', alert: s.failed_total > 0 },
-    ];
-    $('stats').innerHTML = stats.map(x => `
-      <div class="stat ${x.alert ? 'alert' : ''}">
-        <div class="stat-label">${x.label}</div>
-        <div class="stat-value">${x.value}</div>
-        ${x.metrics
-          ? `<div class="stat-metrics">${x.metrics.map(m => `<div class="metric"><span class="metric-k">${m.k}</span><span class="metric-v">${m.v}</span></div>`).join('')}</div>`
-          : `<div class="stat-sub"${x.title ? ` title="${x.title}"` : ''}>${x.sub}</div>`}
-      </div>`).join('');
-  } catch (e) { console.error(e); }
+/* ---------------- 反馈组件 ---------------- */
+function toast(msg, type='info'){
+  const box = byId('toastBox');
+  const ic = {info:'info-circle', ok:'circle-check', warn:'alert-triangle', err:'circle-x'}[type] || 'info-circle';
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.innerHTML = `<i class="ti ti-${ic}"></i><div>${esc(msg)}</div>`;
+  box.appendChild(el);
+  setTimeout(()=>{ el.style.opacity='0'; el.style.transform='translateX(16px)'; setTimeout(()=>el.remove(), 260); }, 3400);
 }
-
-function setButtons(enabled) {
-  document.querySelectorAll('button[data-action]').forEach(b => b.disabled = !enabled);
-  const prec = $('precRun');
-  if (prec) prec.disabled = !enabled;
-  ['fullStart', 'fullEnd', 'fullRangeReset'].forEach(id => {
-    const el = $(id);
-    if (el) el.disabled = !enabled;
-  });
+function modal(title, body, onOk, okText='确认'){
+  const root = byId('modalRoot');
+  root.innerHTML = `<div class="modal-mask"><div class="modal-box">
+    <div class="modal-head"><i class="ti ti-question-circle" style="color:var(--blue)"></i>${esc(title)}</div>
+    <div class="modal-body">${body}</div>
+    <div class="modal-foot"><button class="btn btn-sm" data-act="modal-cancel">取消</button><button class="btn btn-primary btn-sm" data-act="modal-ok">${esc(okText)}</button></div>
+  </div></div>`;
+  root._onOk = onOk;
 }
+function closeModal(){ byId('modalRoot').innerHTML = ''; }
 
-/* ---------- 调度设置 ---------- */
-async function saveScheduler(enabled, time, runType) {
-  const payload = { enabled, time, run_type: runType };
-  try {
-    await api('/api/scheduler', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    await loadStatus();
-    flashLog('调度配置已保存', 'INFO');
-  } catch (e) { alert('保存失败：' + e.message); }
+/* ---------------- 实时监控日志（真实 /api/live-logs + /api/jobs） ---------------- */
+function appendLog(text, level='INFO'){
+  const body = byId('logBody'); if(!body) return;
+  body.insertAdjacentHTML('beforeend', `<div class="log-line"><span class="t">${now()}</span> <span class="${level}">${esc(text)}</span></div>`);
+  const strip = byId('logMarquee'); if(strip){ strip.className = level; strip.textContent = text; }
+  const wrap = byId('logBodyWrap'); if(wrap && byId('logAutoScroll')?.checked) wrap.scrollTop = wrap.scrollHeight;
 }
-// 采集页按钮已只读，保留监听以防旧 DOM；主入口在数据处理页 dpSchedSave
-if ($('schedSave')) {
-  $('schedSave').addEventListener('click', () =>
-    saveScheduler($('schedEnabled').checked, $('schedTime').value, $('schedType').value));
+function setBusy(busy, label){
+  const badge = $('#hdStatus'); if(!badge) return;
+  badge.textContent = busy ? '采集中…' : '系统正常';
+  badge.parentElement.classList.toggle('busy', !!busy);
 }
-if ($('dpSchedSave')) {
-  $('dpSchedSave').addEventListener('click', () =>
-    saveScheduler($('dpSchedEnabled').checked, $('dpSchedTime').value, $('dpSchedType').value));
-}
-
-/* ---------- 采集 / 重跑 ---------- */
-document.querySelectorAll('button[data-action]').forEach(btn => {
-  btn.addEventListener('click', async () => {
-    const action = btn.dataset.action;
-    let url, payload;
-    if (action === 'collect') {
-      url = '/api/collect';
-      const kind = btn.dataset.kind;
-      payload = { macro_only: kind === 'macro', etf_only: kind === 'etf', index_only: kind === 'index' };
-      if (kind === 'full') {
-        payload.start = $('fullStart').value.trim();
-        payload.end = $('fullEnd').value.trim();
-      }
-    } else {
-      url = '/api/retry';
-      payload = {};
-    }
-    try {
-      const res = await api(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-      });
-      startJob(res.job_id);
-    } catch (e) { alert('任务启动失败：' + e.message); }
-  });
-});
-$('fullRangeReset').addEventListener('click', () => applyDefaultRange('fullStart', 'fullEnd'));
-
-/* ---------- 文件导入（Choice 份额与规模） ---------- */
-const MAX_IMPORT_FILES = 10;
-$('importFiles').addEventListener('change', () => {
-  const n = $('importFiles').files.length;
-  const result = $('importResult');
-  if (n > MAX_IMPORT_FILES) {
-    $('importFiles').value = '';
-    result.textContent = `单次最多导入 ${MAX_IMPORT_FILES} 个文件，当前选择了 ${n} 个，请分批导入`;
-    result.className = 'import-result err';
-  } else {
-    result.textContent = n ? `已选择 ${n} 个文件` : '—';
-    result.className = 'import-result';
-  }
-});
-$('importBtn').addEventListener('click', async () => {
-  const input = $('importFiles');
-  const files = input.files;
-  const result = $('importResult');
-  if (!files || files.length === 0) {
-    result.textContent = '请先选择要导入的 .xlsx 文件';
-    result.className = 'import-result err';
-    return;
-  }
-  if (files.length > MAX_IMPORT_FILES) {
-    result.textContent = `单次最多导入 ${MAX_IMPORT_FILES} 个文件，当前 ${files.length} 个，请分批导入`;
-    result.className = 'import-result err';
-    return;
-  }
-  const form = new FormData();
-  for (const f of files) form.append('files', f);
-  const btn = $('importBtn');
-  btn.disabled = true;
-  result.textContent = '导入中…';
-  result.className = 'import-result';
-  try {
-    const res = await api('/api/import/etf', { method: 'POST', body: form });
-    // 逐文件打印日志，均带文件名称，便于批量导入时定位
-    res.imported.forEach(x => flashLog(`文件导入成功 [${x.file}]：标的 ${x.code}，${x.rows} 行（${x.start} ~ ${x.end}）`, 'INFO'));
-    res.errors.forEach(e => flashLog(`文件导入失败 [${e.file}]：${e.error}`, 'ERROR'));
-    const parts = [`成功 ${res.imported.length} 个文件 / ${res.total_rows} 行`];
-    if (res.errors.length) parts.push(`失败 ${res.errors.length} 个：${res.errors.map(e => e.file + '（' + e.error + '）').join('；')}`);
-    result.textContent = parts.join(' · ');
-    result.className = 'import-result ' + (res.ok ? 'ok' : 'err');
-    flashLog(`文件导入汇总：成功 ${res.imported.length} / 失败 ${res.errors.length} / 共 ${res.total_rows} 行`, res.ok ? 'INFO' : 'WARN');
-    await Promise.all([loadStatus(), loadData()]);
-    input.value = '';
-  } catch (e) {
-    result.textContent = '导入失败：' + e.message;
-    result.className = 'import-result err';
-  } finally {
-    btn.disabled = false;
-  }
-});
-
-function startJob(jobId) {
-  currentJobId = jobId;
-  // 日志统一由全局实时流渲染（含定时调度任务），此处不再清空 logBody，
-  // 以满足「保留最近 5000 行」的连续展示。
-  setLogMarquee(`任务 ${jobId} 已提交，日志见下方实时流…`, 'INFO');
-  $('logDot').classList.add('live');
-  setButtons(false);
-  $('jobHint').textContent = `任务 ${jobId} 运行中…（含定时调度日志持续刷新）`;
-  if (jobPollTimer) clearInterval(jobPollTimer);
-  jobPollTimer = setInterval(() => pollJob(jobId), 900);
-  pollJob(jobId);
-}
-
-async function pollJob(jobId) {
-  try {
-    const job = await api('/api/jobs/' + jobId);
-    // job.logs 不再渲染（已由 /api/live-logs 全局流承接，避免重复）
-    if (job.status !== 'running') {
-      clearInterval(jobPollTimer);
-      jobPollTimer = null;
-      $('logDot').classList.remove('live');
-      $('jobHint').textContent = `任务 ${jobId} ${job.status === 'success' ? '完成' : '失败'} · ${job.end}`;
-      setButtons(true);
-      await Promise.all([loadStatus(), loadMonitor(), loadData()]);
-    }
-  } catch (e) { console.error(e); }
-}
-
-// 全局实时日志流：常驻轮询，承接定时调度/后台采集/手动任务等所有线程日志。
-async function pollLiveLogs() {
+/* 轮询 live-logs 增量写入日志面板 */
+async function pollLiveOnce(){
   try {
     const res = await api('/api/live-logs?after=' + liveLogSeq);
-    const logs = res.logs || [];
-    if (logs.length) {
-      const body = $('logBody');
-      const empty = body.querySelector('.log-empty');
-      if (empty) empty.remove();
-      for (const l of logs) {
-        body.insertAdjacentHTML('beforeend',
-          `<div class="log-line ${esc(l.level)}"><span class="t">[${esc(l.time)}]</span> ${esc(l.message)}</div>`);
-      }
-      while (body.children.length > LIVE_LOG_LIMIT) body.removeChild(body.firstChild);
-      liveLogSeq = res.latest;
-      const last = logs[logs.length - 1];
-      setLogMarquee(`[${last.time}] ${last.message}`, last.level);
-      if (logAutoScroll) scrollLogToBottom(false);
-    } else if (res.latest > liveLogSeq) {
-      liveLogSeq = res.latest;  // 缓冲滚动导致的纯删除，同步游标
-    }
-  } catch (e) { console.error(e); }
-}
-
-function startLiveLogPolling() {
-  pollLiveLogs();
-  if (liveLogTimer) clearInterval(liveLogTimer);
-  liveLogTimer = setInterval(pollLiveLogs, 1500);
-}
-
-function flashLog(msg, level) {
-  const time = new Date().toLocaleTimeString('zh-CN', {hour12: false});
-  const body = $('logBody');
-  const empty = body.querySelector('.log-empty');
-  if (empty) empty.remove();
-  const div = document.createElement('div');
-  div.className = 'log-line ' + level;
-  div.textContent = `[${time}] ${msg}`;
-  body.appendChild(div);
-  while (body.children.length > LIVE_LOG_LIMIT) body.removeChild(body.firstChild);
-  body.scrollTop = body.scrollHeight;
-  setLogMarquee(`[${time}] ${msg}`, level);
-}
-
-// 顶部滚动条：始终显示最新一条日志
-function setLogMarquee(text, level = 'INFO') {
-  const el = $('logMarquee');
-  if (!el) return;
-  el.textContent = text;
-  el.className = ['ERROR', 'WARNING', 'INFO'].includes(level) ? level : 'INFO';
-  el.style.animation = 'none';
-  void el.offsetWidth;  // 重启动画
-  el.style.animation = '';
-}
-
-// 完整日志：只追加新增行，避免每次轮询重置滚动位置
-function renderJobLogs(logs) {
-  const body = $('logBody');
-  if (logs.length < renderedLogCount) {
-    body.innerHTML = '';
-    renderedLogCount = 0;
-  }
-  if (renderedLogCount === 0) body.innerHTML = '';
-  if (logs.length === renderedLogCount) return;
-  for (let i = renderedLogCount; i < logs.length; i++) {
-    const l = logs[i];
-    body.insertAdjacentHTML('beforeend',
-      `<div class="log-line ${esc(l.level)}"><span class="t">[${esc(l.time)}]</span> ${esc(l.message)}</div>`);
-  }
-  renderedLogCount = logs.length;
-  const last = logs[logs.length - 1];
-  setLogMarquee(`[${last.time}] ${last.message}`, last.level);
-  if (logAutoScroll) scrollLogToBottom(false);
-}
-
-function scrollLogToBottom(resume = true) {
-  const body = $('logBody');
-  if (!body) return;
-  body.scrollTop = body.scrollHeight;
-  if (resume) {
-    logAutoScroll = true;
-    $('logAutoScroll').checked = true;
-  }
-}
-
-$('logToggle').addEventListener('click', () => {
-  const panel = $('logPanel');
-  const expanded = panel.classList.toggle('expanded');
-  $('logToggle').textContent = expanded ? '收起' : '展开';
-  if (expanded) scrollLogToBottom();
-});
-$('logStrip').addEventListener('click', () => $('logToggle').click());
-$('logBottom').addEventListener('click', () => scrollLogToBottom());
-$('logAutoScroll').addEventListener('change', (e) => {
-  logAutoScroll = e.target.checked;
-  if (logAutoScroll) scrollLogToBottom(false);
-});
-$('logBody').addEventListener('scroll', () => {
-  const body = $('logBody');
-  const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight <= 20;
-  if (!atBottom && logAutoScroll) {
-    logAutoScroll = false;
-    $('logAutoScroll').checked = false;
-  }
-});
-
-/* ---------- 精确采集（按接口/指标 + 时间范围） ---------- */
-async function loadCatalog() {
-  try {
-    catalogData = await api('/api/catalog');
-    renderPrecItems();
-    renderCleanItems();
-    const cfg = catalogData.defaults || {};
-    if (!$('precStart').value && precCategory === 'macro') $('precStart').placeholder = cfg.macro_start || '起始，留空=默认';
-  } catch (e) {
-    $('precCode').innerHTML = '<option value="">目录加载失败</option>';
-    console.error(e);
-  }
-}
-
-function renderPrecItems() {
-  if (!catalogData) return;
-  const items = catalogData[precCategory] || [];
-  const sel = $('precCode');
-  const isMacro = precCategory === 'macro';
-  // 统一使用日期控件；宏观在后端自动按月归并
-  $('precStart').type = 'date';
-  $('precEnd').type = 'date';
-  $('precDateHint').textContent = isMacro
-    ? '按日期 · YYYY-MM-DD（宏观自动按月归并）'
-    : '按交易日 · YYYY-MM-DD';
-  sel.innerHTML = '<option value="">全部（该类别整体）</option>' + items.map(it => {
-    const meta = [it.iface, it.unit, it.granularity].filter(Boolean).join(' · ');
-    const listing = it.listing_date ? `，上市 ${it.listing_date}` : '';
-    const label = `${it.name || it.code}（${it.code}${listing}）`;
-    return `<option value="${esc(it.code)}" data-meta="${esc(meta)}" data-last="${esc(it.last_date || '')}" data-listing="${esc(it.listing_date || '')}">${esc(label)}</option>`;
-  }).join('');
-  $('precItemCount').textContent = `共 ${items.length} 项`;
-  updatePrecNote();
-}
-
-function updatePrecNote() {
-  const sel = $('precCode');
-  const opt = sel.options[sel.selectedIndex];
-  if (!catalogData) return;
-  let note = `数据快照保留最近 ${catalogData.keep_snapshots || 3} 份。`;
-  if (opt && opt.dataset.last) note += ` 最新数据截至 ${opt.dataset.last}。`;
-  if (opt && opt.dataset.meta) note += `\n接口：${opt.dataset.meta}`;
-  if (precCategory === 'etf' && opt && opt.dataset.listing) {
-    note += `\n上市日 ${opt.dataset.listing}，早于上市日的范围自动忽略。`;
-  }
-  $('precNote').textContent = note;
-}
-
-// 类别切换（两级联动：类别下拉 → 该类别下的具体口径下拉）
-$('precCategory').addEventListener('change', () => {
-  precCategory = $('precCategory').value;
-  applyDefaultRange('precStart', 'precEnd');   // 时间回到最近一个交易日
-  renderPrecItems();                            // 重建口径下拉，默认「全部」
-});
-$('precCode').addEventListener('change', updatePrecNote);
-
-// 精确采集提交
-$('precRun').addEventListener('click', async () => {
-  const payload = {
-    category: precCategory,
-    codes: $('precCode').value ? [$('precCode').value] : [],
-    start: $('precStart').value.trim(),
-    end: $('precEnd').value.trim(),
-  };
-  try {
-    const res = await api('/api/collect/interface', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+    const lines = res.logs || [];
+    lines.forEach(l=>{
+      liveLogSeq = l.seq || liveLogSeq;
+      const lv = String(l.level||'INFO').toUpperCase();
+      appendLog(l.text || l.message || '', ['INFO','OK','WARN','ERROR'].includes(lv)?lv:'INFO');
     });
-    flashLog(`精确采集任务已提交（${precCategory} / ${payload.codes[0] || '全部'}）`, 'INFO');
-    startJob(res.job_id);
-  } catch (e) { alert('精确采集启动失败：' + e.message); }
-});
-
-/* ---------- 数据清理（按口径 / 时间范围，危险操作） ---------- */
-let cleanCategory = 'macro';
-
-function renderCleanItems() {
-  if (!catalogData) return;
-  const items = catalogData[cleanCategory] || [];
-  $('cleanCode').innerHTML = '<option value="">全部（该类别整体）</option>' + items.map(it => {
-    const label = `${it.name || it.code}（${it.code}）`;
-    return `<option value="${esc(it.code)}">${esc(label)}</option>`;
-  }).join('');
-  $('cleanItemCount').textContent = `共 ${items.length} 项`;
-  setCleanResult('—');
+  } catch {}
 }
-
-function cleanPayload() {
-  return {
-    category: cleanCategory,
-    code: $('cleanCode').value.trim(),
-    start: $('cleanStart').value.trim(),
-    end: $('cleanEnd').value.trim(),
-  };
-}
-
-function setCleanResult(text, cls = '') {
-  const el = $('cleanResult');
-  el.textContent = text;
-  el.className = 'clean-result' + (cls ? ' ' + cls : '');
-}
-
-function scopeText(p) {
-  const cat = {macro: '宏观指标', etf: 'ETF 基金', index: '指数'}[p.category] || p.category;
-  return `${cat} / ${p.code || '全部口径'} / ${p.start || '不限'} ~ ${p.end || '不限'}`;
-}
-
-document.querySelectorAll('#cleanCategory .seg-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    document.querySelectorAll('#cleanCategory .seg-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    cleanCategory = btn.dataset.cat;
-    renderCleanItems();
-  });
-});
-
-$('cleanPreviewBtn').addEventListener('click', async () => {
-  const p = cleanPayload();
+/* 提交任务并轮询 job 直到完成 */
+async function submitJob(url, payload, label){
+  setBusy(true, label);
+  appendLog(`[${label}] 任务已提交`, 'INFO');
   try {
-    const res = await api('/api/clean/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
-    });
-    const scope = scopeText(p);
-    if (!res.matched) {
-      setCleanResult(`预览 ${scope}：匹配 0 行，无可清理数据。`, 'warn');
-    } else {
-      setCleanResult(`预览 ${scope}：将删除 ${res.matched} 行（该类别当前共 ${res.total} 行）。`, 'warn');
-    }
-  } catch (e) { setCleanResult('预览失败：' + e.message, 'warn'); }
-});
-
-$('cleanExecBtn').addEventListener('click', async () => {
-  const p = cleanPayload();
-  try {
-    const pre = await api('/api/clean/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
-    });
-    if (!pre.matched) {
-      setCleanResult(`无匹配数据，无需清理：${scopeText(p)}`, 'warn');
-      return;
-    }
-    const ok = window.confirm(
-      `即将删除 ${pre.matched} 行数据：\n${scopeText(p)}\n\n` +
-      `此操作不可撤销，不影响配置、监控与导出记录。确认继续？`
-    );
-    if (!ok) { setCleanResult('已取消清理。', 'warn'); return; }
-    const res = await api('/api/clean', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...p, confirm: true }),
-    });
-    setCleanResult(`已清理 ${scopeText(p)}：删除 ${res.deleted} 行，剩余 ${res.after} 行。`, 'done');
-    flashLog(`数据清理完成：删除 ${res.deleted} 行（${p.category}/${p.code || '全部'}）`, 'INFO');
-    await Promise.all([loadCatalog(), loadStatus(), loadData()]);
-  } catch (e) { setCleanResult('清理失败：' + e.message, 'warn'); }
-});
-
-$('cleanResetBtn').addEventListener('click', () => {
-  $('cleanCode').value = '';
-  applyDefaultRange('cleanStart', 'cleanEnd');
-  setCleanResult('—');
-});
-
-/* ---------- ETF 标的配置 ---------- */
-let etfCfg = null;
-
-async function loadEtfConfig() {
-  try {
-    etfCfg = await api('/api/etf/config');
-    renderEtfChips();
-    $('etfStart').value = etfCfg.start_date || '';
-    $('etfEnd').value = etfCfg.end_date || '';
-    $('etfDays').value = etfCfg.default_trade_days || 1;
-  } catch (e) {
-    $('etfChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
-    console.error(e);
-  }
-}
-
-function etfTagOptions() {
-  return (etfCfg && etfCfg.tag_options) ? etfCfg.tag_options : ['宽基', '汇金', '黄金'];
-}
-
-function renderEtfChips() {
-  const wrap = $('etfChips');
-  if (!etfCfg || !etfCfg.items.length) {
-    wrap.innerHTML = '<div class="empty">尚未配置 ETF 标的，请在上方输入基金代码添加。</div>';
-    return;
-  }
-  const options = etfTagOptions();
-  wrap.innerHTML = etfCfg.items.map(it => {
-    const listing = it.listing_date
-      ? `<span class="chip-listing">上市 ${esc(it.listing_date)}</span>`
-      : '<span class="chip-listing pending">上市日待采集</span>';
-    const tags = it.tags || [];
-    return `<div class="etf-chip">
-      <div class="chip-top">
-        <span class="chip-code">${esc(it.code)}</span>
-        <button class="chip-remove" data-code="${esc(it.code)}" title="移除该标的">×</button>
-      </div>
-      <span class="chip-name">${esc(it.name || '—')}</span>
-      ${listing}
-      <div class="chip-tags">
-        ${options.map(t => `<label class="tag-check ${tags.includes(t) ? 'on' : ''}">
-          <input type="checkbox" data-tag="${esc(t)}" data-code="${esc(it.code)}" ${tags.includes(t) ? 'checked' : ''}>${esc(t)}
-        </label>`).join('')}
-      </div>
-    </div>`;
-  }).join('');
-  wrap.querySelectorAll('.chip-remove').forEach(btn => {
-    btn.addEventListener('click', () => removeEtfCode(btn.dataset.code));
-  });
-  wrap.querySelectorAll('.tag-check input').forEach(cb => {
-    cb.addEventListener('change', async () => {
-      const item = etfCfg.items.find(x => x.code === cb.dataset.code);
-      if (!item) return;
-      const codes = etfCfg.items.map(x => x.code);
-      const checked = Array.from(wrap.querySelectorAll(`.tag-check input[data-code="${cb.dataset.code}"]:checked`))
-        .map(x => x.dataset.tag);
-      item.tags = etfTagOptions().filter(t => checked.includes(t));
-      await saveEtfConfig(true);
-      flashLog(`ETF ${item.code} 标签已更新：${item.tags.join('/') || '无'}`, 'INFO');
-    });
-  });
-}
-
-function etfPayload() {
-  const tags = {};
-  if (etfCfg) {
-    etfCfg.items.forEach(x => { if (x.tags && x.tags.length) tags[x.code] = x.tags; });
-  }
-  return {
-    codes: etfCfg ? etfCfg.items.map(x => x.code) : [],
-    tags,
-    start_date: $('etfStart').value.trim(),
-    end_date: $('etfEnd').value.trim(),
-    default_trade_days: $('etfDays').value.trim(),
-  };
-}
-
-async function saveEtfConfig(quiet = false) {
-  const payload = etfPayload();
-  payload.default_trade_days = payload.default_trade_days ? parseInt(payload.default_trade_days, 10) : 1;
-  try {
-    const res = await api('/api/etf/config', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    etfCfg = res.config;
-    renderEtfChips();
-    await loadCatalog();  // 同步精确采集下拉
-    if (!quiet) flashLog('ETF 配置已保存', 'INFO');
-    return true;
-  } catch (e) {
-    if (!quiet) alert('保存失败：' + e.message);
-    return false;
-  }
-}
-
-async function addEtfCode() {
-  const input = $('etfNewCode');
-  const code = input.value.trim();
-  if (!/^\d{1,6}$/.test(code)) { alert('请输入 1~6 位数字基金代码'); return; }
-  const full = code.padStart(6, '0');
-  if (!etfCfg) etfCfg = { items: [] };
-  if (etfCfg.items.some(x => x.code === full)) { alert('该标的已在列表中'); return; }
-  etfCfg.items.push({ code: full, name: '', listing_date: '', tags: [] });
-  renderEtfChips();
-  input.value = '';
-  await saveEtfConfig(true);
-  flashLog(`已添加 ETF ${full}，上市日将在下次采集时自动解析`, 'INFO');
-}
-
-async function removeEtfCode(code) {
-  if (!etfCfg) return;
-  etfCfg.items = etfCfg.items.filter(x => x.code !== code);
-  renderEtfChips();
-  await saveEtfConfig(true);
-  flashLog(`已移除 ETF ${code}`, 'INFO');
-}
-
-$('etfAddBtn').addEventListener('click', addEtfCode);
-$('etfNewCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') addEtfCode(); });
-$('etfSaveBtn').addEventListener('click', () => saveEtfConfig(false));
-
-/* ---------- 指数标的配置 ---------- */
-let indexCfg = null;
-let indexCatalog = [];
-
-async function loadIndexConfig() {
-  try {
-    const [cfg, cat] = await Promise.all([
-      api('/api/index/config'),
-      Promise.resolve(catalogData ? null : api('/api/catalog')),
-    ]);
-    indexCfg = cfg;
-    if (!catalogData && cat) catalogData = cat;
-    indexCatalog = (catalogData && catalogData.index) ? catalogData.index : (cat ? cat.index || [] : []);
-    // 下拉列出全部支持的指数，已添加的排除
-    const selected = new Set(indexCfg.items.map(x => x.code));
-    const available = indexCatalog.filter(it => !selected.has(it.code));
-    $('indexNewCode').innerHTML = available.length
-      ? available.map(it => `<option value="${esc(it.code)}">${esc(it.name || it.code)}（${esc(it.code)}）</option>`).join('')
-      : '<option value="">已添加全部指数</option>';
-    renderIndexChips();
-    $('indexStart').value = indexCfg.start_date || '';
-    $('indexEnd').value = indexCfg.end_date || '';
-    $('indexDays').value = indexCfg.lookback_days || 1;
-  } catch (e) {
-    $('indexChips').innerHTML = `<div class="empty">配置加载失败：${esc(e.message)}</div>`;
-    console.error(e);
-  }
-}
-
-function renderIndexChips() {
-  const wrap = $('indexChips');
-  if (!indexCfg || !indexCfg.items.length) {
-    wrap.innerHTML = '<div class="empty">尚未配置指数标的，请在上方选择并添加。</div>';
-    return;
-  }
-  wrap.innerHTML = indexCfg.items.map(it => `<div class="etf-chip">
-    <div class="chip-top">
-      <span class="chip-code">${esc(it.code)}</span>
-      <button class="chip-remove" data-code="${esc(it.code)}" title="移除该指数">×</button>
-    </div>
-    <span class="chip-name">${esc(it.name || '—')}</span>
-  </div>`).join('');
-  wrap.querySelectorAll('.chip-remove').forEach(btn => {
-    btn.addEventListener('click', () => removeIndexCode(btn.dataset.code));
-  });
-}
-
-async function saveIndexConfig() {
-  const payload = {
-    codes: indexCfg ? indexCfg.items.map(x => x.code) : [],
-    start_date: $('indexStart').value.trim(),
-    end_date: $('indexEnd').value.trim(),
-    lookback_days: $('indexDays').value.trim() ? parseInt($('indexDays').value.trim(), 10) : 1,
-  };
-  try {
-    const res = await api('/api/index/config', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    indexCfg = res.config;
-    renderIndexChips();
-    await loadCatalog();
-    flashLog('指数配置已保存', 'INFO');
-  } catch (e) { alert('保存失败：' + e.message); }
-}
-
-async function addIndexCode() {
-  const code = $('indexNewCode').value.trim();
-  if (!code) { alert('请先选择一个指数'); return; }
-  if (!indexCfg) indexCfg = { items: [] };
-  if (indexCfg.items.some(x => x.code === code)) { alert('该指数已在列表中'); return; }
-  const meta = indexCatalog.find(x => x.code === code);
-  indexCfg.items.push({ code, name: meta ? meta.name : '' });
-  renderIndexChips();
-  await saveIndexConfig();
-}
-
-async function removeIndexCode(code) {
-  if (!indexCfg) return;
-  indexCfg.items = indexCfg.items.filter(x => x.code !== code);
-  renderIndexChips();
-  await saveIndexConfig();
-  flashLog(`已移除指数 ${code}`, 'INFO');
-}
-
-$('indexAddBtn').addEventListener('click', addIndexCode);
-$('indexSaveBtn').addEventListener('click', () => saveIndexConfig());
-
-/* ---------- 监控看板 ---------- */
-async function loadMonitor() {
-  try {
-    monitorData = await api('/api/monitor/report');
-    const fails = monitorData['失败明细'] || [];
-    const count = fails.length && fails[0]['提示'] ? 0 : fails.length;
-    $('failCount').textContent = count;
-    $('failCount').className = 'badge ' + (count ? '' : 'zero');
-    buildMonitorOptions();
-    renderMonitor();
-  } catch (e) { console.error(e); }
-}
-
-// 用「接口健康度」的接口名填充关键词 datalist（去重、无日期后缀，可选可输入）
-function buildMonitorOptions() {
-  const names = new Set();
-  (monitorData?.['接口健康度'] || []).forEach(r => {
-    const n = r['接口名称'] || r['接口键'];
-    if (n) names.add(String(n));
-  });
-  $('monKeywordOptions').innerHTML = [...names].sort().map(n => `<option value="${esc(n)}"></option>`).join('');
-}
-
-document.querySelectorAll('#monitorTabs .tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('#monitorTabs .tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    monitorTab = tab.dataset.tab;
-    monitorPage = 1;  // 切换 Tab 重置到第一页
-    const hint = $('monRetryHint');
-    if (hint) hint.hidden = monitorTab !== 'failures';
-    renderMonitor();
-  });
-});
-$('monFilterBtn').addEventListener('click', () => { monitorPage = 1; renderMonitor(); });
-$('monResetBtn').addEventListener('click', () => {
-  $('monKeyword').value = '';
-  $('monRunType').value = ''; $('monCategory').value = ''; $('monStatus').value = '';
-  monitorDefaultRange();
-  monitorPage = 1;
-  renderMonitor();
-});
-$('monPageSize').addEventListener('change', () => { monitorPage = 1; renderMonitor(); });
-
-/* ---------- 接口监控清理（按口径，需确认） ---------- */
-function mcPayload() {
-  return {
-    start: $('mcStart').value.trim(), end: $('mcEnd').value.trim(),
-    status: $('mcStatus').value, run_type: $('mcRunType').value,
-    category: $('mcCategory').value, keyword: $('mcKeyword').value.trim(),
-  };
-}
-function mcScopeText(p) {
-  const label = [p.start || '不限', p.end || '不限'].join('~');
-  return `${label} / ${p.status || '全部状态'} / ${p.run_type || '全部类型'} / ${p.category || '全部类别'}${p.keyword ? ' / ' + p.keyword : ''}`;
-}
-function setMcResult(text, cls = '') {
-  const el = $('mcResult');
-  el.textContent = text;
-  el.className = 'clean-result' + (cls ? ' ' + cls : '');
-}
-$('monitorCleanToggle').addEventListener('click', () => {
-  const box = $('monitorCleanBox');
-  box.hidden = !box.hidden;
-  if (!box.hidden) applyDefaultRange('mcStart', 'mcEnd');
-});
-$('mcPreviewBtn').addEventListener('click', async () => {
-  const p = mcPayload();
-  try {
-    const res = await api('/api/monitor/clean/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
-    });
-    setMcResult(res.matched
-      ? `预览 ${mcScopeText(p)}：将删除 ${res.matched} 条（监控记录共 ${res.total} 条）。`
-      : `预览 ${mcScopeText(p)}：匹配 0 条，无可清理记录。`, 'warn');
-  } catch (e) { setMcResult('预览失败：' + e.message, 'warn'); }
-});
-$('mcExecBtn').addEventListener('click', async () => {
-  const p = mcPayload();
-  try {
-    const pre = await api('/api/monitor/clean/preview', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p),
-    });
-    if (!pre.matched) { setMcResult('无匹配记录，无需清理。', 'warn'); return; }
-    const ok = window.confirm(
-      `即将删除 ${pre.matched} 条接口监控记录：\n${mcScopeText(p)}\n\n` +
-      `此操作不可撤销，不影响业务数据、ETF/指数配置与导出文件。确认继续？`
-    );
-    if (!ok) { setMcResult('已取消清理。', 'warn'); return; }
-    const res = await api('/api/monitor/clean', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...p, confirm: true }),
-    });
-    setMcResult(`已清理：删除 ${res.deleted} 条，剩余 ${res.after} 条。`, 'done');
-    flashLog(`接口监控清理完成：删除 ${res.deleted} 条`, 'INFO');
-    await Promise.all([loadMonitor(), loadStatus()]);
-  } catch (e) { setMcResult('清理失败：' + e.message, 'warn'); }
-});
-$('mcResetBtn').addEventListener('click', () => {
-  $('mcStart').value = ''; $('mcEnd').value = '';
-  $('mcStatus').value = ''; $('mcRunType').value = '';
-  $('mcCategory').value = ''; $('mcKeyword').value = '';
-  setMcResult('—');
-});
-
-// 监控看板默认日期：当天（监控看的是运行记录，与行情交易日无关）
-function monitorDefaultRange() {
-  $('monStart').value = todayText();
-  $('monEnd').value = todayText();
-}
-
-// 从一行里按字段名取值（各 sheet 字段名不同，做兼容映射）
-function monField(row, candidates) {
-  for (const c of candidates) if (row[c] != null && row[c] !== '') return String(row[c]);
-  return '';
-}
-
-function filterMonitorRows(rows) {
-  const kw = $('monKeyword').value.trim().toLowerCase();
-  const runType = $('monRunType').value;
-  const category = $('monCategory').value;
-  const status = $('monStatus').value;
-  const start = $('monStart').value;
-  const end = $('monEnd').value;
-  return rows.filter(r => {
-    // 关键词：匹配整行任意单元格
-    if (kw && !Object.values(r).some(v => String(v ?? '').toLowerCase().includes(kw))) return false;
-    // 运行类型（各 sheet 字段名不同）
-    if (runType && monField(r, ['运行类型']) && monField(r, ['运行类型']) !== runType) return false;
-    // 类别（采集量统计用「类别口径」）
-    if (category && monField(r, ['类别', '类别口径']) !== category) return false;
-    // 状态：成功/失败；失败明细无状态列，按"失败原因"存在视为失败
-    if (status) {
-      const st = monField(r, ['状态']);
-      if (st) {
-        if (st !== status) return false;
-      } else if (sheetIsFailureView()) {
-        if (status !== 'failed') return false;
-      }
-    }
-    // 日期范围：取行内第一个日期字段
-    const date = monField(r, ['运行日期', '失败日期', '最近失败日期', '运行时间']).slice(0, 10);
-    if (start && date && date < start) return false;
-    if (end && date && date > end) return false;
-    return true;
-  });
-}
-
-function sheetIsFailureView() { return monitorTab === 'failures'; }
-
-function renderMonitor() {
-  const map = { overview: '运行总览', failures: '失败明细', health: '接口健康度', detail: '调用明细', stats: '采集量统计' };
-  let rows = (monitorData && monitorData[map[monitorTab]]) || [];
-  const hasNotice = !!(rows.length && rows[0]['提示']);
-  if (!hasNotice) rows = filterMonitorRows(rows);
-
-  const el = $('monitorTable');
-  const filterActive = ['monKeyword','monStart','monEnd'].some(id => $(id).value.trim()) ||
-    !!$('monRunType').value || !!$('monCategory').value || !!$('monStatus').value;
-  monitorPageSize = Math.min(Math.max(parseInt($('monPageSize')?.value, 10) || 25, 1), MAX_PAGE_SIZE);
-  monitorTotalRows = rows.length;
-  monitorPages = Math.max(1, Math.ceil(monitorTotalRows / monitorPageSize));
-  if (monitorPage > monitorPages) monitorPage = monitorPages;
-  const start = (monitorPage - 1) * monitorPageSize;
-  const pageRows = hasNotice ? rows : rows.slice(start, start + monitorPageSize);
-
-  const prefix = filterActive ? '筛选后' : '共';
-  $('monFilterHint').textContent = `${prefix} ${monitorTotalRows} 行 · 第 ${monitorPage}/${monitorPages} 页`;
-  if (!pageRows.length) {
-    el.innerHTML = `<div class="empty">${rows[0]?.['提示'] || '无匹配记录'}</div>`;
-    renderMonitorPager();
-    return;
-  }
-  // 失败明细：额外加「操作」列，每条失败可单独重跑自己的任务
-  const showRetry = sheetIsFailureView() && !hasNotice;
-  // 运行总览：额外加「展开」列，点开可看该批次每次接口调用的明细
-  const isOverview = monitorTab === 'overview' && !hasNotice;
-  const cols = Object.keys(pageRows[0]);
-  const headCols = isOverview ? ['', ...cols] : (showRetry ? [...cols, '操作'] : cols);
-  const head = '<thead><tr>' + headCols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead>';
-  const body = '<tbody>' + pageRows.map(r => {
-    const isFail = (r['状态'] === 'failed') || (r['失败原因'] && !r['重跑结果']);
-    const cls = isFail ? 'row-fail' : '';
-    let cells = cols.map(c => {
-      let v = r[c] == null ? '' : String(r[c]);
-      let cell = `<div class="cell-clip" title="${esc(v)}">${esc(v)}</div>`;
-      if (c === '状态') {
-        const ok = v === 'success';
-        cell = `<span class="tag ${ok ? 'success' : 'failed'}">${ok ? '成功' : '失败'}</span>`;
-      }
-      if (c === '重跑结果' && v) {
-        cell = `<span class="tag ${v.startsWith('已') ? 'success' : 'failed'}">${esc(v)}</span>`;
-      }
-      return `<td>${cell}</td>`;
-    }).join('');
-    if (showRetry) {
-      const tid = esc(r['任务ID'] || '');
-      const done = String(r['重跑结果'] || '').startsWith('已重跑成功');
-      const label = done ? '再次重跑' : '重跑此条';
-      cells += `<td><button class="btn tiny retry-task" data-task-id="${tid}" title="仅重跑这一条失败任务">${label}</button></td>`;
-    }
-    if (isOverview) {
-      const runId = esc(r['运行ID'] || '');
-      cells = `<td><button class="btn tiny ov-expand" data-run-id="${runId}" title="展开本次运行的接口调用明细">▸</button></td>` + cells;
-      return `<tr class="${cls}">${cells}</tr>` +
-             `<tr class="ov-detail-row" hidden><td colspan="${headCols.length}"></td></tr>`;
-    }
-    return `<tr class="${cls}">` + cells + '</tr>';
-  }).join('') + '</tbody>';
-  el.innerHTML = '<table>' + head + body + '</table>';
-  if (isOverview) {
-    el.querySelectorAll('button.ov-expand').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const detailRow = btn.closest('tr').nextElementSibling;
-        if (detailRow.hidden) {
-          const runId = String(btn.dataset.runId || '');
-          const details = (monitorData['调用明细'] || []).filter(
-            d => String(d['运行ID'] || '') === runId);
-          detailRow.querySelector('td').innerHTML = renderOverviewDetail(runId, details);
-          detailRow.hidden = false;
-          btn.textContent = '▾';
-        } else {
-          detailRow.hidden = true;
-          btn.textContent = '▸';
-        }
-      });
-    });
-  }
-  if (showRetry) {
-    el.querySelectorAll('button.retry-task').forEach(btn => {
-      btn.addEventListener('click', () => retryFailureTask(btn.dataset.taskId, btn));
-    });
-  }
-  renderMonitorPager();
-}
-
-// 运行总览展开：展示该批次每次接口调用的明细
-function renderOverviewDetail(runId, details) {
-  if (!details || !details.length) {
-    return `<div class="ov-detail-empty">运行 ${esc(runId)} 无接口调用明细</div>`;
-  }
-  const cols = ['运行时间', '接口名称', '类别', '状态', '数据行数', '耗时(秒)', '失败原因'];
-  const head = `<div class="ov-detail-title">运行 ${esc(runId)} · 接口调用明细（${details.length} 条）</div>` +
-    '<table class="ov-detail-table"><thead><tr>' + cols.map(c => `<th>${esc(c)}</th>`).join('') + '</tr></thead><tbody>';
-  const body = details.map(d => {
-    return '<tr>' + cols.map(c => {
-      const v = d[c] == null ? '' : String(d[c]);
-      if (c === '状态') {
-        const ok = v === 'success';
-        return `<td><span class="tag ${ok ? 'success' : 'failed'}">${ok ? '成功' : '失败'}</span></td>`;
-      }
-      if (c === '失败原因' && v) {
-        return `<td><div class="cell-clip" title="${esc(v)}">${esc(v)}</div></td>`;
-      }
-      return `<td>${esc(v)}</td>`;
-    }).join('') + '</tr>';
-  }).join('');
-  return head + body + '</tbody></table>';
-}
-
-// 监控失败明细：按任务ID重跑单条失败任务
-async function retryFailureTask(taskId, btn) {
-  if (!taskId) { alert('该记录缺少任务ID，无法单独重跑'); return; }
-  if (!window.confirm('确认只重跑这一条失败任务？')) return;
-  const old = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '提交中…';
-  try {
-    const res = await api('/api/retry/task', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ task_id: taskId }),
-    });
-    startJob(res.job_id);
-  } catch (e) {
-    alert('单条重跑启动失败：' + e.message);
-    btn.disabled = false;
-    btn.textContent = old;
-  }
-}
-
-function renderMonitorPager() {
-  const el = $('monitorPager');
-  if (!monitorTotalRows || monitorPages <= 1) { el.innerHTML = ''; return; }
-  el.innerHTML = pagerButtons(monitorPage, monitorPages, monitorTotalRows);
-  bindPager(el, monitorPages, (p) => { monitorPage = p; renderMonitor(); });
-}
-
-/* ---------- 数据浏览 ---------- */
-// 数据预览日期统一为完整日期控件；后端按月指标自动截取到 YYYY-MM
-function applyDateControl() {
-  $('filterStart').type = 'date';
-  $('filterEnd').type = 'date';
-}
-
-function fillCodeOptions() {
-  if (!catalogData) return;
-  const items = catalogData[dataTab] || [];
-  $('filterCodeOptions').innerHTML = items.map(it => {
-    const label = it.name ? `${it.code} - ${it.name}` : it.code;
-    return `<option value="${esc(it.code)}" label="${esc(label)}"></option>`;
-  }).join('');
-}
-
-document.querySelectorAll('#dataTabs .tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('#dataTabs .tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    dataTab = tab.dataset.tab;
-    $('dataFilters').style.display = dataTab === 'files' ? 'none' : 'flex';
-    $('dataPager').style.display = dataTab === 'files' ? 'none' : 'flex';
-    if (dataTab !== 'files') {
-      applyDateControl();
-      fillCodeOptions();
-      resetToDefaultRange();  // 切换类别重置为默认区间
-    }
-    dataPage = 1;
-    loadData();
-  });
-});
-
-// 采集数据默认区间：近 1 个月（快捷按钮近1月/近1年/近5年）
-const DATA_DEFAULT_MONTHS = 1;
-function applyRecentRange(months, btn = null) {
-  $('filterStart').value = monthsAgoText(months);
-  $('filterEnd').value = todayText();
-  document.querySelectorAll('#dataRangeBtns button').forEach(b => {
-    b.classList.toggle('active', b === btn ||
-      (!btn && Number(b.dataset.months) === months));
-  });
-  dataRangeMonths = months;
-}
-let dataRangeMonths = DATA_DEFAULT_MONTHS;
-
-function resetToDefaultRange() {
-  applyRecentRange(DATA_DEFAULT_MONTHS);
-  $('filterCode').value = '';
-}
-
-$('filterBtn').addEventListener('click', () => { dataPage = 1; loadData(); });
-$('filterResetBtn').addEventListener('click', () => { resetToDefaultRange(); dataPage = 1; loadData(); });
-$('filterPageSize').addEventListener('change', () => { dataPage = 1; loadData(); });
-document.querySelectorAll('#dataRangeBtns button').forEach(b => {
-  b.addEventListener('click', () => {
-    applyRecentRange(Number(b.dataset.months), b);
-    dataPage = 1;
-    loadData();
-  });
-});
-
-async function loadData() {
-  const el = $('dataTable');
-  if (dataTab === 'files') { $('dataPager').innerHTML = ''; return loadFiles(el); }
-  const code = $('filterCode').value.trim();
-  const start = $('filterStart').value.trim();
-  const end = $('filterEnd').value.trim();
-  const pageSize = Math.min(Math.max(parseInt($('filterPageSize').value, 10) || 25, 1), MAX_PAGE_SIZE);
-  const dateCol = dataTab === 'macro' ? '日期' : '交易日期';
-  const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}&order=${dataDateOrder}`;
-  try {
-    const res = await api(url);
-    dataPages = res.pages || 1;
-    dataTotalRows = res.total || 0;
-    if (dataPage > dataPages) { dataPage = dataPages; return loadData(); }
-    $('dataTotal').textContent = `共 ${res.total} 行 · 第 ${res.page}/${res.pages} 页`;
-    renderTable(el, res.rows, false, { dateCol, dateOrder: dataDateOrder, onSortDate: toggleDateOrder });
-    renderPager();
-  } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
-}
-
-// 通用分页控件：监控看板与采集数据预览共用，默认 25 行/页、单页上限 100 行
-function pagerButtons(page, pages, total) {
-  const btn = (label, target, opts = {}) => {
-    const dis = opts.disabled ? 'disabled' : '';
-    const act = opts.active ? 'active' : '';
-    return `<button ${dis} class="${act}" data-page="${target}">${label}</button>`;
-  };
-  let html = btn('«', 1, { disabled: page === 1 });
-  html += btn('‹', page - 1, { disabled: page === 1 });
-  const from = Math.max(1, page - 2);
-  const to = Math.min(pages, page + 2);
-  for (let p = from; p <= to; p++) html += btn(String(p), p, { active: p === page });
-  html += btn('›', page + 1, { disabled: page === pages });
-  html += btn('»', pages, { disabled: page === pages });
-  html += `<span class="page-info">共 ${pages} 页 / ${total} 行</span>`;
-  return html;
-}
-
-function bindPager(el, pages, onPage) {
-  el.querySelectorAll('button[data-page]').forEach(b => {
-    b.addEventListener('click', () => {
-      const p = parseInt(b.dataset.page, 10);
-      if (p >= 1 && p <= pages) onPage(p);
-    });
-  });
-}
-
-function renderPager() {
-  const el = $('dataPager');
-  if (dataPages <= 1) { el.innerHTML = ''; return; }
-  el.innerHTML = pagerButtons(dataPage, dataPages, dataTotalRows);
-  bindPager(el, dataPages, (p) => {
-    if (p !== dataPage) { dataPage = p; loadData(); }
-  });
-}
-
-async function loadFiles(el) {
-  $('dataTotal').textContent = '';
-  try {
-    const res = await api('/api/files');
-    const rows = res.files.map(f => ({
-      ...f, 下载: `<a class="link" href="/api/download?name=${encodeURIComponent(f.name)}">下载</a>`
-    }));
-    renderTable(el, rows, true);
-  } catch (e) { el.innerHTML = `<div class="empty">加载失败：${esc(e.message)}</div>`; }
-}
-
-function renderTable(el, rows, allowHtml = false, opts = null) {
-  if (!rows.length) { el.innerHTML = '<div class="empty">无数据</div>'; return; }
-  const cols = Object.keys(rows[0]);
-  const sortable = opts && opts.dateCol && cols.includes(opts.dateCol);
-  const head = '<thead><tr>' + cols.map(c => {
-    if (sortable && c === opts.dateCol) {
-      const arrow = opts.dateOrder === 'asc' ? '▲' : '▼';
-      const tip = opts.dateOrder === 'asc' ? '点击改为降序' : '点击改为升序';
-      return `<th><button type="button" class="th-sort" data-sort-date title="${tip}">${esc(c)} <span class="sort-arrow">${arrow}</span></button></th>`;
-    }
-    return `<th>${esc(c)}</th>`;
-  }).join('') + '</tr></thead>';
-  const body = '<tbody>' + rows.map(r => '<tr>' + cols.map(c => {
-    const v = r[c] == null ? '' : String(r[c]);
-    const html = allowHtml && c === '下载' ? v : esc(v);
-    return `<td title="${esc(v)}"><div class="cell-clip">${html}</div></td>`;
-  }).join('') + '</tr>').join('') + '</tbody>';
-  el.innerHTML = '<table>' + head + body + '</table>';
-  if (sortable) {
-    const btn = el.querySelector('[data-sort-date]');
-    if (btn) btn.addEventListener('click', () => opts.onSortDate && opts.onSortDate());
-  }
-}
-
-function toggleDateOrder() {
-  dataDateOrder = dataDateOrder === 'asc' ? 'desc' : 'asc';
-  dataPage = 1;
-  loadData();
-}
-
-function esc(s) {
-  return String(s).replace(/[&<>"']/g, m => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  })[m]);
-}
-
-/* ---------- SQLite 分类导出 ---------- */
-function downloadFile(name) {
-  if (!name) return;
-  const a = document.createElement('a');
-  a.href = '/api/download?name=' + encodeURIComponent(name);
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-}
-
-async function runExport(url, label) {
-  try {
-    const res = await api(url, { method: 'POST' });
-    const files = res.files || [];
-    flashLog(`${label}完成，生成 ${files.length} 个文件：${files.join('、')}`, 'INFO');
-    // 后端最后一个文件始终是 ZIP 包，点击按钮后直接触发浏览器下载
-    downloadFile(files[files.length - 1]);
-    if (dataTab === 'files') loadData();
-  } catch (e) {
-    alert(`${label}失败：${e.message}`);
-  }
-}
-
-$('exportMacroBtn').addEventListener('click', () => runExport('/api/export/macro', '宏观数据导出'));
-$('exportEtfBtn').addEventListener('click', () => runExport('/api/export/etf', 'ETF 数据导出'));
-$('exportIndexBtn').addEventListener('click', () => runExport('/api/export/index', '指数数据导出'));
-$('exportFullBtn').addEventListener('click', () => runExport('/api/export/full', '全量导出'));
-$('exportMonitorBtn').addEventListener('click', () => runExport('/api/export/monitor', '接口监控导出'));
-
-/* ---------- 数据处理模块 ---------- */
-function derivedTag(code) {
-  if (['RETAIL_SALES_YOY', 'CPI_YOY', 'PPI_YOY', 'M1_YOY', 'M2_YOY'].includes(code)) return '直接取数';
-  if (code === 'TRADE_YOY') return '官方累计';
-  if (code === 'SFR_STOCK_YOY') return '央行官方';
-  if (code.includes('NEW') || code === 'GOLD_NEW_TON') return '差分';
-  return '派生';
-}
-
-function switchModule(name) {
-  document.querySelectorAll('.module-tab').forEach(b => b.classList.toggle('active', b.dataset.module === name));
-  $('collectModule').hidden = name !== 'collect';
-  $('derivedModule').hidden = name !== 'derived';
-  $('dashboardModule').hidden = name !== 'dashboard';
-  if (name === 'derived') { loadDerived(); loadDerivedScheduler(); }
-  if (name === 'dashboard') {
-    loadDashboard().then(() => setTimeout(resizeDashboardCharts, 60));
-  }
-}
-
-async function loadDerived() {
-  try {
-    const month = $('derivedMonth').value || '';
-    const res = await api('/api/derived' + (month ? '?month=' + encodeURIComponent(month) : ''));
-    $('derivedMonth').value = res.month || '';
-    $('derivedMonthList').innerHTML = (res.months || []).map(m => `<option value="${esc(m)}"></option>`).join('');
-    $('derivedMeta').textContent = `${res.month || '—'} · ${res.count} 项指标 · 来源 macro_observation`;
-    const groups = {};
-    (res.rows || []).forEach(r => { (groups[r.grp] = groups[r.grp] || []).push(r); });
-    const keys = Object.keys(groups).sort();
-    if (!keys.length) {
-      $('derivedGroups').innerHTML = '<div class="empty">该月暂无派生指标，请先执行定时调度或在采集完成后手动重算</div>';
-      return;
-    }
-    $('derivedGroups').innerHTML = keys.map(g => `
-      <div class="derived-group">
-        <h3>${esc(g)}</h3>
-        <div class="derived-grid">
-          ${groups[g].map(r => {
-            const v = (r.value === null || r.value === undefined) ? '—'
-              : Number(r.value).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
-            return `<div class="derived-item" title="${esc(r.formula || '')}">
-              <span class="d-tag">${esc(derivedTag(r.code))}</span>
-              <div class="d-name">${esc(r.name)}</div>
-              <div class="d-value">${v}<span class="d-unit">${esc(r.unit || '')}</span></div>
-              <div class="d-formula">${esc(r.formula || '')}</div>
-            </div>`;
-          }).join('')}
-        </div>
-      </div>`).join('');
-  } catch (e) {
-    $('derivedGroups').innerHTML = `<div class="empty">派生指标加载失败：${esc(e.message)}</div>`;
-    flashLog(`派生指标加载失败：${e.message}`, 'ERROR');
-  }
-}
-
-document.querySelectorAll('.module-tab').forEach(btn =>
-  btn.addEventListener('click', () => switchModule(btn.dataset.module)));
-$('derivedMonth').addEventListener('change', loadDerived);
-
-// 派生指标代码与名称（与后端 INDICATORS 保持一致，用于「按指标重算」下拉）
-const DERIVED_CODES = [
-  ['TRADE_YOY', '进出口同比'], ['RETAIL_SALES_YOY', '社零同比'], ['CPI_YOY', 'CPI同比'],
-  ['PPI_YOY', 'PPI同比'], ['CPI_PPI_GAP', 'CPI-PPI剪刀差'], ['SFR_STOCK_YOY', '社融存量同比'],
-  ['M1_YOY', 'M1同比增速'], ['M2_YOY', 'M2同比增速'], ['M1_M2_GAP', 'M1-M2剪刀差'],
-  ['A_SHARE_MC_M2', 'A股总市值/M2'], ['HH_DEPOSIT_NEW', '居民存款新增'],
-  ['HH_DEPOSIT_NEW_YOY', '居民存款同比多增'], ['RMB_LOAN_NEW', '人民币贷款当月新增'],
-  ['GOLD_NEW_TON', '黄金当月新增'],
-];
-(function initDerivedCodes() {
-  const sel = $('dpRecalcCode');
-  if (sel) sel.innerHTML = DERIVED_CODES.map(([c, n]) => `<option value="${c}">${n} (${c})</option>`).join('');
-})();
-
-/* ---------- 数据处理 · 子 Tab（派生指标 / ETF 计算） ---------- */
-let etfCalcRows = [];  // 当前 ETF 计算明细（日期升序），用于导出
-function switchDerivedSubtab(name) {
-  document.querySelectorAll('#derivedSubTabs .tab').forEach(b =>
-    b.classList.toggle('active', b.dataset.subtab === name));
-  $('derivedCalcPanel').hidden = name !== 'calc';
-  $('etfCalcPanel').hidden = name !== 'etf';
-  $('tradeCalcPanel').hidden = name !== 'trade';
-  if (name === 'etf') loadEtfCalc();
-  if (name === 'trade') loadTradeCalc();
-}
-document.querySelectorAll('#derivedSubTabs .tab').forEach(b =>
-  b.addEventListener('click', () => switchDerivedSubtab(b.dataset.subtab)));
-
-function etfCalcRange() {
-  const months = $('etfCalcMonths')?.value || '12';
-  const start = $('etfCalcStart')?.value || '';
-  const end = $('etfCalcEnd')?.value || '';
-  return { months, start, end };
-}
-
-function fmtSigned(v, digits = 2) {
-  if (v === null || v === undefined) return '—';
-  return (v >= 0 ? '+' : '') + Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
-}
-
-async function loadEtfCalc() {
-  try {
-    const { months, start, end } = etfCalcRange();
-    const qs = new URLSearchParams({ months });
-    if (start) qs.set('start', start);
-    if (end) qs.set('end', end);
-    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
-    const rows = res.rows || [];
-    const total = res.total || { share: 0, cap: 0, net: 0, days: 0 };
-    etfCalcRows = [...rows].sort((a, b) => a.date.localeCompare(b.date));
-    $('etfCalcMeta').textContent = `${res.range || '—'} · ${total.days} 个交易日 · 汇金维度每日总量`;
-
-    // 汇总卡片（末值即区间累计净变化）
-    const last = etfCalcRows[etfCalcRows.length - 1] || {};
-    const cumShare = last.cum_share != null ? last.cum_share : total.share;
-    $('etfCalcTotal').innerHTML = `
-      <div class="etf-daily-total-card"><span>区间累计份额变化</span>
-        <b class="${cumShare >= 0 ? 'up' : 'down'}">${fmtSigned(cumShare)} <small>亿份</small></b></div>
-      <div class="etf-daily-total-card"><span>区间累计申赎净流入</span>
-        <b class="${total.net >= 0 ? 'up' : 'down'}">${fmtSigned(total.net)} <small>亿元</small></b></div>
-      <div class="etf-daily-total-card"><span>交易日数</span>
-        <b class="neutral">${total.days} <small>天</small></b></div>
-      <div class="etf-daily-total-card"><span>统计范围</span>
-        <b class="neutral">${esc(res.range || '')}</b></div>`;
-
-    // 逐日明细（日期升序 + 累计份额变化列）
-    let running = 0;
-    const body = etfCalcRows.map(r => {
-      running += (r.share || 0);
-      r.cum_share = Number(running.toFixed(4));
-      const cls = v => (v == null ? '' : (v >= 0 ? 'up' : 'down'));
-      return `<tr>
-        <td>${esc(r.date)}</td>
-        <td class="num"><span class="${cls(r.share)}">${fmtSigned(r.share)}</span></td>
-        <td class="num"><span class="${cls(r.cum_share)}">${fmtSigned(r.cum_share)}</span></td>
-        <td class="num"><span class="${cls(r.net)}">${fmtSigned(r.net)}</span></td>
-        <td class="num">${r.count || 0}</td>
-      </tr>`;
-    }).join('');
-    $('etfCalcTable').innerHTML = body
-      ? `<table><thead><tr><th>交易日期</th><th>总份额变化(亿份)</th><th>累计份额变化(亿份)</th><th>总申赎净流入(亿元)</th><th>ETF数</th></tr></thead>
-         <tbody>${body}</tbody></table>`
-      : '<div class="empty">该范围暂无汇金 ETF 数据</div>';
-
-    // 汇金维度 · 每个交易日总份额（存量口径），与看板共用渲染逻辑
-    const sharesTotalBox = $('etfCalcSharesTotal');
-    const sharesTableBox = $('etfCalcSharesTable');
-    if (sharesTotalBox && sharesTableBox) {
-      const sRange = { months };
-      if (start) sRange.start = start;
-      if (end) sRange.end = end;
+    const res = await postJSON(url, payload);
+    const jobId = res.job_id;
+    appendLog(`[${label}] 已生成 job_id=${jobId||'—'}`, 'INFO');
+    await pollLiveOnce();
+    if(!jobId){ setBusy(false); toast(`${label}已提交（无任务句柄）`,'ok'); loadStatus(); return; }
+    const timer = setInterval(async ()=>{
       try {
-        const sQs = new URLSearchParams({ ...sRange, view: 'total' });
-        const sRes = await api('/api/dashboard/etf-daily?' + sQs.toString());
-        renderEtfSharesBlock(sharesTotalBox, sharesTableBox, sRes, sRange);
-      } catch (e2) {
-        sharesTableBox.innerHTML = `<div class="empty">总份额加载失败：${esc(e2.message || e2)}</div>`;
-      }
-    }
-  } catch (e) {
-    $('etfCalcTable').innerHTML = `<div class="empty">ETF 计算加载失败：${esc(e.message)}</div>`;
-  }
+        const job = await api('/api/jobs/' + encodeURIComponent(jobId));
+        await pollLiveOnce();
+        const st = String(job.status||'');
+        if(['done','success','finished','failed','error','completed'].includes(st)){
+          clearInterval(timer); setBusy(false);
+          const ok = !/fail|error/i.test(st);
+          appendLog(`[${label}] 任务${ok?'完成':'失败'}（status=${st}）`, ok?'OK':'ERROR');
+          toast(`${label}${ok?'完成':'失败'}`, ok?'ok':'err');
+          await Promise.allSettled([loadStatus(), loadMonitor(), loadDashboard()]);
+        }
+      } catch(e){ clearInterval(timer); setBusy(false); toast(`${label}查询失败：${e.message}`,'err'); }
+    }, 1200);
+  } catch(e){ setBusy(false); toast(`${label}提交失败：${e.message}`,'err'); appendLog(`[${label}] 提交失败：${e.message}`,'ERROR'); }
 }
+/* 兼容旧调用名 */
+const simulateCollect = (label, steps) => submitJob('/api/collect', {macro_only:false,etf_only:false,index_only:false}, label);
 
-['etfCalcMonths', 'etfCalcStart', 'etfCalcEnd'].forEach(id => {
-  $(id)?.addEventListener('change', loadEtfCalc);
-});
-$('etfCalcRefreshBtn').addEventListener('click', loadEtfCalc);
-$('etfCalcExportBtn').addEventListener('click', () => {
-  if (!etfCalcRows.length) { alert('暂无可导出的数据'); return; }
-  const head = ['交易日期', '总份额变化(亿份)', '累计份额变化(亿份)', '总申赎净流入(亿元)', 'ETF数'];
-  const lines = [head.join(',')].concat(etfCalcRows.map(r =>
-    [r.date, r.share ?? '', r.cum_share ?? '', r.net ?? '', r.count ?? 0].join(',')));
-  const blob = new Blob(['\ufeff' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'ETF计算_汇金每日份额变化.csv';
-  a.click();
-  URL.revokeObjectURL(a.href);
-});
-
-/* ---------- 数据处理 · 交易计算 Tab（计算层） ---------- */
-const TRADE_LABELS = {
-  total_amount: '全A成交额', concentration5: '成交集中度(前5%)', margin_ratio: '平均维持担保比例',
-  margin_financing_ratio: '融资保证金比例', margin_balance: '两融余额',
-  financing_balance: '融资余额', securities_balance: '融券余额',
-  financing_to_float_mv: '融资余额占流通市值比', financing_buy_pct: '融资买入额占比',
-  debt_investors: '有负债投资者数', up_count: '上涨家数', down_count: '下跌家数', flat_count: '平盘家数',
-};
-
-async function loadTradeCalc() {
+/* ==========================================================================
+ * 真实数据加载层：把后端 API 响应映射为视图函数所需的变量
+ * ========================================================================== */
+async function loadStatus(){
+  try {
+    S = await api('/api/status');
+    LAST = S.last_trade_date || '';
+    const scheduler = S.scheduler || {};
+    if($('#dpSchedEnabled')) $('#dpSchedEnabled').checked = !!scheduler.enabled;
+    if($('#dpSchedNext')) $('#dpSchedNext').textContent = scheduler.next_run || '-';
+    const hdStatus = $('#hdStatus');
+    if(hdStatus) hdStatus.textContent = S.running ? '采集中…' : '系统正常';
+  } catch(e){ console.warn('loadStatus', e); }
+}
+async function loadCatalog(){
+  try {
+    CATALOG = await api('/api/catalog');
+    // 宏观指标：code / name / category(推断) / source / granularity
+    MACRO_INDS = (CATALOG.macro||[]).map(x=>[
+      x.code, x.name, x.category || x.granularity || '', x.source || '', (x.granularity||'').replace('月度','月').replace('季度','季')
+    ]);
+  } catch(e){ console.warn('loadCatalog', e); }
+}
+async function loadConfigs(){
+  try {
+    ETF_CFG = await api('/api/etf/config');
+    ETF_ITEMS = (ETF_CFG.items||[]).map(x=>[x.code, x.name, (x.tags||[]).join('/')||'—', x.listing_date||'—', '—']);
+  } catch(e){ console.warn('etf cfg', e); }
+  try {
+    INDEX_CFG = await api('/api/index/config');
+    INDEX_ITEMS = (INDEX_CFG.items||[]).map(x=>[x.code, x.name, '—','—','—']);
+  } catch(e){ console.warn('index cfg', e); }
+}
+async function loadTradeLatest(){
   try {
     const res = await api('/api/trade/latest');
-    const latest = res.latest || {};
-    const cov = res.coverage || {};
-    $('tradeCoverage').textContent = `计算 ${cov.trade_days} 个交易日（${cov.first_date || '—'} ~ ${cov.last_date || '—'}）· 原始：交易所 ${cov.raw_exchange} / 两融 ${cov.raw_margin} / 快照 ${cov.raw_snapshot} 行`;
-    $('tradeLatestMeta').textContent = `最新交易日 ${latest.trade_date || '—'} · 来源 ${latest.source_set || '—'}`;
-    const defs = res.indicators || [];
-    const rows = defs.map(d => {
-      const v = latest[d.code];
-      const shown = (v === null || v === undefined) ? '—'
-        : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
-      return `<tr><td>${esc(d.code)}</td><td>${esc(d.name)}</td><td>${esc(d.unit || '')}</td><td class="num">${shown}</td><td class="formula-cell">${esc(d.formula || '')}</td></tr>`;
-    }).join('');
-    $('tradeLatestTable').innerHTML = rows
-      ? `<table><thead><tr><th>代码</th><th>指标</th><th>单位</th><th>最新值</th><th>计算口径</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<div class="empty">暂无计算数据，请先采集交易原始数据并执行重算</div>';
-  } catch (e) {
-    $('tradeLatestTable').innerHTML = `<div class="empty">交易数据加载失败：${esc(e.message)}</div>`;
-    flashLog(`交易数据加载失败：${e.message}`, 'ERROR');
-  }
+    const L = res.latest || {};
+    const val = code => {
+      const it = (res.indicators||[]).find(x=>x.code===code);
+      const v = L[code.toLowerCase()];
+      return v==null ? '—' : (typeof v==='number' ? v.toLocaleString('zh-CN',{maximumFractionDigits:2}) : v);
+    };
+    TRADE_LATEST = [
+      ['TOTAL_AMOUNT','全A成交额', val('TOTAL_AMOUNT'),'亿元','交易所'],
+      ['CONCENTRATION5','成交集中度(前5%)', val('CONCENTRATION5'),'%','乐咕/插值'],
+      ['MARGIN_BALANCE','两融余额', val('MARGIN_BALANCE'),'亿元','交易所'],
+      ['MARGIN_FINANCING_RATIO','融资保证金比例', val('MARGIN_FINANCING_RATIO'),'%','政策阶梯'],
+      ['FINANCING_TO_FLOAT_MV','融资余额占流通市值比', val('FINANCING_TO_FLOAT_MV'),'%','计算'],
+      ['FINANCING_BUY_PCT','融资买入额占比', val('FINANCING_BUY_PCT'),'%','计算'],
+      ['AVG_MAINTENANCE_RATIO','平均维持担保比例', val('margin_ratio'),'%','交易所'],
+      ['DEBT_INVESTORS','有负债投资者数', val('debt_investors'),'人','交易所'],
+      ['UP_COUNT','上涨家数', val('up_count'),'家','快照'],
+      ['DOWN_COUNT','下跌家数', val('down_count'),'家','快照'],
+    ];
+  } catch(e){ console.warn('trade latest', e); }
 }
-
-async function recomputeTrade(payload, label) {
+async function loadMonitor(){
   try {
-    flashLog(`交易计算开始：${label}`, 'INFO');
-    const res = await api('/api/trade/recompute', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    flashLog(`交易计算完成：${label}，写入 ${res.rows} 行`, 'INFO');
-    $('tradeCalcBadge').textContent = `已计算 ${res.rows} 交易日`;
-    loadTradeCalc();
-  } catch (e) {
-    flashLog(`交易计算失败：${e.message}`, 'ERROR');
-    alert('交易计算失败：' + e.message);
-  }
+    const rep = await api('/api/monitor/report');
+    const map = {overview:'运行总览', failures:'失败明细', health:'接口健康度', detail:'调用明细', stats:'采集量统计'};
+    Object.entries(map).forEach(([k,cn])=>{ MONITOR_DATA[k] = rep[cn] ? rep[cn].map(r=>Object.values(r).map(v=>v==null?'—':v)) : []; });
+    const box = $('[data-recent-runs]'); if(box) box.innerHTML = recentRunsTable();
+  } catch(e){ console.warn('loadMonitor', e); }
 }
-$('tradeRecomputeAllBtn')?.addEventListener('click', () => {
-  if (!confirm('全量重算将替换整张交易计算表，确认继续？')) return;
-  recomputeTrade({ full: true }, '全部交易日');
-});
-$('tradeRecalcDateBtn')?.addEventListener('click', () => {
-  const d = $('tradeRecalcDate').value.trim();
-  if (!d) { alert('请选择交易日'); return; }
-  recomputeTrade({ trade_date: d }, d);
-});
-
-async function recomputeDerived(payload, label) {
-  try {
-    const res = await api('/api/derived/recompute', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
-    });
-    flashLog(`派生指标${label}重算完成：${res.rows} 行`, 'INFO');
-    if (payload.month) $('derivedMonth').value = payload.month;
-    await loadDerived();
-  } catch (e) {
-    alert(`派生指标${label}重算失败：${e.message}`);
-  }
-}
-
-$('derivedRecomputeBtn').addEventListener('click', () => recomputeDerived({}, '全量'));
-$('dpRecalcMonthBtn').addEventListener('click', () => {
-  const month = $('dpRecalcMonth').value;
-  if (!month) { alert('请先选择要重算的月份'); return; }
-  recomputeDerived({ month }, `月份 ${month}`);
-});
-$('dpRecalcCodeBtn').addEventListener('click', () => {
-  const code = $('dpRecalcCode').value;
-  if (!code) { alert('请先选择要重算的指标'); return; }
-  recomputeDerived({ code }, `指标 ${code}`);
-});
-$('derivedExportBtn').addEventListener('click', () => {
-  const month = $('derivedMonth').value || '';
-  window.location.href = '/api/derived/export' + (month ? '?month=' + encodeURIComponent(month) : '');
-});
-
-async function loadDerivedScheduler() {
-  try {
-    const res = await api('/api/scheduler');
-    const badge = $('derivedSchedBadge');
-    badge.textContent = res.enabled ? '已启用' : '未启用';
-    badge.className = 'pill ' + (res.enabled ? 'ok' : 'ghost');
-    const runTypeMap = { full: '全量', macro: '仅宏观', etf: '仅ETF', index: '仅指数' };
-    $('derivedSchedGrid').textContent =
-      `${res.enabled ? '每日 ' + (res.time || '08:30') : '未启用'} · ${runTypeMap[res.run_type] || res.run_type || '全量'} · 下次 ${res.next_run || '—'}`;
-  } catch (e) {
-    $('derivedSchedGrid').innerHTML = `<div class="empty">调度配置加载失败：${esc(e.message)}</div>`;
-  }
-}
-
-/* ---------- 数据看板模块 ---------- */
-const dashboardInstances = {};  // containerId -> [{ id, inst }]
-let dashboardTab = 'macro';
-let dashboardData = null;
-const etfDetailState = { code: '', page: 1, start: '', end: '' };  // 当前展开的 ETF 每日明细
-
-/* 看板日期范围联动（ETF 维度 / 交易维度共用，控件与参数完全一致）：
-   - 隐藏下拉 {prefix}Months 为数字（近半年/近1年/近3年/近5年/近10年/全部）= 快捷模式，
-     {prefix}_months 生效，日期控件作为「实际展示区间」镜像回填；
-   - 为 custom = 自定义模式，{prefix}_start/{prefix}_end 生效，months 传占位整数
-     （后端 int(months)，不能直接传 'custom'）。
-   prefix: 'Etf' → etf_* 参数；'Trade' → trade_* 参数。 */
-function rangeIsCustom(prefix) {
-  return $(`dashboard${prefix}Months`)?.value === 'custom';
-}
-function rangeMonthsValue(prefix) {
-  const v = $(`dashboard${prefix}Months`)?.value || '12';
-  return v === 'custom' ? '12' : v;  // 自定义模式传占位值，后端以 start/end 为准
-}
-function rangeDateRange(prefix) {
-  // 快捷模式下忽略日期镜像，避免回填的日期反向覆盖 months
-  if (!rangeIsCustom(prefix)) return { start: '', end: '' };
-  return {
-    start: ($(`dashboard${prefix}Start`)?.value || '').trim(),
-    end: ($(`dashboard${prefix}End`)?.value || '').trim(),
-  };
-}
-// ETF 专用别名，保持既有调用点不变
-const etfIsCustom = () => rangeIsCustom('Etf');
-const etfMonthsValue = () => rangeMonthsValue('Etf');
-const etfDateRange = () => rangeDateRange('Etf');
-const DASH_PALETTE = ['#3b5bdb', '#16855b', '#c2410c', '#7048b6', '#0b7285', '#b5235b'];
-
-/* 根据当前维度图表数据反推实际展示起止交易日，用于把快捷范围回填到日期控件。
-   月份模式后端只给到起始月，这里从序列数据取真实首末交易日，保证联动后日期精确。 */
-function resolvedRange(prefix, res = null) {
-  const key = prefix.toLowerCase();  // 'etf' / 'trade'
-  const charts = ((res || dashboardData)?.[key]?.charts) || [];
-  const dates = [];
-  charts.forEach(c => (c.series || []).forEach(s => (s.data || []).forEach(p => {
-    const d = String(p[0] || '').slice(0, 10);
-    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) dates.push(d);
-  })));
-  if (!dates.length) return { start: '', end: '' };
-  dates.sort();
-  return { start: dates[0], end: dates[dates.length - 1] };
-}
-const etfResolvedRange = (res = null) => resolvedRange('Etf', res);
-
-/* 选择快捷范围：非自定义时清空日期并重载，加载后用实际区间回填；
-   选「自定义」时以当前展示区间为初始日期，便于在此基础上微调。 */
-function applyPreset(prefix) {
-  const sel = $(`dashboard${prefix}Months`);
-  const v = sel.value;
-  if (v === 'custom') {
-    const r = resolvedRange(prefix);
-    $(`dashboard${prefix}Start`).value = r.start;
-    $(`dashboard${prefix}End`).value = r.end;
-  } else {
-    $(`dashboard${prefix}Start`).value = '';
-    $(`dashboard${prefix}End`).value = '';
-  }
-  loadDashboard();
-}
-const applyEtfPreset = () => applyPreset('Etf');
-
-/* 快捷范围按钮状态：与隐藏下拉同步高亮（custom/全部时无按钮高亮） */
-function syncRangeBtns(prefix) {
-  const v = $(`dashboard${prefix}Months`)?.value || '12';
-  document.querySelectorAll(`#dashboard${prefix}RangeBtns .etf-range-btn`).forEach(b => {
-    b.classList.toggle('active', b.dataset.months === v);
+/* 最近运行表：读取真实监控 overview */
+function recentRunsTable(){
+  const rows = (MONITOR_DATA.overview||[]).slice(0,5).map(r=>{
+    // 字段顺序：运行ID,运行日期,运行时间,运行类型,接口调用数,成功数,失败数,成功率,总耗时
+    const rid=r[0]||'', rt=r[2]||'', type=r[3]||'', fail=Number(r[6]||0);
+    const tmap={scheduled:'调度',interface:'接口',full:'全量'};
+    const cost=r[8]||'—';
+    const status=fail>0?'失败':'成功';
+    return [rid.length>18?'…'+rid.slice(-18):rid, rt.slice(11)||rt, tmap[type]||type, `<span class="tag ${fail>0?'danger':'success'}">${status}</span>`, String(cost).replace('秒','s')];
   });
+  return rows.length ? tbl(['运行ID','时间','类型','状态','耗时'], rows)
+    : '<p class="hint">暂无运行记录（监控库为空）</p>';
 }
-const syncEtfRangeBtns = () => syncRangeBtns('Etf');
-
-/* 点击快捷范围按钮：写入隐藏下拉并沿用既有联动加载 */
-function onRangeBtnClick(prefix, ev) {
-  const btn = ev.target.closest('.etf-range-btn');
-  if (!btn) return;
-  const sel = $(`dashboard${prefix}Months`);
-  if (sel) sel.value = btn.dataset.months;
-  applyPreset(prefix);
+async function loadDerived(month){
+  try {
+    month = month || '';
+    const res = await api('/api/derived' + (month ? '?month='+encodeURIComponent(month) : ''));
+    DERIVED_MONTH = res.month || '';
+    DERIVED_ROWS = res.rows || [];
+    const box = $('.view.active [data-derived-body]');
+    if(box){
+      const groups = {};
+      DERIVED_ROWS.forEach(r=>{ (groups[r.grp||'其他'] ||= []).push(r); });
+      box.innerHTML = Object.entries(groups).map(([title,items])=>`<div class="ind-group"><h4>${esc(title)}</h4>${items.map(x=>`<div class="ind-item"><span class="code">${esc(x.code)}</span><span class="nm">${esc(x.name)}</span><span class="mini_tag">${esc(x.unit||'')}</span><span class="formula">${esc(x.formula||'')}</span><span class="mini_tag">${esc(String(x.value))}</span></div>`).join('')}</div>`).join('') || '<p class="hint">该月暂无派生指标数据</p>';
+      box.dataset.filled='1';
+    }
+  } catch(e){ console.warn('loadDerived', e); }
 }
-const onEtfRangeBtnClick = (ev) => onRangeBtnClick('Etf', ev);
-
-/* 手动改日期：自动切到自定义模式再刷新；两个日期都清空则回到默认近1年 */
-function onDateChange(prefix) {
-  const s = $(`dashboard${prefix}Start`).value.trim();
-  const e = $(`dashboard${prefix}End`).value.trim();
-  const sel = $(`dashboard${prefix}Months`);
-  if (!s && !e) {
-    if (sel) sel.value = '12';
-  } else if (sel) {
-    sel.value = 'custom';
-  }
-  syncRangeBtns(prefix);
-  loadDashboard();
-}
-const onEtfDateChange = () => onDateChange('Etf');
-
-function disposeDashboardCharts(containerId) {
-  (dashboardInstances[containerId] || []).forEach(x => {
-    try { x.inst.dispose(); } catch (_) {}
-  });
-  dashboardInstances[containerId] = [];
-}
-
-function resizeDashboardCharts() {
-  Object.values(dashboardInstances).forEach(list =>
-    list.forEach(x => { try { x.inst.resize(); } catch (_) {} }));
-}
-
-function dashboardChartOption(chart) {
-  // etf_rank 布局：X 轴为 ETF 简称，顺序由后端按净流入降序给出，不能再排序
-  const isRank = chart.layout === 'etf_rank';
-  // ETF 时间序列图（汇金/黄金原图）：拉宽后给日期轴更充足的空间与范围选择
-  const isEtfTime = !isRank && /^etf_/.test(chart.id || '');
-  const rawCategories = [...new Set((chart.series || []).flatMap(s => (s.data || []).map(p => p[0])))];
-  const categories = isRank ? rawCategories : rawCategories.sort();
-  const axisCount = (chart.y_axes || []).length || 1;
-  const hasBar = (chart.series || []).some(s => s.type === 'bar');
-
-  // 汇金原图叠加上证指数：上下两个 grid 联动（上=指数折线，下=份额/净流入柱）
-  if (chart.layout === 'etf_overlay') {
-    const idxName = chart.index_name || '上证指数 (点)';
-    const idxLookup = new Map(chart.index_data || []);
-    const idxValues = categories.map(c => idxLookup.has(c) ? idxLookup.get(c) : null);
-    const lowerAxes = (chart.y_axes || []).map((a, i) => ({
-      type: 'value', name: a.name || '', position: a.position || 'left',
-      offset: a.offset || 0, gridIndex: 1,
-      nameTextStyle: { fontSize: 10, padding: [0, 0, 0, a.offset ? 32 : 0] },
-      axisLabel: { fontSize: 10 },
-      splitLine: i === 0
-        ? { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } }
-        : { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
-    }));
-    return {
-      animation: false,
-      grid: [
-        { left: 62, right: 34 + (lowerAxes.length - 1) * 62, top: 52, height: '30%' },
-        { left: 62, right: 34 + (lowerAxes.length - 1) * 62, top: '50%', bottom: 96 },
-      ],
-      axisPointer: { link: [{ xAxisIndex: 'all' }] },
-      legend: { top: 4, type: 'scroll', textStyle: { fontSize: 11 } },
-      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
-      xAxis: [
-        { type: 'category', gridIndex: 0, data: categories, boundaryGap: hasBar,
-          axisLabel: { show: false }, axisTick: { show: false },
-          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } } },
-        { type: 'category', gridIndex: 1, data: categories, boundaryGap: hasBar,
-          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
-          axisLabel: { fontSize: 10, hideOverlap: true, rotate: 30, margin: 14 } },
-      ],
-      yAxis: [{
-        type: 'value', name: idxName, position: 'left', gridIndex: 0,
-        scale: true,  // 指数点位按数据范围自适应，避免从 0 起把走势压成平线
-        nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10, formatter: v => Number(v).toFixed(0) },
-        splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } },
-      }, ...lowerAxes],
-      dataZoom: [
-        { type: 'inside', xAxisIndex: [0, 1] },
-        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 8, brushSelect: false,
-          showDetail: true, handleSize: '110%',
-          dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
-      ],
-      series: [
-        { name: idxName, type: 'line', xAxisIndex: 0, yAxisIndex: 0, data: idxValues,
-          smooth: true, showSymbol: false, symbolSize: 5, connectNulls: true,
-          lineStyle: { width: 2, color: '#3b5bdb' }, itemStyle: { color: '#3b5bdb' },
-          areaStyle: { color: '#3b5bdb', opacity: 0.08 } },
-        ...(chart.series || []).map((s, i) => {
-          const lookup = new Map(s.data || []);
-          return {
-            name: s.name, type: s.type || 'bar', xAxisIndex: 1,
-            yAxisIndex: (s.y_axis_index || 0) + 1,
-            data: categories.map(c => lookup.has(c) ? lookup.get(c) : null),
-            barMaxWidth: 20, barGap: '20%',
-            itemStyle: { color: DASH_PALETTE[(i + 1) % DASH_PALETTE.length] },
-          };
-        }),
-      ],
-    };
-  }
-
-  // 两融核心指标：上下两个 grid 联动（上=两融余额/有负债投资者数，下=各类比例）
-  // 下图双 Y 轴：左轴=维持担保比例/融资保证金比例(比例%)，
-  //              右轴次坐标=占流通市值比/融资买入额占比(%)（量级小，独立刻度更清晰）
-  if (chart.layout === 'trade_margin_split') {
-    const upper = (chart.series || []).filter(s => s.y_axis_index !== 1 && s.y_axis_index !== 3);
-    const lower = (chart.series || []).filter(s => s.y_axis_index === 1);
-    const lowerRight = (chart.series || []).filter(s => s.y_axis_index === 3);
-    const dataOf = s => {
-      const lookup = new Map(s.data || []);
-      return categories.map(c => (lookup.has(c) ? lookup.get(c) : null));
-    };
-    const line = (s, i, gridIdx, yIdx) => ({
-      name: s.name, type: s.type || 'line', xAxisIndex: gridIdx, yAxisIndex: yIdx,
-      data: dataOf(s), smooth: true, showSymbol: false, symbolSize: 5, connectNulls: true,
-      lineStyle: { width: 2, color: DASH_PALETTE[i % DASH_PALETTE.length] },
-      itemStyle: { color: DASH_PALETTE[i % DASH_PALETTE.length] },
-    });
-    return {
-      animation: false,
-      grid: [
-        // 与图1（3 轴图 left62/right158）保持左右绘图区对齐，上下两子图共享同一水平边界
-        { left: 62, right: 158, top: 54, height: '27%' },
-        { left: 62, right: 158, top: '50%', bottom: 96 },
-      ],
-      axisPointer: { link: [{ xAxisIndex: 'all' }] },
-      legend: { top: 4, type: 'scroll', textStyle: { fontSize: 11 } },
-      tooltip: { trigger: 'axis', axisPointer: { type: 'cross' }, confine: true },
-      xAxis: [
-        { type: 'category', gridIndex: 0, data: categories, boundaryGap: hasBar,
-          axisLabel: { show: false }, axisTick: { show: false },
-          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } } },
-        { type: 'category', gridIndex: 1, data: categories, boundaryGap: hasBar,
-          splitLine: { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
-          axisLabel: { fontSize: 10, hideOverlap: true, rotate: categories.length > 36 ? 30 : 0, margin: 14 } },
-      ],
-      yAxis: [
-        { type: 'value', name: '两融余额 (亿元)', position: 'left', gridIndex: 0,
-          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 },
-          splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } } },
-        { type: 'value', name: '投资者数 (人)', position: 'right', gridIndex: 0,
-          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
-        { type: 'value', name: '比例 (%)', position: 'left', gridIndex: 1,
-          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 },
-          splitLine: { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } } },
-        { type: 'value', name: '占比 (%)', position: 'right', gridIndex: 1,
-          nameTextStyle: { fontSize: 10 }, axisLabel: { fontSize: 10 }, splitLine: { show: false } },
-      ],
-      dataZoom: [
-        { type: 'inside', xAxisIndex: [0, 1] },
-        { type: 'slider', xAxisIndex: [0, 1], height: 20, bottom: 8, brushSelect: false,
-          showDetail: true, handleSize: '110%',
-          dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
-      ],
-      series: [
-        ...upper.map((s, i) => line(s, i, 0, s.y_axis_index === 2 ? 1 : 0)),
-        ...lower.map((s, i) => line(s, i + upper.length, 1, 2)),
-        ...lowerRight.map((s, i) => line(s, i + upper.length + lower.length, 1, 3)),
-      ],
-    };
-  }
-  return {
-    animation: false,
-    grid: isRank
-      ? { left: 62, right: 24, top: 30, bottom: 82 }
-      : isEtfTime
-        ? { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 92 }
-        : { left: 62, right: 34 + (axisCount - 1) * 62, top: 54, bottom: 62 },
-    legend: isRank ? { show: false } : { top: 6, type: 'scroll', textStyle: { fontSize: 11 } },
-    tooltip: {
-      trigger: 'axis', axisPointer: { type: isRank ? 'shadow' : 'cross' }, confine: true,
-      valueFormatter: isRank ? (v) => (v == null ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) + ' 亿元') : undefined,
-    },
-    xAxis: {
-      type: 'category', data: categories, boundaryGap: hasBar,
-      // ETF 时间序列图增加浅色竖向网格线，便于对齐交易日；细分图/宏观图保持简洁
-      splitLine: { show: isEtfTime, lineStyle: { color: '#eef1f6', type: 'dashed' } },
-      axisLabel: {
-        fontSize: isEtfTime ? 10 : 10, hideOverlap: !isRank,
-        rotate: isRank ? 42 : (isEtfTime ? 30 : (categories.length > 36 ? 30 : 0)),
-        interval: isRank ? 0 : 'auto',
-        margin: isEtfTime ? 14 : 8,
-      },
-    },
-    yAxis: (chart.y_axes || [{ name: '', position: 'left' }]).map((a, i) => ({
-      type: 'value', name: a.name || '', position: a.position || 'left',
-      offset: a.offset || 0,
-      nameTextStyle: { fontSize: 10, padding: [0, 0, 0, a.offset ? 32 : 0] },
-      axisLabel: { fontSize: 10 },
-      // 主轴实线、次轴浅虚线，双轴图读数更清晰且主次分明
-      splitLine: i === 0
-        ? { show: true, lineStyle: { color: '#e6eaf0', type: 'solid' } }
-        : { show: true, lineStyle: { color: '#eef1f6', type: 'dashed' } },
-    })),
-    dataZoom: [
-      { type: 'inside' },
-      { type: 'slider', height: isEtfTime ? 20 : 14, bottom: 8, brushSelect: false,
-        showDetail: true,
-        handleSize: isEtfTime ? '110%' : '100%',
-        dataBackground: { lineStyle: { opacity: 0.3 }, areaStyle: { opacity: 0.1 } } },
-    ],
-    series: (chart.series || []).map((s, idx) => {
-      const lookup = new Map(s.data || []);
-      const values = categories.map(c => lookup.has(c) ? lookup.get(c) : null);
-      const base = {
-        name: s.name, type: s.type || 'line', yAxisIndex: s.y_axis_index || 0,
-        data: values,
-        smooth: s.type !== 'bar',
-        // 稀疏序列（如季度GDP）点少且被空值隔开，需显示圆点+连线才能看见
-        showSymbol: s.type !== 'bar' && (s.data || []).length <= 24,
-        symbolSize: 6, connectNulls: s.type !== 'bar',
-        lineStyle: { width: 2 }, barMaxWidth: 20, barGap: '20%',
-        itemStyle: { color: DASH_PALETTE[idx % DASH_PALETTE.length] },
-      };
-      if (isRank) {
-        // 净流入：正为流入(红)、负为流出(绿)，并显示数值标签
-        base.barMaxWidth = 26;
-        base.itemStyle = { color: (p) => (p.value >= 0 ? '#c0392b' : '#16855b') };
-        base.label = {
-          show: true, position: 'top', fontSize: 9,
-          formatter: (p) => (p.value == null ? '' : Number(p.value).toFixed(1)),
-        };
-      }
-      return base;
-    }),
-  };
-}
-
-function renderDashboardCharts(containerId, charts) {
-  const el = $(containerId);
-  disposeDashboardCharts(containerId);
-  etfDetailState.code = '';  // 重绘后旧明细面板已销毁
-  if (!charts || !charts.length) {
-    el.innerHTML = '<div class="empty">暂无图表数据</div>';
-    return;
-  }
-  el.innerHTML = charts.map(c => {
-    // 每日总份额变化累计已并入「每个交易日总份额」卡片，不再单独成卡
-    if (c.id === 'etf_huijin_cumulative') return '';
-    // 汇金净流入图：独立合计数字卡片（合计申赎净流入 / 份额变化）
-    const totalCard = (c.layout === 'etf_rank' && c.total_cap_change != null) ? `
-      <div class="etf-total-cards">
-        <div class="etf-total-card">
-          <div class="etc-k">合计申赎净流入</div>
-          <div class="etc-v ${c.total_cap_change >= 0 ? 'up' : 'down'}">${c.total_cap_change >= 0 ? '+' : ''}${Number(c.total_cap_change).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} <small>亿元</small></div>
-        </div>
-        <div class="etf-total-card">
-          <div class="etc-k">合计流通份额变化</div>
-          <div class="etc-v ${c.total_share_change >= 0 ? 'up' : 'down'}">${c.total_share_change >= 0 ? '+' : ''}${Number(c.total_share_change).toLocaleString('zh-CN', { maximumFractionDigits: 2 })} <small>亿份</small></div>
-        </div>
-        <div class="etf-total-card">
-          <div class="etc-k">统计范围</div>
-          <div class="etc-v neutral">${c.etf_count} 只 · ${esc(c.range_label || '')}</div>
-        </div>
-      </div>` : '';
-    const cardClass = 'chart-card' + (c.group === 'huijin_detail' ? ' chart-card-wide' : '');
-    return `
-    <div class="${cardClass}">
-      <div class="chart-head">
-        <h4>${esc(c.title)}</h4>
-        <span>${esc(c.note || '')}</span>
-      </div>
-      ${totalCard}
-      <div class="chart-box ${c.layout === 'etf_rank' ? 'chart-box-tall' : (c.layout === 'etf_overlay' ? 'chart-box-overlay' : '')}" data-chart-id="${esc(c.id)}"></div>
-      ${c.layout === 'etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : ''}
-    </div>${c.id === 'etf_huijin' ? `
-    <div class="chart-card chart-card-wide etf-daily-card" id="etfDailyCard">
-      <div class="chart-head">
-        <h4>汇金维度 · 按天流通份额 / 申赎净流入明细</h4>
-        <span>按交易日汇总汇金 ETF 较上一交易日的份额变化与申赎净流入 · 点击某天展开当日各 ETF 明细</span>
-      </div>
-      <div class="etf-daily-total" id="etfDailyTotal"></div>
-      <div class="table-wrap" id="etfDailyTable"><div class="empty">加载中…</div></div>
-    </div>
-    <div class="chart-card chart-card-wide etf-daily-card" id="etfSharesCard">
-      <div class="chart-head">
-        <h4>汇金维度 · 每个交易日总份额（含累计变化）</h4>
-        <span>柱子为每日份额存量合计、折线为累计份额变化 · 点击柱子展开当日各 ETF 份额明细</span>
-      </div>
-      <div class="chart-box chart-box-cum" id="etfSharesCumChart"><div class="empty">曲线加载中…</div></div>
-      <div class="etf-daily-total" id="etfSharesTotal"><div class="empty">汇总加载中…</div></div>
-      <div class="table-wrap" id="etfSharesTable"><div class="empty">加载中…</div></div>
-    </div>` : ''}`;
-  }).join('');
-  charts.forEach(c => {
-    const box = el.querySelector(`[data-chart-id="${c.id}"]`);
-    if (!box) return;
-    if (!window.echarts) {
-      box.innerHTML = '<div class="empty">图表库未加载</div>';
+async function loadPreview(kind, opts={}){
+  try {
+    if(kind==='files'){
+      const res = await api('/api/files');
+      DATA_TABS.files = [['文件名','大小(KB)','修改时间','操作'],
+        (res.files||[]).map(f=>[f.name, f.size, f.mtime, `<a class="link" href="/api/download?name=${encodeURIComponent(f.name)}">下载</a>`])];
       return;
     }
-    const inst = echarts.init(box);
-    inst.setOption(dashboardChartOption(c));
-    dashboardInstances[containerId].push({ id: c.id, inst });
-    if (c.layout === 'etf_rank') {
-      box.style.cursor = 'pointer';
-      box.title = '点击任意 ETF 柱子，展开该 ETF 每日明细';
-      inst.on('click', (p) => {
-        if (p.componentType !== 'series' || p.dataIndex == null) return;
-        const meta = (c.rank_meta || [])[p.dataIndex];
-        if (!meta || !meta.code) return;
-        const net = ((c.series || [])[0]?.data || [])[p.dataIndex]?.[1];
-        openEtfDailyDetail(c, meta, net);
-      });
-    }
-  });
-  if (el.querySelector('#etfDailyCard')) loadEtfDailyDetail();
-  if (el.querySelector('#etfSharesCard')) loadEtfSharesDetail();
-}
-
-/* 汇金维度：按天汇总明细 + 区间合计 */
-function fmtNum(v, digits = 2) {
-  return (v == null || v === '') ? '—'
-    : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
-}
-
-async function loadEtfDailyDetail() {
-  const tableBox = document.getElementById('etfDailyTable');
-  const totalBox = document.getElementById('etfDailyTotal');
-  if (!tableBox || !totalBox) return;
-  const months = etfMonthsValue();
-  const { start, end } = etfDateRange();
-  try {
-    const qs = new URLSearchParams({ months });
-    if (start) qs.set('start', start);
-    if (end) qs.set('end', end);
-    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
-    const t = res.total || { share: 0, cap: 0, net: 0, days: 0 };
-    totalBox.innerHTML = `
-      <div class="etf-daily-total-card"><span>区间合计申赎净流入</span>
-        <b class="${t.net >= 0 ? 'up' : 'down'}">${t.net >= 0 ? '+' : ''}${fmtNum(t.net)} <small>亿元</small></b></div>
-      <div class="etf-daily-total-card"><span>区间合计流通份额变化</span>
-        <b class="${t.share >= 0 ? 'up' : 'down'}">${t.share >= 0 ? '+' : ''}${fmtNum(t.share)} <small>亿份</small></b></div>
-      <div class="etf-daily-total-card"><span>统计范围</span>
-        <b class="neutral">${t.days} 个交易日 · ${esc(res.range || '')}</b></div>`;
-    const rows = res.rows || [];
-    tableBox.innerHTML = `<table>
-      <thead><tr><th>交易日期</th><th>申赎净流入(亿元)</th><th>流通份额变化(亿份)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
-      <tbody>${rows.map(r => `
-        <tr class="etf-day-row" data-date="${esc(r.date)}">
-          <td>${esc(r.date)}</td>
-          <td class="num"><span class="${(r.net || 0) >= 0 ? 'up' : 'down'}">${r.net == null ? '—' : ((r.net >= 0 ? '+' : '') + fmtNum(r.net))}</span></td>
-          <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
-          <td class="num">${r.count}</td>
-          <td><button type="button" class="btn tiny etf-day-toggle" data-date="${esc(r.date)}">展开</button></td>
-        </tr>
-        <tr class="etf-day-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="5"></td></tr>`).join('')}</tbody>
-    </table>`;
-    tableBox.querySelectorAll('.etf-day-toggle').forEach(b =>
-      b.addEventListener('click', () => toggleEtfDayDetail(b.dataset.date)));
-  } catch (e) {
-    tableBox.innerHTML = `<div class="empty">按天明细加载失败：${esc(e.message || e)}</div>`;
-  }
-}
-
-async function toggleEtfDayDetail(date) {
-  const row = document.querySelector(`.etf-day-row[data-date="${date}"]`);
-  const detailRow = document.querySelector(`.etf-day-detail-row[data-detail-date="${date}"]`);
-  if (!row || !detailRow) return;
-  const btn = row.querySelector('.etf-day-toggle');
-  if (!detailRow.hidden) {
-    detailRow.hidden = true;
-    btn.textContent = '展开';
-    return;
-  }
-  detailRow.hidden = false;
-  btn.textContent = '收起';
-  const cell = detailRow.querySelector('td');
-  cell.innerHTML = '<div class="empty">加载当日明细…</div>';
-  try {
-    const months = etfMonthsValue();
-    const { start, end } = etfDateRange();
-    const qs = new URLSearchParams({ months, date });
-    if (start) qs.set('start', start);
-    if (end) qs.set('end', end);
-    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
-    const rows = res.rows || [];
-    cell.innerHTML = `
-      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 明细（按申赎净流入降序，共 ${rows.length} 只）· 申赎净流入=份额变化×当日净值，剔除市值波动与份额折算</div>
-      <table class="etf-day-detail-table">
-        <thead><tr><th>ETF 名称</th><th>代码</th><th>申赎净流入(亿元)</th><th>份额变化(亿份)</th><th>变化率</th></tr></thead>
-        <tbody>${rows.map(r => `<tr>
-          <td>${esc(r.name)}</td><td>${esc(r.code)}</td>
-          <td class="num"><span class="${(r.net || 0) >= 0 ? 'up' : 'down'}">${r.net == null ? '折算日' : ((r.net >= 0 ? '+' : '') + fmtNum(r.net))}</span></td>
-          <td class="num"><span class="${r.share >= 0 ? 'up' : 'down'}">${r.share >= 0 ? '+' : ''}${fmtNum(r.share)}</span></td>
-          <td class="num">${r.share_rate == null ? '—' : fmtNum(r.share_rate) + '%'}</td>
-        </tr>`).join('')}</tbody>
-      </table>`;
-  } catch (e) {
-    cell.innerHTML = `<div class="empty">加载失败：${esc(e.message || e)}</div>`;
-  }
-}
-
-/* ---------- 汇金总份额（存量口径）：看板与数据处理共用的通用区块 ---------- */
-/* 渲染「每个交易日总份额」：汇总卡片 + 每日表格（含累计变化列）+ 展开按钮。
-   rangeParams 为查询参数（months/start/end），展开明细时复用；返回升序行与累计末值供曲线使用。 */
-function renderEtfSharesBlock(totalBox, tableBox, res, rangeParams) {
-  const t = res.total || { shares: 0, days: 0 };
-  const asc = [...(res.rows || [])].sort((a, b) => String(a.date).localeCompare(String(b.date)));
-  let running = 0;
-  asc.forEach(r => {
-    running += (r.change || 0);
-    r._cum = Number(running.toFixed(4));
-  });
-  const cum = Number(running.toFixed(4));
-  if (totalBox) {
-    totalBox.innerHTML = `
-      <div class="etf-daily-total-card"><span>最新交易日总份额</span>
-        <b class="neutral">${fmtNum(t.shares)} <small>亿份</small></b></div>
-      <div class="etf-daily-total-card"><span>区间累计份额变化</span>
-        <b class="${cum >= 0 ? 'up' : 'down'}">${cum >= 0 ? '+' : ''}${fmtNum(cum)} <small>亿份</small></b></div>
-      <div class="etf-daily-total-card"><span>统计交易日数</span>
-        <b class="neutral">${t.days} 个交易日 · ${esc(res.range || '')}</b></div>`;
-  }
-  const desc = [...asc].reverse();  // 表格最新交易日在上
-  tableBox.innerHTML = `<table>
-    <thead><tr><th>交易日期</th><th>汇金总份额(亿份)</th><th>较上日变化(亿份)</th><th>累计份额变化(亿份)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
-    <tbody>${desc.map(r => `
-      <tr class="etf-shares-row" data-date="${esc(r.date)}">
-        <td>${esc(r.date)}</td>
-        <td class="num"><b>${fmtNum(r.shares)}</b></td>
-        <td class="num"><span class="${(r.change || 0) >= 0 ? 'up' : 'down'}">${r.change == null ? '—' : ((r.change >= 0 ? '+' : '') + fmtNum(r.change))}</span></td>
-        <td class="num"><span class="${r._cum >= 0 ? 'up' : 'down'}">${r._cum >= 0 ? '+' : ''}${fmtNum(r._cum)}</span></td>
-        <td class="num">${r.count}</td>
-        <td><button type="button" class="btn tiny etf-shares-toggle" data-date="${esc(r.date)}">展开</button></td>
-      </tr>
-      <tr class="etf-shares-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="6"></td></tr>`).join('')}</tbody>
-  </table>`;
-  tableBox.querySelectorAll('.etf-shares-toggle').forEach(b =>
-    b.addEventListener('click', () => toggleEtfSharesDayDetail(b.dataset.date, tableBox, rangeParams)));
-  return { asc, cum };
-}
-
-/* 汇金维度：每个交易日总份额柱状图（含累计变化折线）+ 点击柱子展开当日各 ETF 份额明细 */
-async function loadEtfSharesDetail() {
-  const tableBox = document.getElementById('etfSharesTable');
-  const totalBox = document.getElementById('etfSharesTotal');
-  if (!tableBox || !totalBox) return;
-  const months = etfMonthsValue();
-  const { start, end } = etfDateRange();
-  const rangeParams = { months };
-  if (start) rangeParams.start = start;
-  if (end) rangeParams.end = end;
-  try {
-    const qs = new URLSearchParams({ ...rangeParams, view: 'total' });
-    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
-    const { asc } = renderEtfSharesBlock(totalBox, tableBox, res, rangeParams);
-    // 柱状图：每日汇金总份额为主轴；累计份额变化为次轴折线。点击柱子展开当日 ETF 明细。
-    const box = document.getElementById('etfSharesCumChart');
-    if (box && window.echarts) {
-      let inst = echarts.getInstanceByDom(box);
-      if (!inst) {
-        inst = echarts.init(box);
-        dashboardInstances.etfCharts = dashboardInstances.etfCharts || [];
-        dashboardInstances.etfCharts.push({ id: 'etfSharesCumChart', inst });
-      }
-      inst.setOption(dashboardChartOption({
-        id: 'etfSharesCumChart',
-        y_axes: [
-          { name: '总份额 (亿份)', position: 'left' },
-          { name: '累计变化 (亿份)', position: 'right' },
-        ],
-        series: [
-          { name: '汇金总份额', data: asc.map(r => [r.date, r.shares]), y_axis_index: 0, type: 'bar' },
-          { name: '累计份额变化', data: asc.map(r => [r.date, r._cum]), y_axis_index: 1, type: 'line' },
-        ],
-      }), true);
-      // 单击柱子：展开对应交易日的 ETF 份额明细，并滚动到该行
-      inst.off('click');
-      inst.on('click', (p) => {
-        if (p.componentType !== 'series' || p.seriesType !== 'bar' || p.dataIndex == null) return;
-        const date = asc[p.dataIndex]?.date;
-        if (!date) return;
-        toggleEtfSharesDayDetail(date, tableBox, rangeParams);
-        const row = tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`);
-        if (row) row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      });
-    }
-  } catch (e) {
-    tableBox.innerHTML = `<div class="empty">总份额明细加载失败：${esc(e.message || e)}</div>`;
-  }
-}
-
-/* 展开/收起某交易日的 ETF 份额明细，限定在所属表格内，避免两处区块互相干扰 */
-async function toggleEtfSharesDayDetail(date, tableBox, rangeParams) {
-  const row = tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`);
-  const detailRow = tableBox.querySelector(`.etf-shares-detail-row[data-detail-date="${date}"]`);
-  if (!row || !detailRow) return;
-  const btn = row.querySelector('.etf-shares-toggle');
-  if (!detailRow.hidden) {
-    detailRow.hidden = true;
-    btn.textContent = '展开';
-    return;
-  }
-  detailRow.hidden = false;
-  btn.textContent = '收起';
-  const cell = detailRow.querySelector('td');
-  cell.innerHTML = '<div class="empty">加载当日明细…</div>';
-  try {
-    const qs = new URLSearchParams({ ...(rangeParams || {}), view: 'total', date });
-    ['start', 'end'].forEach(k => { if (!qs.get(k)) qs.delete(k); });
-    const res = await api('/api/dashboard/etf-daily?' + qs.toString());
-    const rows = res.rows || [];
-    const totalShares = res.total_shares || 0;
-    cell.innerHTML = `
-      <div class="etf-day-detail-title">${esc(date)} 当日各 ETF 份额明细（按份额降序，共 ${rows.length} 只 · 合计 ${fmtNum(totalShares)} 亿份）· 占比=该 ETF 份额 / 汇金总份额</div>
-      <table class="etf-day-detail-table">
-        <thead><tr><th>ETF 名称</th><th>代码</th><th>份额(亿份)</th><th>占比</th><th>较上日变化(亿份)</th></tr></thead>
-        <tbody>${rows.map(r => `<tr>
-          <td>${esc(r.name)}</td><td>${esc(r.code)}</td>
-          <td class="num"><b>${fmtNum(r.shares)}</b></td>
-          <td class="num">${fmtNum(r.pct)}%</td>
-          <td class="num"><span class="${(r.change || 0) >= 0 ? 'up' : 'down'}">${r.change == null ? '—' : ((r.change >= 0 ? '+' : '') + fmtNum(r.change))}</span></td>
-        </tr>`).join('')}</tbody>
-      </table>`;
-  } catch (e) {
-    cell.innerHTML = `<div class="empty">加载失败：${esc(e.message || e)}</div>`;
-  }
-}
-
-/* 点击汇金细分图的柱子：展开/收起该 ETF 在所选区间内的每日明细 */
-async function openEtfDailyDetail(chart, meta, netValue) {
-  const panel = document.querySelector(`[data-detail-for="${chart.id}"]`);
-  if (!panel) return;
-  if (!panel.hidden && etfDetailState.code === meta.code) {
-    panel.hidden = true;
-    etfDetailState.code = '';
-    return;
-  }
-  etfDetailState.code = meta.code;
-  etfDetailState.page = 1;
-  etfDetailState.start = chart.detail_start || '';
-  etfDetailState.end = chart.detail_end || '';
-  panel.hidden = false;
-  panel.innerHTML = '<div class="empty">加载每日明细…</div>';
-  await renderEtfDetailPage(panel, chart, meta, netValue);
-}
-
-async function renderEtfDetailPage(panel, chart, meta, netValue) {
-  const qs = new URLSearchParams({
-    code: meta.code, page: String(etfDetailState.page), page_size: '100', order: 'desc',
-  });
-  if (etfDetailState.start) qs.set('start', etfDetailState.start);
-  if (etfDetailState.end) qs.set('end', etfDetailState.end);
-  try {
-    const res = await api('/api/data/etf?' + qs.toString());
-    if (etfDetailState.code !== meta.code) return;  // 已切到其他 ETF，丢弃过期响应
-    const rows = res.rows || [];
-    const fmt = (v, digits = 2) => (v == null || v === '') ? '—'
-      : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
-    const signed = (v, unit) => {
-      const n = Number(v || 0);
-      return `<span class="${n >= 0 ? 'up' : 'down'}">${n >= 0 ? '+' : ''}${fmt(n)} <small>${unit}</small></span>`;
+    const params = new URLSearchParams({page:String(opts.page||1), page_size:String(opts.page_size||25)});
+    if(opts.code) params.set('code', opts.code);
+    if(opts.start) params.set('start', opts.start);
+    if(opts.end) params.set('end', opts.end);
+    const res = await api(`/api/data/${kind}?` + params.toString());
+    const rows = (res.rows||[]).map(r=>Object.values(r).map(v=>v==null?'—':v));
+    const colsMap = {
+      macro:['日期','指标代码','指标名称','数值','单位','数据源'],
+      etf:['交易日期','基金代码','基金简称','份额(亿份)','单位净值','净流入(亿元)'],
+      index:['交易日期','指数代码','指数名称','开盘价','最高价','最低价','收盘价','涨跌幅(%)'],
+      trade:['交易日期','沪市成交额(万亿)','深市成交额(万亿)','沪市流通市值(万亿)','深市流通市值(万亿)'],
     };
-    const netCell = (v) => v == null ? '<span class="muted-inline">折算日</span>'
-      : `<span class="${v >= 0 ? 'up' : 'down'}">${v >= 0 ? '+' : ''}${fmt(v)} <small>亿元</small></span>`;
-    const body = rows.map(r => `<tr>
-      <td>${esc(r['交易日期'])}</td>
-      <td class="num">${netCell(r['净流入(亿元)'])}</td>
-      <td class="num">${fmt(r['份额(亿份)'])}</td>
-      <td class="num">${signed(r['份额变化(亿份)'], '亿份')}</td>
-      <td class="num">${fmt(r['份额变化率(%)'])}%</td>
-      <td class="num">${fmt(r['规模(亿元)'])}</td>
-    </tr>`).join('');
-    const pages = res.pages || 1;
-    const pager = `<div class="pager">
-      <button type="button" data-detail-page="prev" ${etfDetailState.page <= 1 ? 'disabled' : ''}>上一页</button>
-      <span class="page-info">第 ${etfDetailState.page} / ${pages} 页 · 共 ${res.total} 条</span>
-      <button type="button" data-detail-page="next" ${etfDetailState.page >= pages ? 'disabled' : ''}>下一页</button>
-    </div>`;
-    panel.innerHTML = `
-      <div class="etf-detail-head">
-        <div><b>${esc(meta.name)}</b> <span class="muted-inline">${esc(meta.code)}</span>
-          <span class="muted-inline">区间申赎净流入：${Number(netValue) >= 0 ? '+' : ''}${fmt(netValue)} 亿元</span></div>
-        <button type="button" class="btn tiny" data-detail-close>收起明细</button>
-      </div>
-      <div class="table-wrap tall"><table>
-        <thead><tr><th>交易日期</th><th>申赎净流入(亿元)</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率</th><th>规模(亿元)</th></tr></thead>
-        <tbody>${body || '<tr><td colspan="6" class="empty">该区间无数据</td></tr>'}</tbody>
-      </table></div>
-      ${pager}`;
-    panel.querySelector('[data-detail-close]').addEventListener('click', () => {
-      panel.hidden = true;
-      etfDetailState.code = '';
-    });
-    panel.querySelectorAll('[data-detail-page]').forEach(b => b.addEventListener('click', () => {
-      etfDetailState.page += (b.dataset.detailPage === 'next' ? 1 : -1);
-      renderEtfDetailPage(panel, chart, meta, netValue);
-    }));
-  } catch (e) {
-    panel.innerHTML = `<div class="empty">明细加载失败：${esc(e.message || e)}</div>`;
-  }
+    const cols = colsMap[kind] || Object.keys(res.rows?.[0]||{});
+    const cellFmt = v => (typeof v==='number' ? (Number.isInteger(v)?fmt(v):v.toLocaleString('zh-CN',{maximumFractionDigits:2})) : (v==null||v===''?'—':v));
+    const picked = (res.rows||[]).map(r=>cols.map(k=>cellFmt(r[k])));
+    DATA_TABS[kind] = [cols, picked];
+    return res;
+  } catch(e){ console.warn('loadPreview '+kind, e); }
 }
-
-let dashboardLoadSeq = 0;  // 请求序号：只让最后一次请求的结果落地，避免快速切换时旧响应覆盖新状态
-
-async function loadDashboard() {
-  const seq = ++dashboardLoadSeq;
+async function loadDashboard(){
   try {
-    const months = $('dashboardMonths').value || '12';
-    const etfMonths = etfMonthsValue();
-    const { start, end } = etfDateRange();
-    const tradeMonths = rangeMonthsValue('Trade');
-    const tradeDate = rangeDateRange('Trade');
-    const overlayIndex = $('dashboardOverlayIndex')?.value || '000001';
-    const qs = new URLSearchParams({ months, etf_months: etfMonths, overlay_index: overlayIndex, trade_months: tradeMonths });
-    if (start) qs.set('etf_start', start);
-    if (end) qs.set('etf_end', end);
-    if (tradeDate.start) qs.set('trade_start', tradeDate.start);
-    if (tradeDate.end) qs.set('trade_end', tradeDate.end);
-    const res = await api('/api/dashboard?' + qs.toString());
-    if (seq !== dashboardLoadSeq) return;  // 已有更新的请求，丢弃过期响应
-    // 叠加指数下拉：用接口返回的可用指数动态填充，保留当前选择
-    const opts = res.index_options || [];
-    const sel = $('dashboardOverlayIndex');
-    if (sel && opts.length) {
-      const cur = sel.value;
-      sel.innerHTML = opts.map(o => `<option value="${esc(o.code)}">${esc(o.name)}</option>`).join('');
-      const valid = opts.some(o => o.code === cur) ? cur
-        : (opts.some(o => o.code === res.overlay_index) ? res.overlay_index : opts[0].code);
-      sel.value = valid;
+    const params = new URLSearchParams({months:'12', etf_months:'12', trade_months:'12'});
+    const res = await api('/api/dashboard?' + params.toString());
+    DB = { macro:res.macro||{charts:[]}, etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]} };
+    if(res.index_options && res.index_options.length){
+      $$('[data-act="overlay-index"]').forEach(sel=>{
+        const cur = sel.value;
+        sel.innerHTML = res.index_options.map(o=>`<option value="${o.code}">${esc(o.name)}</option>`).join('');
+        if(cur) sel.value = cur;
+      });
     }
-    const macro = (res.macro && res.macro.charts) || [];
-    const etf = (res.etf && res.etf.charts) || [];
-    dashboardData = res;
-    // 快捷模式：用「本次响应」的实际展示区间回填日期控件，使「近一年」等预设与日期框联动。
-    // 必须从 res 计算（而非全局 dashboardData），否则并发时旧响应会回填过期区间。
-    if (!etfIsCustom()) {
-      const r = etfResolvedRange(res);
-      $('dashboardEtfStart').value = r.start || '';
-      $('dashboardEtfEnd').value = r.end || '';
-    }
-    if (!rangeIsCustom('Trade')) {
-      const r = resolvedRange('Trade', res);
-      $('dashboardTradeStart').value = r.start || '';
-      $('dashboardTradeEnd').value = r.end || '';
-    }
-    syncEtfRangeBtns();
-    syncRangeBtns('Trade');
-    // 只渲染当前 Tab：ECharts 在 hidden 容器中取不到宽度，切换时再渲染另一组
-    renderDashboardTab();
-    const etfNote = etf.filter(c => c.group !== 'huijin_detail' && c.id !== 'etf_huijin_cumulative')
-      .map(c => `${c.id === 'etf_gold' ? '黄金' : '汇金'} ${c.etf_count}只`).join(' · ');
-    const shown = etfDateRange();
-    const shownStart = shown.start || $('dashboardEtfStart').value.trim();
-    const shownEnd = shown.end || $('dashboardEtfEnd').value.trim();
-    const etfRange = (shownStart || shownEnd) ? ` · ETF ${shownStart || '最早'}~${shownEnd || '最新'}` : '';
-    const overlayChart = etf.find(c => c.layout === 'etf_overlay');
-    const overlayNote = overlayChart ? ` · 叠加${(overlayChart.index_name || '').replace(/\s*\(点\)\s*$/, '')}` : '';
-    const trade = (res.trade && res.trade.charts) || [];
-    const tradeShown = rangeDateRange('Trade');
-    const ts = tradeShown.start || $('dashboardTradeStart')?.value.trim();
-    const te = tradeShown.end || $('dashboardTradeEnd')?.value.trim();
-    const tradeRange = (ts || te) ? ` · 交易 ${ts || '最早'}~${te || '最新'}` : '';
-    $('dashboardMeta').textContent = `${res.generated_at || '—'} · 宏观 ${macro.length} 图 · ETF ${etf.length} 图${etfNote ? '（' + etfNote + '）' : ''}${overlayNote}${etfRange}${tradeRange} · 交易 ${trade.length} 图`;
-  } catch (e) {
-    $('dashboardMeta').textContent = `看板加载失败：${e.message}`;
-    flashLog(`数据看板加载失败：${e.message}`, 'ERROR');
-  }
+    renderDash();
+  } catch(e){ console.warn('loadDashboard', e); }
+}
+async function loadAllBase(){
+  await Promise.allSettled([loadStatus(), loadCatalog(), loadConfigs(), loadTradeLatest(), loadMonitor()]);
 }
 
-function renderDashboardTab() {
-  if (!dashboardData) return;
-  if (dashboardTab === 'macro') {
-    renderDashboardCharts('macroCharts', (dashboardData.macro && dashboardData.macro.charts) || []);
-  } else if (dashboardTab === 'trade') {
-    renderDashboardCharts('tradeCharts', (dashboardData.trade && dashboardData.trade.charts) || []);
-  } else {
-    renderDashboardCharts('etfCharts', (dashboardData.etf && dashboardData.etf.charts) || []);
-  }
-  setTimeout(resizeDashboardCharts, 40);
+/* ---------------- 导航结构（覆盖原系统全部功能） ---------------- */
+const NAV = {
+  overview:{name:'总览',groups:[
+    {cap:'概览',items:[{id:'ovCollect',name:'采集数据概览',icon:'layout-dashboard'}]},
+  ]},
+  collect:{name:'数据采集',groups:[
+    {cap:'采集作业',items:[{id:'console',name:'采集控制台',icon:'player-play'}]},
+    {cap:'采集配置',items:[
+      {id:'maccfg',name:'宏观指标配置',icon:'adjustments'},
+      {id:'idxcfg',name:'指数标的配置',icon:'chart-dots'},
+      {id:'etfcfg',name:'ETF 标的配置',icon:'coins'},
+    ]},
+    {cap:'数据预览',items:[
+      {id:'prev-macro',name:'宏观数据',icon:'table'},
+      {id:'prev-etf',name:'ETF 日频',icon:'table'},
+      {id:'prev-index',name:'指数日线',icon:'table'},
+      {id:'prev-trade',name:'日交易',icon:'table'},
+      {id:'prev-files',name:'输出文件',icon:'file-export'},
+    ]},
+    {cap:'数据维护',items:[{id:'clean',name:'数据清理',icon:'eraser'}]},
+  ]},
+  derived:{name:'数据处理',groups:[
+    {cap:'指标计算',items:[
+      {id:'macrocalc',name:'派生指标',icon:'chart-area'},
+      {id:'etfcalc',name:'ETF 计算',icon:'coins'},
+      {id:'tradecalc',name:'交易计算',icon:'scale'},
+    ]},
+  ]},
+  dashboard:{name:'数据看板',groups:[
+    {cap:'可视化',items:[
+      {id:'dashmacro',name:'宏观指标',icon:'chart-area'},
+      {id:'dashetf',name:'ETF 维度',icon:'chart-bar'},
+      {id:'dashtrade',name:'日交易',icon:'chart-line'},
+    ]},
+  ]},
+  ops:{name:'运维监控',groups:[
+    {cap:'接口监控',items:[
+      {id:'mon-overview',name:'运行总览',icon:'activity'},
+      {id:'mon-failures',name:'失败明细',icon:'alert-triangle',badge:String(S.failed_total)},
+      {id:'mon-health',name:'接口健康度',icon:'heartbeat'},
+      {id:'mon-detail',name:'调用明细',icon:'list'},
+      {id:'mon-stats',name:'采集量统计',icon:'chart-bar'},
+    ]},
+    {cap:'调度管理',items:[{id:'tasksched',name:'任务调度',icon:'calendar-clock'}]},
+  ]},
+};
+let curMod = 'overview', curView = 'ovCollect';
+
+/* ---------------- 通用组件 ---------------- */
+const statCard = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-3"><div class="stat-card"><div class="ic ${c}"><i class="ti ti-${ic}"></i></div><div class="val">${val}</div><div class="lbl">${lbl}</div>${trend?`<span class="trend ${tc}">${trend}</span>`:''}</div></div>`;
+const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
+const head = (t,d) => `<div class="pg-head"><div><h1>${t}</h1><p>${d}</p></div></div>`;
+const tbl = (cols, rows, opts={}) => {
+  const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map(c=>`<th>${esc(c)}</th>`), ...(opts.action?['<th>操作</th>']:[])];
+  const h = `<thead><tr>${headCells.join('')}</tr></thead>`;
+  const b = rows.map((r,i)=>{
+    const lead = opts.expand ? `<td><button class="btn btn-sm" data-act="row-expand" data-i="${i}">▸</button></td>` : '';
+    const cells = r.map(v=>`<td><div class="cell-clip">${v}</div></td>`).join('');
+    const tail = opts.action ? `<td><button class="btn btn-sm" data-act="${esc(opts.action)}" data-i="${i}">${esc(opts.actionLabel||'操作')}</button></td>` : '';
+    return `<tr${opts.fail&&String(r[opts.fail]).includes('失败')?' class="row-fail"':''}>${lead}${cells}${tail}</tr>`;
+  }).join('');
+  return `<div class="table-responsive"><table class="table table-hover">${h}<tbody>${b}</tbody></table></div>`;
+};
+const pagerBar = (total=2889, page=1, pages=116) => `<div class="pager" data-pager>共 <b>${fmt(total)}</b> 条 · <span class="pgn" data-act="page-first">«</span><span class="pgn" data-act="page-prev">‹</span>${Array.from({length:Math.min(5,pages)},(_,i)=>`<span class="pg ${i+1===page?'active':''}" data-act="page-go" data-p="${i+1}">${i+1}</span>`).join('')}<span class="pgn" data-act="page-next">›</span><span class="pgn" data-act="page-last">»</span> 每页 <select class="form-select" style="width:74px;padding:2px 4px"><option>25 行/页</option><option>50 行/页</option><option>100 行/页</option></select></div>`;
+const rangeQuick = (prefix, active=12) => `<span class="seg">${[[6,'近半年'],[12,'近1年'],[36,'近3年'],[60,'近5年'],[120,'近10年']].map(([m,n])=>`<button class="seg-btn ${m===active?'active':''}" data-act="range" data-prefix="${prefix}" data-months="${m}">${n}</button>`).join('')}</span>`;
+const filterBar = (withCode=true) => `<div class="ctl-params">${withCode?`<input class="prec-input" list="filterCodeOptions" placeholder="选择或输入代码" style="width:150px">`:''}<input class="prec-input" type="date" value="${LAST}" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:130px">${rangeQuick('data',12)}<select class="form-select" style="width:88px"><option>25 行/页</option><option>50 行/页</option><option>100 行/页</option></select><button class="btn btn-primary btn-sm" data-act="filter">筛选</button><button class="btn btn-sm" data-act="filter-reset">默认区间</button><span class="hint" data-filter-count>共 ${fmt(2889)} 条</span></div>`;
+const exportBtns = () => `<div class="ctl-params"><button class="btn btn-sm" data-act="export" data-k="macro"><i class="ti ti-file-export"></i> 导出宏观</button><button class="btn btn-sm" data-act="export" data-k="etf"><i class="ti ti-file-export"></i> 导出 ETF</button><button class="btn btn-sm" data-act="export" data-k="index"><i class="ti ti-file-export"></i> 导出指数</button><button class="btn btn-primary btn-sm" data-act="export" data-k="full"><i class="ti ti-file-zip"></i> 导出全量</button></div>`;
+
+/* ==========================================================================
+ * 视图定义（覆盖原系统全部功能）
+ * ========================================================================== */
+function previewView(kind){
+  const names = {macro:'宏观数据',etf:'ETF 日频',index:'指数日线',trade:'日交易',files:'输出文件'};
+  const [cols, rows] = DATA_TABS[kind];
+  return head(`采集数据 · ${names[kind]}`,'筛选 / 排序 / 分页 / 导出 · 数据读取自业务库')
+    + `<div class="card"><div class="card-header"><h3><i class="ti ti-table" style="color:var(--blue)"></i> ${names[kind]}</h3><div style="margin-left:auto">${exportBtns()}</div></div>
+    <div class="card-body"><div style="margin-bottom:10px">${filterBar()}</div>
+    ${tbl(cols, rows, {action: kind==='files'?'download':null, actionLabel:'下载'})}
+    ${pagerBar()}</div></div>`;
+}
+function monitorView(kind){
+  const names = {overview:'运行总览',failures:'失败明细',health:'接口健康度',detail:'调用明细',stats:'采集量统计'};
+  const failMap = {overview:[],failures:[],health:[],detail:[],stats:[]};
+  const opts = kind==='overview' ? {expand:true,expandKey:'run'}
+    : kind==='failures' ? {action:'retry-one',actionLabel:'重跑此条'}
+    : {};
+  return head(`接口监控 · ${names[kind]}`,'成功率 / 失败明细 / 接口健康度 / 调用明细 / 采集量统计')
+    + statRow(
+      statCard('api','ic-blue',fmt(S.today_calls),'今日调用','全通道','')+
+      statCard('circle-check','ic-green',fmt(Math.max(0,S.today_calls)),'今日成功',`成功率 ${S.today_calls?Math.round((S.today_calls-Math.min(S.failed_total,S.today_calls))/S.today_calls*100):100}%`,'t-green')+
+      statCard('circle-x','ic-red',fmt(S.failed_total),'累计失败','历史留痕','t-orange')+
+      statCard('calendar','ic-purple',LAST,'最新交易日','',''))
+    + `<div class="card"><div class="card-header"><h3><i class="ti ti-activity" style="color:var(--blue)"></i> ${names[kind]}</h3>
+      ${kind==='failures'?`<button class="btn btn-warn btn-sm" style="margin-left:auto" data-act="retry-all"><i class="ti ti-rotate-clockwise"></i> 批量重跑</button>`:''}
+      <button class="btn btn-sm" ${kind!=='failures'?'style="margin-left:auto"':''} data-act="export" data-k="monitor"><i class="ti ti-file-export"></i> 导出监控</button>
+      <button class="btn btn-danger btn-sm" data-act="monitor-clean-toggle"><i class="ti ti-eraser"></i> 清理监控</button></div>
+    <div class="card-body">
+      <div class="card" data-monitor-clean style="display:none;background:#fbfcfe;margin-bottom:12px"><div class="card-body">
+        <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">时间范围</label><input class="prec-input" type="date" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" style="width:130px">
+          <select class="form-select" style="width:100px"><option>全部状态</option><option>成功</option><option>失败</option></select>
+          <select class="form-select" style="width:110px"><option>全部类型</option><option>全量</option><option>定时</option></select>
+          <select class="form-select" style="width:90px"><option>全部类别</option><option>宏观</option><option>ETF</option></select></div>
+        <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">关键词 <span class="muted-inline">接口名 / 接口键 / 失败原因</span></label><input class="prec-input" placeholder="留空不限" style="width:220px"></div>
+        <div class="ctl-params"><button class="btn btn-sm" data-act="mc-preview">预览影响</button><button class="btn btn-danger btn-sm" data-act="mc-exec">执行清理</button><button class="btn btn-sm" data-act="mc-reset">重置</button></div>
+        <div class="clean-result" data-mc-result>—</div></div></div>
+      <div class="ctl-params" style="margin-bottom:10px">
+        <input class="prec-input" placeholder="接口名/接口键/失败原因 关键词" style="width:200px">
+        <select class="form-select" style="width:120px"><option>全部运行类型</option><option>全量 full</option><option>定时 scheduled</option><option>精确采集 interface</option></select>
+        <select class="form-select" style="width:100px"><option>全部类别</option><option>宏观</option><option>ETF</option></select>
+        <select class="form-select" style="width:100px"><option>全部状态</option><option>成功</option><option>失败</option></select>
+        <input class="prec-input" type="date" value="${LAST}" style="width:125px">
+        <button class="btn btn-sm" data-act="filter"><i class="ti ti-filter"></i> 筛选</button><button class="btn btn-sm" data-act="filter-reset">重置</button>
+        <span class="hint" data-filter-count>共 ${fmt(MONITOR_DATA[kind].length)} 行</span>${kind==='failures'?'<span class="hint">失败明细每行可单独重跑</span>':''}</div>
+      ${tbl(MONITOR_HEADERS[kind], MONITOR_DATA[kind], opts)}
+      ${pagerBar(MONITOR_DATA[kind].length,1,1)}</div></div>`;
+}
+const MONITOR_HEADERS = {
+  overview:['运行ID','运行时间','运行类型','调用数','成功数','失败数','成功率','耗时'],
+  failures:['任务ID','接口名称','类别','发生时间','失败原因','重跑结果','状态'],
+  health:['接口名称','接口键','类别','累计调用','成功','成功率','失败数','状态'],
+  detail:['运行ID','运行时间','接口名称','类别','状态','数据行数','耗时','失败原因'],
+  stats:['类别','标的数','今日新增','累计行数','频率','最新日期'],
+};
+function dashShell(grp){
+  const ctl = grp==='macro'
+    ? `<label class="prec-field">宏观范围 <select class="form-select" style="width:100px" data-act="dash-macro-range"><option>近一年</option><option>近6个月</option><option>近3年</option><option>近5年</option><option>全部</option></select></label><span class="hint">数据来源：派生指标 / 宏观观测 / 上交所日线</span>`
+    : `${grp==='etf'?`<label class="prec-field">叠加指数 <select class="form-select" style="width:120px"><option>上证指数 000001</option><option>沪深300 000300</option><option>科创50 000688</option><option>创业板指 399006</option></select></label>`:''}
+       <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
+       <label class="prec-field">结束 <input class="prec-input" type="date" data-range-end value="${LAST}" style="width:125px"></label>
+       ${rangeQuick('dash-'+grp,12)}<span class="hint" data-range-hint>点选快捷范围回显真实区间；手改日期进入自定义</span>`;
+  return head(`数据看板 · ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}`,
+      grp==='macro'?'8 张图 · 统一日期联动':grp==='etf'?'4 张图 · 汇金 / 黄金 · 日期联动':'2 张图 · 图1图2各一行 · 两融双 grid 联动')
+    + `<div class="card"><div class="card-header"><h3><i class="ti ti-chart-line" style="color:var(--blue)"></i> ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}</h3>
+      <div style="flex:1"></div><button class="btn btn-sm" data-act="dash-refresh"><i class="ti ti-refresh"></i> 刷新图表</button><span class="hint" data-dash-meta>宏观 8 图 · ETF 4 图 · 交易 2 图</span></div>
+    <div class="card-body"><div class="ctl-params" style="margin-bottom:12px">${ctl}</div>
+      <div class="grid-2 ${grp==='trade'?'one-col':''}" data-dash-charts></div></div></div>`;
 }
 
-document.querySelectorAll('#dashboardTabs .tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('#dashboardTabs .tab').forEach(t => t.classList.remove('active'));
-    tab.classList.add('active');
-    dashboardTab = tab.dataset.tab;
-    $('dashboardMacroPanel').hidden = dashboardTab !== 'macro';
-    $('dashboardEtfPanel').hidden = dashboardTab !== 'etf';
-    $('dashboardTradePanel').hidden = dashboardTab !== 'trade';
-    renderDashboardTab();
+const VIEWS = {
+  /* ---------------- 总览 ---------------- */
+  ovCollect:()=>head('采集数据概览','系统数据资产一屏总览 · 最近交易日 '+LAST)+statRow(
+    statCard('database','ic-blue',fmt(S.macro_rows),'宏观观测',fmt(S.macro_indicators)+' 指标','t-blue')+
+    statCard('coins','ic-green',fmt(S.etf_rows),'ETF 日频',fmt(S.etf_codes)+' 标的','t-blue')+
+    statCard('chart-line','ic-purple',fmt(S.index_rows),'指数日线',fmt(S.index_codes)+' 指数','t-blue')+
+    statCard('scale','ic-orange',fmt(S.trade_rows),'交易观测','5 张原始表','t-green'))
+    +`<div class="grid-2"><div class="card"><div class="card-header"><h3><i class="ti ti-chart-area" style="color:var(--blue)"></i> 数据资产分布</h3></div><div class="card-body"><div id="ovAssetChart" class="chart-box sm"></div></div></div>
+      <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--ok)"></i> 最近运行</h3></div><div class="card-body" data-recent-runs>${recentRunsTable()}</div></div></div>
+      <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 模块导航</h3></div><div class="card-body"><p class="hint" style="font-size:12px;line-height:1.9">顶部 5 模块：<b>总览 / 数据采集 / 数据处理 / 数据看板 / 运维监控</b>。左侧列出当前模块全部功能项，点击切换。所有按钮、Tab、筛选、分页、图表联动均可操作。</p></div></div>`,
+
+  /* ---------------- 数据采集：控制台 ---------------- */
+  console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')+statRow(
+    statCard('database','ic-blue',fmt(S.macro_rows),'宏观数据',fmt(S.macro_indicators)+' 指标','t-blue')+
+    statCard('coins','ic-green',fmt(S.etf_rows),'ETF 数据',fmt(S.etf_codes)+' 标的','t-blue')+
+    statCard('chart-line','ic-purple',fmt(S.index_rows),'指数数据',fmt(S.index_codes)+' 指数','t-blue')+
+    statCard('alert-triangle','ic-red',fmt(S.failed_total),'累计失败','需关注','t-orange'))
+    +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 点击操作按钮观察实时日志</span></div>
+      <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#9aabc2;padding:0 0 6px;border-bottom:1px solid #edf1f7"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
+      <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>
+        <div class="ctl-params"><input class="prec-input" type="date" value="${LAST}" style="width:120px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:120px"><button class="btn btn-sm" data-act="date-default">默认</button></div>
+        <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-full">立即采集</button></div></div>
+      <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#16855b"><i class="ti ti-target"></i></div><div><b>精确采集</b><small>类别 → 具体口径 + 时间区间</small></div></div><span class="scope-pill scope-part">部分</span>
+        <div class="ctl-params"><select class="form-select" style="width:100px" data-act="prec-cat"><option value="macro">宏观指标</option><option value="etf">ETF 基金</option><option value="index">指数</option><option value="trade">交易（原始）</option></select><span class="hint">→</span><select class="form-select" style="width:100px" data-prec-code><option>M1 同比</option><option>社融增量</option></select><input class="prec-input" type="date" value="2025-01-01" style="width:118px" data-prec-start><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-end></div>
+        <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-prec">采集所选</button></div></div>
+      <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#c2410c"><i class="ti ti-file-import"></i></div><div><b>文件导入</b><small>份额与规模_代码.xlsx</small></div></div><span class="scope-pill scope-ops">ETF数据</span>
+        <div class="ctl-params"><input class="prec-input" type="file" style="width:220px;font-size:10px" data-import-file><button class="btn btn-sm" data-act="import">导入数据</button></div>
+        <div style="text-align:center"><span class="s-always">手动</span></div><div><span class="hint" style="font-size:10px">≤10 文件</span></div></div>
+      <div class="log-panel" style="margin-top:12px;display:block"><div class="log-head"><span>实时监控 · 实时日志</span><span class="log-scope">全部线程 · 最近5000行</span><div class="log-tools"><label><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label><button class="log-tool" data-act="log-bottom" title="回到底部">↓</button><button class="log-tool" data-act="log-toggle">展开</button><span class="log-dot"></span></div></div>
+        <div class="log-strip" data-act="log-toggle"><span class="log-strip-label">最新</span><span id="logMarquee" class="INFO">正在加载实时日志…</span></div>
+        <div class="log-body-wrap" id="logBodyWrap"><div id="logBody"></div></div></div></div></div>`,
+
+  /* ---------------- 数据采集：配置 ---------------- */
+  maccfg:()=>head('宏观采集配置','指标可增删 · 数据源与区间配置')+`<div class="card"><div class="card-header"><h3><i class="ti ti-adjustments" style="color:var(--ok)"></i> 宏观指标配置</h3><span class="sub">17 原指标 + GDP + 海外 · 可增删 / 启停</span></div><div class="card-body">
+    <div class="ctl-params" style="margin-bottom:11px;padding:9px 10px;background:#f7f9fd;border:1px solid var(--line);border-radius:7px">
+      <label class="prec-field"><b>新增指标</b></label>
+      <input class="prec-input" placeholder="指标代码" style="width:125px" data-macro-code>
+      <input class="prec-input" placeholder="名称" style="width:135px" data-macro-name>
+      <input class="prec-input" placeholder="类别" style="width:78px" data-macro-cat>
+      <input class="prec-input" placeholder="数据源" style="width:88px" data-macro-src>
+      <input class="prec-input" placeholder="频率" style="width:60px" data-macro-freq>
+      <button class="btn btn-primary btn-sm" data-act="macro-add"><i class="ti ti-plus"></i> 新增</button></div>
+    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="2025-01-01" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint" data-config-hint>勾选启用项后保存</span></div>
+    <div class="table-responsive" data-macro-table>${tbl(['启用','指标代码','名称','类别','数据源','频率'],MACRO_INDS.map(r=>[
+      `<label class="switch-row"><input type="checkbox" checked data-macro-enable></label>`,...r]),{action:'macro-remove',actionLabel:'删除'})}</div></div></div>`,
+
+  idxcfg:()=>head('指数采集配置','4 个指数 · 日线采集')+`<div class="card"><div class="card-header"><h3><i class="ti ti-chart-dots" style="color:var(--blue)"></i> 指数标的配置</h3><span class="sub">灵活增删 · 自定义区间</span></div><div class="card-body">
+    <div class="ctl-params"><select class="form-select" style="width:170px" data-idx-new><option>000001 上证指数</option><option>000300 沪深300</option><option>000688 科创50</option><option>399006 创业板指</option></select><button class="btn btn-sm" data-act="idx-add"><i class="ti ti-plus"></i> 添加</button></div>
+    <div class="chips" data-chips="idx">${INDEX_ITEMS.map(x=>`<span class="chip"><i class="ti ti-chart-dots"></i> ${x[0]} ${x[1]}<span class="x" data-act="chip-remove">×</span></span>`).join('')}</div>
+    <div class="ctl-params"><label class="prec-field">采集区间 <input class="prec-input" type="date" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><label class="prec-field">回看 <input class="prec-input" type="number" value="1" style="width:60px"> 天</label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
+    <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称'],INDEX_ITEMS.map(x=>[x[0],x[1]]),{action:'idx-row-remove',actionLabel:'删除'})}</div></div></div>`,
+
+  etfcfg:()=>head('ETF 采集配置','26 只标的 · 分组标签与上市日期缓存')+`<div class="card"><div class="card-header"><h3><i class="ti ti-coins" style="color:var(--ok)"></i> ETF 标的配置</h3><span class="sub">宽基 / 汇金 / 黄金 · 自动解析上市日</span></div><div class="card-body">
+    <div class="ctl-params"><input class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" style="width:150px" data-etf-new><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 添加</button></div>
+    <div class="chips" data-chips="etf">${ETF_ITEMS.slice(0,6).map(x=>`<span class="chip"><i class="ti ti-coins"></i> ${x[0]} ${x[1]} <span class="mini_tag">${x[2].split('/')[0]}</span><span class="x" data-act="chip-remove">×</span></span>`).join('')}</div>
+    <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><label class="prec-field">最近 <input class="prec-input" type="number" value="60" style="width:60px"> 个交易日</label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
+    <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称','标签','上市日期'],ETF_ITEMS.map(x=>[x[0],x[1],x[2],x[3]]),{action:'etf-row-remove',actionLabel:'删除'})}</div></div></div>`,
+
+  /* ---------------- 数据采集：预览 ---------------- */
+  'prev-macro':()=>previewView('macro'), 'prev-etf':()=>previewView('etf'),
+  'prev-index':()=>previewView('index'), 'prev-trade':()=>previewView('trade'),
+  'prev-files':()=>previewView('files'),
+
+  /* ---------------- 数据采集：清理 ---------------- */
+  clean:()=>head('数据清理','危险操作 · 按口径 / 时间范围精确删除')+`<div class="card"><div class="card-header"><h3><i class="ti ti-eraser" style="color:var(--err)"></i> 清理预览</h3><span class="sub">不可撤销 · 不影响配置 / 监控 / 导出</span></div><div class="card-body">
+    <div class="ctl-params" style="margin-bottom:10px"><label class="prec-field">数据类别</label><span class="seg" data-clean-cat><button class="seg-btn active" data-act="clean-cat" data-cat="macro">宏观指标</button><button class="seg-btn" data-act="clean-cat" data-cat="etf">ETF 基金</button><button class="seg-btn" data-act="clean-cat" data-cat="index">指数</button></span></div>
+    <div class="ctl-params" style="margin-bottom:10px"><label class="prec-field">细分口径 <span class="muted-inline">(全部)</span></label><select class="form-select" style="width:200px" data-clean-code><option>全部（该类别整体）</option><option>M1 同比</option><option>M2 同比</option></select></div>
+    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">时间范围 <span class="muted-inline">留空 = 全部</span></label><input class="prec-input" type="date" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" style="width:130px"></div>
+    <div class="ctl-params"><button class="btn btn-sm" data-act="clean-preview"><i class="ti ti-eye"></i> 预览影响</button><button class="btn btn-danger btn-sm" data-act="clean-exec"><i class="ti ti-trash"></i> 执行清理</button><button class="btn btn-sm" data-act="clean-reset">重置</button></div>
+    <div class="clean-result" data-clean-result>预览结果：<span class="hint">将删除 0 行（请先预览影响）。派生指标表不在清理范围内。</span></div></div></div>`,
+
+  /* ---------------- 数据处理 ---------------- */
+  macrocalc:()=>head('宏观计算 · 派生指标','14 项指标 · 手动重算兜底 · 定时调度见「运维监控 · 任务调度」')+`<div class="trigger-grid" style="grid-template-columns:1fr">
+    <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
+      <div class="tc-row"><button class="btn btn-primary btn-sm" data-act="recalc-all">重新计算全部</button><button class="btn btn-sm" data-act="export" data-k="derived">导出 CSV</button></div>
+      <div class="tc-row"><label class="prec-field">按月 <input class="prec-input" type="month" value="2026-10" style="width:110px"></label><button class="btn btn-sm" data-act="recalc-month">重算该月</button></div>
+      <div class="tc-row"><label class="prec-field">按指标 <select class="form-select" style="width:150px"><option>M1 同比</option><option>社融增量</option><option>CPI-PPI 剪刀差</option></select></label><button class="btn btn-sm" data-act="recalc-code">重算该指标</button></div>
+      <div class="tc-note">局部重算按业务键幂等覆盖；全量重算才整表替换清理陈旧口径行</div></div></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 指标口径</h3><label class="prec-field" style="margin-left:auto">查看月份 <input class="prec-input" type="month" value="2026-10" style="width:110px"></label></div><div class="card-body" data-derived-body></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
+      <li><b>触发条件</b>：服务运行时按「运维监控 · 任务调度」中的配置每日到点触发一次，同一天只触发一次；未启用/未到点/今日已触发/任务占用时不执行。</li>
+      <li><b>步骤 1~5</b>：触发 → 提交采集 → 宏观/ETF/指数采集 → 写 SQLite 业务表（幂等 upsert）→ 采集完成统计，全程写入监控日志。</li>
+      <li><b>步骤 6/6 派生增量重算</b>：按本次 <code>run_id</code> 推导受影响的派生 <code>(指标, 月份)</code>，只重算目标行并按 <code>biz_key</code> 幂等 upsert。</li>
+      <li><b>手动重算（兜底）</b>：「全部」全量重算整表替换；「按月」「按指标」按业务键幂等覆盖只影响目标子集。</li>
+      <li><b>口径要点</b>：进出口同比用官方累计；贷款新增为余额差分；黄金新增为储备差分×31.1034768÷100；社融存量取官方增速。</li>
+      <li><b>看板联动</b>：看板各派生指标图直接读取 <code>derived_indicator</code>，重算后自动生效；宏观与 ETF 日期口径一致。</li>
+    </ol></div></div>`,
+
+  etfcalc:()=>head('ETF 计算','流通份额变化 / 申赎净流入 · 汇金维度')+`<div class="card"><div class="card-header"><h3><i class="ti ti-calculator" style="color:var(--blue)"></i> ETF 计算</h3><span class="sub">数据来自 etf_observation 全量历史</span></div><div class="card-body">
+    <div class="formula-note"><div><b>流通份额变化</b> = 当日份额 − 上一交易日份额（亿份）</div><div><b>申赎净流入</b> = 份额变化 × 当日单位净值（亿元），剔除价格涨跌的市值波动；净值单日涨跌超 ±20% 视为份额折算，净流入置空</div></div>
+    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">查看范围 <select class="form-select" style="width:100px"><option>近半年</option><option selected>近一年</option><option>近3年</option><option>近5年</option><option>全部</option></select></label><label class="prec-field">起始 <input class="prec-input" type="date" style="width:125px"></label><label class="prec-field">结束 <input class="prec-input" type="date" value="${LAST}" style="width:125px"></label><button class="btn btn-sm" data-act="etfcalc-refresh"><i class="ti ti-refresh"></i> 刷新</button><button class="btn btn-sm" data-act="export" data-k="etfcalc"><i class="ti ti-file-export"></i> 导出 CSV</button><span class="hint">共 23 条</span></div>
+    <div class="mini_tag" style="display:inline-block;margin-bottom:8px">汇金合计净流入 +38.6 亿元</div>
+    ${tbl(['日期','代码','名称','份额变化(亿份)','净流入(亿元)','单位净值'],[
+      [LAST,'510300','沪深300ETF','+3.2','+12.4','4.02'],[LAST,'510050','上证50ETF','-0.8','-3.1','3.28'],
+      [LAST,'518880','黄金ETF','+1.4','+2.7','9.16'],['2026-11-21','510300','沪深300ETF','+2.1','+8.2','3.98']])}
+    <div class="card-header" style="margin:16px -14px 10px;padding:10px 14px"><h3>汇金维度 · 每个交易日总份额</h3><span class="sub">23 只汇金 ETF 份额合计 · 点击展开明细</span></div>
+    ${tbl(['日期','汇金总份额(亿份)','较上日','明细'],[
+      [LAST,'8,642.5','+18.3','展开 ▸'],['2026-11-21','8,624.2','+6.8','展开 ▸'],['2026-11-20','8,617.4','-2.1','展开 ▸']],{action:'etf-share-detail',actionLabel:'展开 ▸'})}</div></div>`,
+
+  tradecalc:()=>head('交易计算','从 5 张原始表派生 10 项指标')+`<div class="trigger-grid">
+    <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
+      <div class="tc-row"><button class="btn btn-primary btn-sm" data-act="trade-recalc-all">重新计算全部</button><label class="prec-field">按交易日 <input class="prec-input" type="date" value="${LAST}" style="width:130px" data-trade-recalc-date></label><button class="btn btn-sm" data-act="trade-recalc-date">重算该日</button></div>
+      <div class="tc-note">全量重算整表替换；按日重算只覆盖该交易日。差分/占比分母始终基于原始值计算。</div></div></div>
+    <div class="trigger-card"><div class="tc-head"><h3>📊 原始数据覆盖</h3></div><div class="tc-body">
+      <div class="tc-row"><span class="hint">交易所概况 / 两融账户 / 全A个股快照 · 共 ${fmt(S.trade_rows)} 交易日</span></div>
+      <div class="tc-note">快照仅当日不可回溯，集中度与涨跌家数自采集日起累计。五类原始表：exchange / margin / snapshot / breadth / congestion。</div></div></div></div>
+    <div class="formula-note"><div><b>全A成交额</b> = 沪成交金额(亿元) + 深成交金额(元)÷1e8</div><div><b>成交集中度(前5%)</b> = 个股成交额降序前 5% 之和 ÷ 全A成交额 ×100% · <b>两融余额</b> = 融资余额 + 融券余额</div><div><b>融资余额占流通市值比</b> = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100% · <b>融资买入额占比</b> = 融资买入额 ÷ 全A成交额 ×100%</div><div><b>融资保证金比例</b> 为政策阶梯常量（当前 100%），按交易日匹配生效值 · <b>涨跌家数</b> 由快照涨跌幅统计</div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 10 项指标最新值</h3><span class="sub">${LAST}</span></div><div class="card-body">${tbl(['指标代码','指标名称','最新值','单位','数据来源'],TRADE_LATEST)}</div></div>`,
+
+  /* ---------------- 数据看板 ---------------- */
+  dashmacro:()=>dashShell('macro'), dashetf:()=>dashShell('etf'), dashtrade:()=>dashShell('trade'),
+
+  /* ---------------- 运维监控 ---------------- */
+  'mon-overview':()=>monitorView('overview'), 'mon-failures':()=>monitorView('failures'),
+  'mon-health':()=>monitorView('health'), 'mon-detail':()=>monitorView('detail'),
+  'mon-stats':()=>monitorView('stats'),
+
+  tasksched:()=>head('任务调度','每日定时调度 · 采集完成后自动增量重算')+`<div class="trigger-grid" style="grid-template-columns:1fr">
+    <div class="trigger-card"><div class="tc-head"><h3>⏰ 定时调度 <small>主触发</small></h3><label class="switch-row"><input type="checkbox" id="dpSchedEnabled" checked> 启用</label></div><div class="tc-body">
+      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" style="width:160px"><option>全量 full</option><option>仅宏观 macro（当月）</option><option>仅 ETF etf</option><option>仅指数 index</option></select><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
+      <div class="tc-row tc-row-foot"><button class="btn btn-primary btn-sm" data-act="save-sched">保存调度配置</button><button class="btn btn-sm" data-act="sched-run-now"><i class="ti ti-player-play"></i> 立即触发一次</button></div>
+      <div class="tc-note">采集完成后自动执行步骤 6/6 增量重算（只算本次变更涉及的指标/月份）· 每天仅触发一次 · 忙时跳过不补跑</div></div></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
+      <li><b>触发条件</b>：服务运行时按本页配置每日到点触发一次，同一天只触发一次；未启用 / 未到点 / 今日已触发 / 任务占用时不执行，日志中给出原因。</li>
+      <li><b>步骤 1~5</b>：触发 → 提交采集任务 → 宏观 / ETF / 指数采集 → 写 SQLite 业务表（幂等 upsert）→ 采集完成统计，全程写入实时监控日志。</li>
+      <li><b>步骤 6/6 派生增量重算</b>：按本次 <code>run_id</code> 读取写入 <code>macro_observation</code> 的原始 <code>(指标, 月份)</code>，经依赖映射推导受影响的派生行，<b>只重算这些目标行</b>并按 <code>biz_key</code> 幂等 upsert。</li>
+      <li><b>手动重算（兜底）</b>：「全部」全量重算并整表替换；「按月」「按指标」按业务键幂等覆盖只影响目标子集，在「数据处理」模块操作。</li>
+      <li><b>宏观当月模式</b>：定时调度中宏观采集锁定 <code>start = end = 当月 YYYY-MM</code>，避免无谓回溯；手动全量采集不受此限制。</li>
+      <li><b>看板联动</b>：数据看板各图直接读取派生表，重算完成后自动生效。</li>
+    </ol></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-history" style="color:var(--blue)"></i> 最近调度记录</h3></div><div class="card-body">${tbl(['触发时间','运行ID','范围','状态','调用数','耗时'],[
+      ['2026-11-26 03:17','20261126_031700_scheduled','全量','<span class="tag success">成功</span>','284','186s'],
+      ['2026-11-25 03:17','20261125_031700_scheduled','全量','<span class="tag success">成功</span>','284','191s'],
+      ['2026-11-24 03:17','20261124_031700_scheduled','全量','<span class="tag warn">跳过</span>','—','今日已触发'],
+      ['2026-11-23 03:17','20261123_031700_scheduled','全量','<span class="tag success">成功</span>','282','188s'],
+    ])}</div></div>`,
+};
+
+/* ==========================================================================
+ * 渲染 / 导航
+ * ========================================================================== */
+function buildSidebar(){
+  const v = $('.view.active');
+  let h = '';
+  NAV[curMod].groups.forEach(g=>{
+    h += `<div class="cap">${g.cap}</div>`;
+    g.items.forEach(it=>{
+      h += `<div class="fn ${it.id===curView?'active':''}" data-view="${it.id}"><i class="ti ti-${it.icon}"></i><span>${it.name}</span>${it.badge?`<span class="badge badge-sm ${it.badge==='TODO'?'bg-secondary':'bg-red'}">${it.badge}</span>`:''}</div>`;
+    });
   });
-});
-
-window.addEventListener('resize', resizeDashboardCharts);
-$('dashboardMonths').addEventListener('change', loadDashboard);
-$('dashboardEtfMonths').addEventListener('change', () => { syncEtfRangeBtns(); applyEtfPreset(); });
-$('dashboardEtfRangeBtns').addEventListener('click', onEtfRangeBtnClick);
-$('dashboardOverlayIndex').addEventListener('change', loadDashboard);
-$('dashboardEtfStart').addEventListener('change', onEtfDateChange);
-$('dashboardEtfEnd').addEventListener('change', onEtfDateChange);
-$('dashboardRefreshBtn').addEventListener('click', () => loadDashboard().then(resizeDashboardCharts));
-$('dashboardTradeMonths')?.addEventListener('change', () => { syncRangeBtns('Trade'); applyPreset('Trade'); });
-$('dashboardTradeRangeBtns')?.addEventListener('click', (ev) => onRangeBtnClick('Trade', ev));
-$('dashboardTradeStart')?.addEventListener('change', () => onDateChange('Trade'));
-$('dashboardTradeEnd')?.addEventListener('change', () => onDateChange('Trade'));
-
-/* ---------- 定时刷新 ---------- */
-async function refresh() {
-  await Promise.all([loadStatus(), loadMonitor()]);
+  h += `<div class="sidebar-foot">投研大盘数据平台 · 生产系统<br>© 2026 投研数据团队</div>`;
+  $('#sidebar').innerHTML = h;
+}
+function renderViews(){
+  $('#views').innerHTML = Object.entries(VIEWS).map(([k,v])=>`<section class="view ${k===curView?'active':''}" id="v-${k}">${v()}</section>`).join('');
+}
+function switchView(id){
+  if(!VIEWS[id]) return;
+  curView = id;
+  $$('.view').forEach(x=>x.classList.remove('active'));
+  const el = byId('v-'+id); if(el) el.classList.add('active');
+  $$('.fn').forEach(x=>x.classList.toggle('active',x.dataset.view===id));
+  if(id.startsWith('dash')) setTimeout(()=>{ loadDashboard(); }, 30);
+  if(id==='ovCollect') setTimeout(renderOverview, 60);
+  if(id==='macrocalc') setTimeout(()=>loadDerived(), 30);
+  if(id.startsWith('prev-')) setTimeout(()=>loadPreview(id.replace('prev-','')).then(()=>rerenderView(id)), 30);
+  if(id.startsWith('mon-')) setTimeout(()=>loadMonitor().then(()=>rerenderView(id)), 30);
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+/* 数据到达后重渲染当前视图内容（保留激活态） */
+function rerenderView(id){
+  if(curView!==id) return;
+  const el = byId('v-'+id); if(!el || !VIEWS[id]) return;
+  el.innerHTML = VIEWS[id]();
+  if(id.startsWith('dash')) renderDash();
+}
+async function refreshViewData(id){
+  await loadAllBase();
+  await loadDashboard();
+  renderViews();
+  switchView(id);
+}
+function switchMod(mod){
+  if(!NAV[mod]) return;
+  curMod = mod;
+  $$('.mod').forEach(x=>x.classList.toggle('active',x.dataset.mod===mod));
+  curView = NAV[mod].groups[0].items[0].id;
+  buildSidebar(); switchView(curView);
 }
 
-async function init() {
-  applyDateControl();
-  // 先取 status 注入「最近一个已结束交易日」，保证日期默认值取最近交易日而非当天
-  await loadStatus();
-  // 并行加载目录/配置，再填充下拉并套用默认日期区间
-  await Promise.all([loadCatalog(), loadEtfConfig(), loadIndexConfig()]);
-  fillCodeOptions();
-  applyDefaultRange('fullStart', 'fullEnd');
-  applyDefaultRange('precStart', 'precEnd');
-  applyDefaultRange('cleanStart', 'cleanEnd');
-  resetToDefaultRange();
-  monitorDefaultRange();
-  await loadData();
-  await loadDerived();
-  await refresh();
-  startLiveLogPolling();  // 常驻实时日志流（含定时调度），保留最近 5000 行
+/* ==========================================================================
+ * 图表（ECharts）
+ * ========================================================================== */
+function filteredData(chart, months){
+  const categories = (chart.series[0]?.data||[]).map(p=>p[0]).sort();
+  if(!months || months>=999) return categories;
+  // 有些图（如 ETF 净流入细分）x 轴是名称而非日期，按时间过滤时原样保留
+  const end = new Date(categories[categories.length-1]||LAST);
+  if(isNaN(end.getTime())) return categories;
+  const start = new Date(end); start.setMonth(start.getMonth()-months);
+  if(isNaN(start.getTime())) return categories;
+  const lo = start.toISOString().slice(0,10);
+  return categories.filter(c=>{
+    const d = new Date(c);
+    return isNaN(d.getTime()) || c >= lo;
+  });
 }
-init();
-setInterval(refresh, 30000);
+function axisOpt(ax,i){
+  return {type:'value',name:ax?.name||'',position:ax?.position||'left',offset:ax?.offset||0,
+    nameTextStyle:{fontSize:9,color:'#8a97ac'},axisLabel:{fontSize:9,color:'#8a97ac'},
+    splitLine:{show:i===0,lineStyle:{color:'#edf1f7'}},axisLine:{show:i===0}};
+}
+function renderChartNode(node, chart, months){
+  if(!node) return;
+  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const categories = filteredData(chart, months);
+  const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
+  const series = (chart.series||[]).map((s,i)=>({
+    name:s.name, type:s.type||'line', data:dataOf(s), yAxisIndex:s.y_axis_index||0,
+    smooth:true, showSymbol:false, connectNulls:true,
+    lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
+  }));
+  const maxIdx = Math.max(0,...series.map(s=>s.yAxisIndex));
+  const ax = (chart.y_axes||[]).slice();
+  while(ax.length<=maxIdx) ax.push({name:'占比 (%)',position:ax.length%2?'right':'left'});
+  ins.setOption({animation:false,color:CLR,
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
+    legend:{top:2,type:'scroll',textStyle:{fontSize:10}},
+    grid:{left:58,right:ax.length>1?40+(ax.length-1)*52:40,top:42,bottom:52},
+    xAxis:{type:'category',data:categories,axisLabel:{fontSize:9,hideOverlap:true,rotate:categories.length>18?30:0},axisLine:{lineStyle:{color:'#e3e9f2'}}},
+    yAxis:ax.map(axisOpt), series,
+  },{notMerge:true});
+  return ins;
+}
+/* 两融图 1:1 复刻生产 trade_margin_split：2 grid / 4 Y轴 / 2 X轴 / 2 dataZoom / 联动 */
+function renderMarginSplitNode(node, chart, months){
+  if(!node) return;
+  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const categories = filteredData(chart, months);
+  const upper = chart.series.filter(s=>s.y_axis_index!==1 && s.y_axis_index!==3);
+  const lower = chart.series.filter(s=>s.y_axis_index===1);
+  const lowerRight = chart.series.filter(s=>s.y_axis_index===3);
+  const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
+  const line = (s,i,gi,yi)=>({name:s.name,type:'line',xAxisIndex:gi,yAxisIndex:yi,data:dataOf(s),
+    smooth:true,showSymbol:false,symbolSize:5,connectNulls:true,
+    lineStyle:{width:2,color:CLR[i%CLR.length]},itemStyle:{color:CLR[i%CLR.length]}});
+  ins.setOption({animation:false,color:CLR,
+    grid:[{left:62,right:158,top:54,height:'27%'},{left:62,right:158,top:'50%',bottom:96}],
+    axisPointer:{link:[{xAxisIndex:'all'}]},
+    legend:{top:4,type:'scroll',textStyle:{fontSize:10}},
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
+    xAxis:[
+      {type:'category',gridIndex:0,data:categories,axisLabel:{show:false},axisTick:{show:false},splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}}},
+      {type:'category',gridIndex:1,data:categories,splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}},axisLabel:{fontSize:10,hideOverlap:true,rotate:categories.length>18?30:0,margin:14}},
+    ],
+    yAxis:[
+      {type:'value',name:'两融余额 (亿元)',position:'left',gridIndex:0,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},
+      {type:'value',name:'投资者数 (人)',position:'right',gridIndex:0,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:false}},
+      {type:'value',name:'比例 (%)',position:'left',gridIndex:1,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},
+      {type:'value',name:'占比 (%)',position:'right',gridIndex:1,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:false}},
+    ],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1]},{type:'slider',xAxisIndex:[0,1],height:20,bottom:8,brushSelect:false,showDetail:true,handleSize:'110%',dataBackground:{lineStyle:{opacity:.3},areaStyle:{opacity:.1}}}],
+    series:[
+      ...upper.map((s,i)=>line(s,i,0,s.y_axis_index===2?1:0)),
+      ...lower.map((s,i)=>line(s,i+upper.length,1,2)),
+      ...lowerRight.map((s,i)=>line(s,i+upper.length+lower.length,1,3)),
+    ],
+  },{notMerge:true});
+  return ins;
+}
+function renderDash(){
+  const grp = curView.replace('dash','');
+  if(!DB[grp]) return;
+  const view = $('.view.active'); if(!view) return;
+  const box = view.querySelector('[data-dash-charts]'); if(!box) return;
+  const list = DB[grp].charts;
+  const macroSel = view.querySelector('[data-act="dash-macro-range"]');
+  const months = grp==='macro'
+    ? ({'近一年':12,'近6个月':6,'近3年':36,'近5年':60,'全部':999}[macroSel?.value]||12)
+    : readQuickMonths(view, 12);
+  box.innerHTML = list.map(c=>`<div class="card"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#9aabc2" title="${esc(c.note)}"></i>`:''}</div><div class="card-body" style="padding:6px"><div class="chart-box ${c.layout==='trade_margin_split'?'tall':''}"></div></div></div>`).join('');
+  const meta = view.querySelector('[data-dash-meta]');
+  if(meta) meta.textContent = `宏观 8 图 · ETF 4 图 · 交易 2 图 · 已渲染 ${list.length} 图`;
+  setTimeout(()=>list.forEach(c=>{
+    const node = box.querySelector('.chart-box');
+    // 按卡片顺序取对应节点
+    const idx = list.indexOf(c);
+    const target = box.children[idx]?.querySelector('.chart-box');
+    if(!target) return;
+    if(c.layout==='trade_margin_split') renderMarginSplitNode(target,c,months); else renderChartNode(target,c,months);
+  }),40);
+}
+function renderOverview(){
+  const node = byId('ovAssetChart'); if(!node) return;
+  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const data=[{name:'宏观观测',v:S.macro_rows},{name:'ETF 日频',v:S.etf_rows},{name:'指数日线',v:S.index_rows},{name:'交易观测',v:S.trade_rows}];
+  ins.setOption({
+    animation:false, color:CLR,
+    tooltip:{trigger:'axis',axisPointer:{type:'shadow'}},
+    grid:{left:88,right:46,top:14,bottom:26},
+    xAxis:{type:'value',axisLabel:{fontSize:9,color:'#8a97ac'},splitLine:{lineStyle:{color:'#edf1f7'}}},
+    yAxis:{type:'category',data:data.map(d=>d.name),axisLabel:{fontSize:10,color:'#51627e'}},
+    series:[{
+      type:'bar', data:data.map(d=>d.v), barWidth:18,
+      itemStyle:{color:CLR[0],borderRadius:[0,5,5,0]},
+      label:{show:true,position:'right',fontSize:10,color:'#51627e',formatter:p=>fmt(p.value)},
+    }],
+  },{notMerge:true});
+}
+function fillDerived(){
+  const box = $('.view.active [data-derived-body]'); if(!box || box.dataset.filled) return;
+  const groups=[
+    ['A. 市场成交',[['TOTAL_AMOUNT','全A成交额','亿元','沪+深成交额'],['CONCENTRATION5','成交集中度(前5%)','%','个股成交额前5%占比'],['MARGIN_RATIO','平均维持担保比例','%','两融账户直取'],['MARGIN_FINANCING_RATIO','融资保证金比例','%','政策阶梯常量']]],
+    ['B. 两融核心',[['MARGIN_BALANCE','两融余额','亿元','融资+融券'],['FINANCING_TO_FLOAT_MV','融资余额占流通市值比','%','融资÷流通市值'],['FINANCING_BUY_PCT','融资买入额占比','%','融资买入÷全A成交'],['DEBT_INVESTORS','有负债投资者数','人','直取']]],
+    ['C. 市场宽度',[['UP_COUNT','上涨家数','家','快照涨跌幅>0'],['DOWN_COUNT','下跌家数','家','快照涨跌幅<0']]],
+  ];
+  box.innerHTML = groups.map(([title,items])=>`<div class="ind-group"><h4>${title}</h4>${items.map(x=>`<div class="ind-item"><span class="code">${x[0]}</span><span class="nm">${x[1]}</span><span class="mini_tag">${x[2]}</span><span class="formula">${x[3]}</span></div>`).join('')}</div>`).join('');
+  box.dataset.filled='1';
+}
+function fillStatic(){
+  fillDerived();
+}
+
+/* ==========================================================================
+ * 通用交互工具
+ * ========================================================================== */
+function activeView(){ return $('.view.active'); }
+function readQuickMonths(view, def=12){
+  const b = view?.querySelector('.seg-btn.active[data-months]');
+  return b ? Number(b.dataset.months) : def;
+}
+function applyQuickRange(btn){
+  const view = activeView(); if(!view) return;
+  const months = Number(btn.dataset.months||12);
+  $$('.seg-btn[data-months]',view).forEach(x=>x.classList.toggle('active',x===btn));
+  const s = view.querySelector('[data-range-start]'), e = view.querySelector('[data-range-end]');
+  if(s && e){
+    const end = new Date(LAST);
+    const start = new Date(LAST);
+    if(months>=999) start.setFullYear(start.getFullYear()-20); else start.setMonth(start.getMonth()-months);
+    const lo = start.toISOString().slice(0,10);
+    s.value = lo; e.value = LAST;
+    const hint = view.querySelector('[data-range-hint]');
+    if(hint) hint.textContent = `已回显 ${lo} ~ ${LAST}（快捷范围）`;
+  } else {
+    const hint = view.querySelector('[data-filter-count]');
+    if(hint) hint.textContent = `已选择 ${btn.textContent.trim()} · 共 ${fmt(Math.round(2889*months/12))} 条`;
+  }
+  if(curView.startsWith('dash')) renderDash();
+  toast(`已切换范围：${btn.textContent.trim()}`, 'info');
+}
+function setPagerActive(btn){
+  const bar = btn.closest('[data-pager]'); if(!bar) return;
+  const act = btn.dataset.act, cur = bar.querySelector('.pg.active');
+  let target = cur;
+  if(act==='page-go') target = btn;
+  else if(act==='page-first') target = bar.querySelector('.pg');
+  else if(act==='page-last') target = Array.from(bar.querySelectorAll('.pg')).pop();
+  else if(act==='page-prev') target = cur?.previousElementSibling?.classList.contains('pg') ? cur.previousElementSibling : cur;
+  else if(act==='page-next') target = cur?.nextElementSibling?.classList.contains('pg') ? cur.nextElementSibling : cur;
+  if(target && target!==cur){
+    $$('.pg',bar).forEach(x=>x.classList.remove('active')); target.classList.add('active');
+    toast(`已切换到第 ${target.textContent.trim()} 页`,'info');
+  }
+}
+function handleTableAction(act, btn){
+  const view = activeView(); if(!view) return;
+  const row = btn.closest('tr');
+  if(act==='row-expand'){
+    const next = row?.nextElementSibling;
+    if(next && next.classList.contains('log-detail')){ next.remove(); btn.textContent='▸'; return; }
+    const div = document.createElement('tr'); div.className='log-detail';
+    const cells = row?.querySelectorAll('td');
+    const runId = cells?.[0]?.textContent?.trim()||'';
+    div.innerHTML = `<td colspan="${row?.children.length||8}"><div class="log-detail" style="margin:0">运行 ${esc(runId)} 的接口调用明细（见「调用明细」视图）。数据读取自监控记录。</div></td>`;
+    row?.after(div); btn.textContent='▾'; return;
+  }
+  if(act==='retry-one'){
+    const cells = row?.querySelectorAll('td');
+    const taskId = cells?.[0]?.textContent?.trim()||'';
+    if(!taskId){ toast('缺少任务ID','warn'); return; }
+    btn.textContent='重跑中…'; btn.disabled=true;
+    submitJob('/api/retry/task', {task_id:taskId}, `重跑任务 ${taskId}`).then(()=>{
+      btn.textContent='再次重跑'; btn.disabled=false;
+      const st=cells?.[5]; if(st) st.innerHTML='<span class="tag success">已重跑</span>';
+    });
+    return;
+  }
+  if(act==='etf-share-detail'){
+    const next = row?.nextElementSibling;
+    if(next?.classList.contains('log-detail')){ next.remove(); btn.textContent='展开 ▸'; return; }
+    const tr=document.createElement('tr'); tr.className='log-detail';
+    tr.innerHTML=`<td colspan="4"><div class="log-detail" style="margin:0">汇金 ETF 每日份额明细读取自 etf_observation；点击看板「汇金维度」图可展开每日明细。</div></td>`;
+    row?.after(tr); btn.textContent='收起 ▾'; return;
+  }
+  if(act==='download'){
+    const link = row?.querySelector('a[href]') || btn.closest('td')?.querySelector('a[href]');
+    if(link){ window.location.href = link.href; } else toast('该文件无下载链接','warn');
+    return;
+  }
+}
+
+/* ==========================================================================
+ * 动作分派
+ * ========================================================================== */
+function handleAction(act, btn, e){
+  const view = activeView();
+  switch(act){
+    /* 采集控制台 */
+    case 'collect-full': {
+      const row = btn.closest('.ctl-row');
+      const dates = row?.querySelectorAll('input[type="date"]');
+      const start = dates?.[0]?.value||'', end = dates?.[1]?.value||'';
+      submitJob('/api/collect', {macro_only:false,etf_only:false,index_only:false,start,end}, '全量采集');
+      break;
+    }
+    case 'collect-prec': {
+      const row = btn.closest('.ctl-row');
+      const cat = row?.querySelector('[data-act="prec-cat"]')?.value || 'macro';
+      const start = row?.querySelector('[data-prec-start]')?.value||'';
+      const end = row?.querySelector('[data-prec-end]')?.value||'';
+      submitJob('/api/collect/interface', {category:cat,codes:[],start,end}, `精确采集(${cat})`);
+      break;
+    }
+    case 'date-default': {
+      const row = btn.closest('.ctl-row');
+      const dates = row?.querySelectorAll('input[type="date"]');
+      if(dates?.length===2){ dates[0].value=LAST; dates[1].value=LAST; }
+      toast('日期已恢复为默认交易日','info'); break;
+    }
+    case 'import': {
+      const f = view?.querySelector('[data-import-file]');
+      if(!f?.files?.length){ toast('请先选择文件','warn'); break; }
+      const form = new FormData();
+      Array.from(f.files).forEach(x=>form.append('files', x));
+      setBusy(true,'文件导入'); appendLog(`[导入] 上传 ${f.files.length} 个文件`, 'INFO');
+      api('/api/import/etf', {method:'POST', body:form}).then(res=>{
+        setBusy(false); appendLog(`[导入] 完成：${res.message||res.imported||'成功'}`,'OK');
+        toast('文件导入完成','ok'); loadStatus();
+      }).catch(err=>{ setBusy(false); toast('导入失败：'+err.message,'err'); });
+      break;
+    }
+    case 'retry-all': modal('批量重跑失败','将重跑最近一次失败批次的全部接口。此操作不可撤销。',()=>{
+      submitJob('/api/retry', {}, '批量重跑失败');
+    },'确认重跑'); break;
+    case 'log-bottom': { const w=byId('logBodyWrap'); if(w) w.scrollTop=w.scrollHeight; break; }
+    case 'log-toggle': {
+      const p = byId('logBodyWrap')?.closest('.log-panel');
+      if(p){ p.classList.toggle('collapsed'); btn.textContent = p.classList.contains('collapsed')?'收起':'展开'; }
+      break;
+    }
+    /* 配置 */
+    case 'save-config': {
+      if(curView==='etfcfg') { saveEtfConfigUI(view); }
+      else if(curView==='idxcfg') { saveIndexConfigUI(view); }
+      else if(curView==='maccfg') { toast('宏观配置已保存','ok'); }
+      else toast('配置已保存','ok');
+      break;
+    }
+    case 'save-sched': {
+      const en = $('#dpSchedEnabled')?.checked ?? true;
+      const tm = view?.querySelector('input[type="time"]')?.value || '03:17';
+      const rt = view?.querySelector('select')?.value?.split(' ')[0] || 'full';
+      postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt})
+        .then(()=>{ toast('调度配置已保存','ok'); loadStatus(); })
+        .catch(err=>toast('保存失败：'+err.message,'err'));
+      break;
+    }
+    case 'sched-run-now': submitJob('/api/collect', {macro_only:false,etf_only:false,index_only:false}, '定时调度立即触发'); break;
+    case 'idx-add': case 'etf-add': {
+      const isIdx = act==='idx-add';
+      const inp = view?.querySelector(isIdx?'[data-idx-new]':'[data-etf-new]');
+      const val = inp?.tagName==='SELECT' ? inp.value : (inp?.value||'').trim();
+      if(!val){ toast('请先选择或输入代码','warn'); break; }
+      const cfg = isIdx ? INDEX_CFG : ETF_CFG;
+      if(!cfg.items.some(x=>x.code===val)) cfg.items.push({code:val, name:inp?.selectedOptions?.[0]?.text?.split(' ').slice(1).join(' ')||val, tags:[]});
+      const wrap = view?.querySelector(`[data-chips="${isIdx?'idx':'etf'}"]`);
+      if(wrap){ const chip=document.createElement('span'); chip.className='chip';
+        const label=inp?.tagName==='SELECT'?inp.selectedOptions[0].text:val;
+        chip.innerHTML=`<i class="ti ti-${isIdx?'chart-dots':'coins'}"></i> ${esc(label)}<span class="x" data-act="chip-remove">×</span>`;
+        wrap.appendChild(chip); }
+      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>toast(`已添加${isIdx?'指数':'ETF'}：${val}`,'ok'));
+      break;
+    }
+    case 'chip-remove': {
+      btn.closest('.chip')?.remove();
+      toast('已移除标的（保存配置后生效）','info'); break;
+    }
+    case 'macro-add': {
+      const g = s => view?.querySelector(`[data-macro-${s}]`)?.value?.trim() || '';
+      const code=g('code'), name=g('name');
+      if(!code||!name){ toast('请填写指标代码与名称','warn'); break; }
+      const body = view?.querySelector('[data-macro-table] tbody');
+      if(body){ const tr=document.createElement('tr');
+        tr.innerHTML=`<td><label class="switch-row"><input type="checkbox" checked></label></td><td><div class="cell-clip">${esc(code)}</div></td><td><div class="cell-clip">${esc(name)}</div></td><td><div class="cell-clip">${esc(g('cat')||'自定义')}</div></td><td><div class="cell-clip">${esc(g('src')||'手动')}</div></td><td><div class="cell-clip">${esc(g('freq')||'月')}</div></td><td><button class="btn btn-sm" data-act="macro-remove">删除</button></td>`;
+        body.appendChild(tr); }
+      ['code','name','cat','src','freq'].forEach(s=>{const el=view?.querySelector(`[data-macro-${s}]`);if(el)el.value='';});
+      toast(`已新增指标：${name}（原型本地，宏观配置以服务端目录为准）`,'ok'); break;
+    }
+    case 'macro-remove': btn.closest('tr')?.remove(); toast('已删除宏观指标（本地）','info'); break;
+    case 'idx-row-remove': case 'etf-row-remove': {
+      const row=btn.closest('tr'); const code=row?.querySelector('td')?.textContent?.trim();
+      const isIdx=act==='idx-row-remove';
+      const cfg=isIdx?INDEX_CFG:ETF_CFG;
+      cfg.items=cfg.items.filter(x=>x.code!==code);
+      row?.remove();
+      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>toast(`已删除标的 ${code}`,'ok'));
+      break;
+    }
+    /* 预览 */
+    case 'filter': {
+      const code = view?.querySelector('input[list]')?.value?.trim()||'';
+      const dates = view?.querySelectorAll('input[type="date"]');
+      const start=dates?.[0]?.value||'', end=dates?.[1]?.value||'';
+      const kind = curView.replace('prev-','');
+      const c = view?.querySelector('[data-filter-count]');
+      loadPreview(kind, {code,start,end}).then(res=>{
+        rerenderView(curView);
+        const cnt=c||view?.querySelector('[data-filter-count]');
+        if(cnt) cnt.textContent=`共 ${fmt(res?.total||DATA_TABS[kind]?.[1]?.length||0)} 条`;
+        toast('筛选条件已应用','ok');
+      });
+      break;
+    }
+    case 'filter-reset': {
+      $$('input[type="date"]',view).forEach(x=>x.value=LAST);
+      loadPreview(curView.replace('prev-','')).then(()=>{ rerenderView(curView); toast('已恢复默认区间','info'); });
+      break;
+    }
+    case 'export': {
+      const urls={macro:'/api/export/macro',etf:'/api/export/etf',index:'/api/export/index',full:'/api/export/full',monitor:'/api/export/monitor',derived:'/api/derived/export',etfcalc:'/api/export/etf'};
+      const url=urls[btn.dataset.k];
+      if(!url){ toast('未知导出类型','warn'); break; }
+      toast('导出任务已提交，请稍后在输出文件查看','ok');
+      const req = url.includes('derived/export') ? api(url) : postJSON(url, {});
+      req.then(()=>{ pollLiveOnce(); }).catch(err=>toast('导出失败：'+err.message,'err'));
+      break;
+    }
+    case 'page-go': case 'page-first': case 'page-last': case 'page-prev': case 'page-next': setPagerActive(btn); break;
+    /* 清理 */
+    case 'clean-cat': {
+      $$('[data-clean-cat] .seg-btn',view).forEach(x=>x.classList.toggle('active',x===btn));
+      const sel=view?.querySelector('[data-clean-code]');
+      const items = CATALOG[btn.dataset.cat]||[];
+      if(sel) sel.innerHTML='<option value="">全部（该类别整体）</option>'+items.slice(0,80).map(x=>`<option value="${esc(x.code)}">${esc(x.name)}（${esc(x.code)}）</option>`).join('');
+      break;
+    }
+    case 'clean-preview': {
+      const p = cleanPayloadFrom(view);
+      const r=view?.querySelector('[data-clean-result]');
+      postJSON('/api/clean/preview', p).then(res=>{
+        if(r) r.innerHTML=`预览结果：<b>将删除 ${res.matched} 行</b>（该类别当前共 ${res.total} 行）。此操作不可撤销。`;
+        toast('已计算影响范围','warn');
+      }).catch(err=>{ if(r) r.textContent='预览失败：'+err.message; });
+      break;
+    }
+    case 'clean-exec': {
+      const p = cleanPayloadFrom(view);
+      postJSON('/api/clean/preview', p).then(pre=>{
+        if(!pre.matched){ toast('无匹配数据，无需清理','info'); return; }
+        modal('执行数据清理',`确认删除 ${pre.matched} 行数据？此操作不可撤销，且不影响配置、监控与导出记录。`,()=>{
+          postJSON('/api/clean', {...p, confirm:true}).then(res=>{
+            const r=activeView()?.querySelector('[data-clean-result]');
+            if(r) r.innerHTML=`清理完成：<b>已删除 ${res.deleted} 行</b>，剩余 ${res.after} 行。`;
+            toast(`数据清理完成 · 已删除 ${res.deleted} 行`,'ok');
+            loadAllBase();
+          }).catch(err=>toast('清理失败：'+err.message,'err'));
+        },'确认清理');
+      });
+      break;
+    }
+    case 'clean-reset': {
+      const r=view?.querySelector('[data-clean-result]');
+      if(r) r.innerHTML='预览结果：<span class="hint">将删除 0 行（请先预览影响）。派生指标表不在清理范围内。</span>';
+      $$('input[type="date"]',view).forEach(x=>x.value=''); break;
+    }
+    /* 监控 */
+    case 'monitor-clean-toggle': {
+      const box=view?.querySelector('[data-monitor-clean]');
+      if(box){ box.style.display = box.style.display==='none'?'block':'none'; toast(box.style.display==='none'?'已关闭清理面板':'已展开清理面板','info'); }
+      break;
+    }
+    case 'mc-preview': {
+      const p = monitorCleanPayload(view);
+      const r=view?.querySelector('[data-mc-result]');
+      postJSON('/api/monitor/clean/preview', p).then(res=>{
+        if(r) r.innerHTML=`预览 <b>${res.matched}</b> 条接口监控记录将被删除（共 ${res.total||fmt(S.today_calls)} 条）。`;
+        toast('已计算监控清理影响','warn');
+      }).catch(err=>{ if(r) r.textContent='预览失败：'+err.message; });
+      break;
+    }
+    case 'mc-exec': {
+      const p = monitorCleanPayload(view);
+      postJSON('/api/monitor/clean/preview', p).then(pre=>{
+        modal('清理接口监控',`确认按当前口径删除 ${pre.matched} 条监控记录？`,()=>{
+          postJSON('/api/monitor/clean', {...p, confirm:true}).then(res=>{
+            const r=activeView()?.querySelector('[data-mc-result]');
+            if(r) r.innerHTML=`已删除 <b>${res.deleted||pre.matched}</b> 条接口监控记录。`;
+            toast('监控记录清理完成','ok'); loadAllBase();
+          }).catch(err=>toast('清理失败：'+err.message,'err'));
+        },'确认清理');
+      });
+      break;
+    }
+    case 'mc-reset': {
+      const r=view?.querySelector('[data-mc-result]'); if(r){ r.className='clean-result'; r.textContent='—'; }
+      break;
+    }
+    case 'range': applyQuickRange(btn); break;
+    case 'dash-refresh': loadDashboard().then(()=>toast('图表已刷新','ok')); break;
+    /* 派生 / 交易计算 */
+    case 'recalc-all': {
+      submitJob('/api/derived/recompute', {month:'', code:''}, '派生指标全量重算'); break;
+    }
+    case 'recalc-month': case 'recalc-code': {
+      const m = view?.querySelector('input[type="month"]')?.value||DERIVED_MONTH;
+      const code = view?.querySelector('select')?.value||'';
+      submitJob('/api/derived/recompute', {month:act==='recalc-month'?m:'', code:act==='recalc-code'?code:''}, act==='recalc-month'?'派生指标按月重算':'派生指标按指标重算');
+      break;
+    }
+    case 'etfcalc-refresh': toast('ETF 计算数据来自 etf_observation，已为最新','ok'); break;
+    case 'trade-recalc-all': submitJob('/api/trade/recompute', {}, '交易指标全量重算'); break;
+    case 'trade-recalc-date': {
+      const d = view?.querySelector('[data-trade-recalc-date]')?.value||LAST;
+      submitJob('/api/trade/recompute', {trade_date:d}, `交易指标重算(${d})`); break;
+    }
+    /* 表格内操作 */
+    case 'row-expand': case 'retry-one': case 'etf-share-detail': case 'download': handleTableAction(act,btn); break;
+    /* 弹窗 */
+    case 'modal-cancel': closeModal(); break;
+    case 'modal-ok': { const cb=byId('modalRoot')._onOk; closeModal(); if(cb) cb(); break; }
+    default: toast(`操作已触发：${act}`,'info');
+  }
+}
+
+/* ---- 动作辅助：从 UI 组装 payload ---- */
+function cleanPayloadFrom(view){
+  const cat = view?.querySelector('[data-clean-cat] .seg-btn.active')?.dataset.cat || 'macro';
+  const code = view?.querySelector('[data-clean-code]')?.value?.trim()||'';
+  const dates = view?.querySelectorAll('.card-body > .ctl-params input[type="date"]');
+  const allDates = view?.querySelectorAll('input[type="date"]')||[];
+  return {category:cat, code, start:allDates[0]?.value?.trim()||'', end:allDates[1]?.value?.trim()||''};
+}
+function monitorCleanPayload(view){
+  const inputs = view?.querySelectorAll('[data-monitor-clean] input')||[];
+  const sels = view?.querySelectorAll('[data-monitor-clean] select')||[];
+  const p = {status:'', run_type:'', category:'', keyword:inputs[2]?.value?.trim()||'', start:inputs[0]?.value||'', end:inputs[1]?.value||''};
+  const norm = s => (s||'').includes('成功')?'success':(s||'').includes('失败')?'failed':'';
+  if(sels[0]) p.status=norm(sels[0].value);
+  if(sels[1]) p.run_type=(sels[1].value||'').includes('全量')?'full':(sels[1].value||'').includes('定时')?'scheduled':(sels[1].value||'').includes('精确')?'interface':'';
+  if(sels[2]) p.category=(sels[2].value||'').includes('宏观')?'macro':(sels[2].value||'').includes('ETF')?'etf':'';
+  return p;
+}
+async function saveEtfConfigUI(view, quiet){
+  const payload = {codes:(ETF_CFG.items||[]).map(x=>x.code), tags:{}, start_date:'', end_date:'', default_trade_days:60};
+  (ETF_CFG.items||[]).forEach(x=>{ if(x.tags?.length) payload.tags[x.code]=x.tags; });
+  try { const res=await postJSON('/api/etf/config', payload); if(res.config) ETF_CFG=res.config; loadCatalog(); if(!quiet)toast('ETF 配置已保存','ok'); return true; }
+  catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
+}
+async function saveIndexConfigUI(view, quiet){
+  const payload = {codes:(INDEX_CFG.items||[]).map(x=>x.code), start_date:INDEX_CFG.start_date||'', end_date:INDEX_CFG.end_date||'', lookback_days:INDEX_CFG.lookback_days||1};
+  try { const res=await postJSON('/api/index/config', payload); if(res.config) INDEX_CFG=res.config; loadCatalog(); if(!quiet)toast('指数配置已保存','ok'); return true; }
+  catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
+}
+function bindEvents(){
+  document.addEventListener('click', e=>{
+    const mod = e.target.closest('.mod');
+    if(mod){ switchMod(mod.dataset.mod); return; }
+    const fn = e.target.closest('.fn');
+    if(fn){ switchView(fn.dataset.view); return; }
+    const act = e.target.closest('[data-act]');
+    if(act){ handleAction(act.dataset.act, act, e); return; }
+  });
+  document.addEventListener('change', e=>{
+    const t = e.target;
+    if(t.matches('[data-act="prec-cat"]')){
+      const sel = t.closest('.ctl-row')?.querySelector('[data-prec-code]');
+      const map = {
+        macro:(CATALOG.macro||[]).slice(0,60).map(x=>x.name),
+        etf:(ETF_CFG.items||[]).slice(0,60).map(x=>`${x.code} ${x.name}`),
+        index:(INDEX_CFG.items||[]).map(x=>`${x.code} ${x.name}`),
+        trade:['exchange 交易所概况','margin 两融账户','snapshot 全A快照','breadth 涨跌家数','congestion 成交集中度'],
+      };
+      const opts = map[t.value]||[];
+      if(sel) sel.innerHTML = opts.map(o=>`<option value="${esc(o)}">${esc(o)}</option>`).join('');
+      toast(`类别已切换为「${t.selectedOptions[0]?.text}」，口径已联动（共 ${opts.length} 项）`,'info');
+    }
+    if(t.matches('[data-act="dash-macro-range"]')) renderDash();
+    if(t.matches('[data-range-start],[data-range-end]')){
+      const view=activeView();
+      $$('.seg-btn[data-months]',view).forEach(x=>x.classList.remove('active'));
+      const hint=view?.querySelector('[data-range-hint]'); if(hint) hint.textContent='已进入自定义日期范围';
+      if(curView.startsWith('dash')) renderDash();
+    }
+    if(t.matches('[data-clean-cat] [data-act="clean-cat"]')) handleAction('clean-cat',t,e);
+  });
+  document.addEventListener('input', e=>{
+    if(e.target.matches('[data-import-file]')) {
+      const f=e.target.files?.[0]; if(f) toast(`已选择文件：${f.name}`,'info');
+    }
+  });
+}
+
+/* ==========================================================================
+ * 初始化
+ * ========================================================================== */
+$('#hdDate').textContent = LAST ? ('交易日 ' + LAST) : '—';
+$('#hdTime').textContent = now();
+setInterval(()=>{ $('#hdTime').textContent = now(); },1000);
+$('#bannerDate').textContent = LAST ? ('最近交易日 ' + LAST) : '—';
+bindEvents();
+(async function init(){
+  await loadAllBase();
+  $('#hdDate').textContent = LAST ? ('交易日 ' + LAST) : '—';
+  $('#bannerDate').textContent = LAST ? ('最近交易日 ' + LAST) : '—';
+  buildSidebar();
+  renderViews();
+  // 看板日期控件默认近一年
+  if(LAST){ const e=new Date(LAST); const st=new Date(e); st.setMonth(st.getMonth()-12);
+    $$('[data-range-start]').forEach(x=>x.value=st.toISOString().slice(0,10));
+    $$('[data-range-end]').forEach(x=>x.value=LAST); }
+  switchView('ovCollect');
+  // 预热日志面板
+  pollLiveOnce();
+  setInterval(pollLiveOnce, 4000);
+})();
+
+

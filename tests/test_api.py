@@ -297,6 +297,46 @@ class TestTradeDataPreview:
         assert desc[0]["交易日期"] > desc[-1]["交易日期"]
         assert asc[0]["交易日期"] < asc[-1]["交易日期"]
 
+    def test_amount_fields_in_trillion_two_decimals(self, client, db_path):
+        """金额字段统一换算为万亿、两位小数；非金额字段保持原样。"""
+        import pandas as pd
+        d = "2026-11-24"
+        # 亿元 ÷ 1e4 → 万亿；元 ÷ 1e12 → 万亿
+        storage.upsert_trade_exchange(db_path, pd.DataFrame([{
+            "trade_date": d,
+            "sse_amount": 7745.44,        # 亿元 → 0.77 万亿
+            "sse_float_mv": 560511.01,    # 亿元 → 56.05 万亿
+            "szse_amount": 883979787524.54,  # 元 → 0.88 万亿
+        }]), "t")
+        row = client.get(f"/api/data/trade?code=exchange&start={d}&end={d}").json()["rows"][0]
+        assert row["沪市成交额(万亿)"] == 0.77
+        assert row["沪市流通市值(万亿)"] == 56.05
+        assert row["深市成交额(万亿)"] == 0.88
+        assert "沪市成交额(亿元)" not in row
+        assert "run_id" not in row
+
+    def test_snapshot_amount_in_yi(self, client, db_path):
+        """全A个股快照成交额用亿：元 ÷ 1e8，保留两位小数。"""
+        import pandas as pd
+        d = "2026-11-24"
+        storage.upsert_trade_snapshot(db_path, pd.DataFrame([{
+            "trade_date": d, "code": "000001", "name": "平安银行",
+            "amount": 1511830.0,  # 元 → 0.02 亿
+        }]), "t")
+        row = client.get(f"/api/data/trade?code=snapshot&start={d}&end={d}").json()["rows"][0]
+        assert row["成交额(亿)"] == 0.02
+        assert "成交额(万亿)" not in row
+
+    def test_non_amount_fields_unchanged(self, client, db_path):
+        """成交量(手)、家数等非金额字段不做万亿换算。"""
+        import pandas as pd
+        d = "2026-11-24"
+        storage.upsert_trade_exchange(db_path, pd.DataFrame([{
+            "trade_date": d, "sse_volume": 496.59,
+        }]), "t")
+        row = client.get(f"/api/data/trade?code=exchange&start={d}&end={d}").json()["rows"][0]
+        assert row["沪市成交量(手)"] == 496.59
+
     def test_index_injects_asset_versions(self, client, base):
         static = base / "static"
         static.mkdir(exist_ok=True)

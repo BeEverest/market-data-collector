@@ -82,7 +82,7 @@ TRADE_RAW_COLUMNS_CN = {
     "name": "名称",
     "pct_change": "涨跌幅(%)",
     "volume": "成交量(手)",
-    "amount": "成交额(亿)",
+    "amount": "成交额(百万)",
     "last_price": "最新价",
     "up_count": "上涨家数",
     "down_count": "下跌家数",
@@ -97,7 +97,7 @@ TRADE_RAW_COLUMNS_CN = {
 
 # 日交易预览金额字段换算除数（原值单位 → 目标单位）：
 #   亿元 → 万亿：除以 1e4；元 → 万亿：除以 1e12；
-#   全A个股快照成交额 amount：元 → 亿，除以 1e8（个股量级用亿更直观）。
+#   全A个股快照成交额 amount：元 → 百万，除以 1e6（单只个股量级用百万更直观）。
 # 仅金额类字段换算；成交量(手)、投资者/家数、比例(%)、价格等保持原样。
 TRADE_RAW_AMOUNT_DIVISOR = {
     # 亿元
@@ -107,7 +107,7 @@ TRADE_RAW_AMOUNT_DIVISOR = {
     "top5_amount_yi": 1e4, "total_amount_yi": 1e4,
     # 元
     "szse_amount": 1e12, "szse_float_mv": 1e12, "szse_total_mv": 1e12,
-    "amount": 1e8,  # 全A个股快照成交额：元 → 亿（个股量级用亿更直观）
+    "amount": 1e6,  # 全A个股快照成交额：元 → 百万（单只个股量级用百万更直观）
 }
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")

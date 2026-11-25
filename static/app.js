@@ -1,6 +1,6 @@
 /* ==========================================================================
  * 投研大盘数据平台 · 生产版（Tabler 风格 UI + 真实 API）
- * UI 骨架来自交互原型 v5.3；数据层与动作层已对接后端真实接口。
+ * 生产静态资源：Tabler 风格 UI，数据层与动作层均对接后端接口。
  * ========================================================================== */
 const CLR = ['#2563eb','#16a36a','#ea8c28','#8056d8','#e0484b','#0d9a9a','#db2777','#64748b'];
 const $ = (s, r=document) => r.querySelector(s);
@@ -114,9 +114,6 @@ async function submitJob(url, payload, label){
     }, 1200);
   } catch(e){ setBusy(false); toast(`${label}提交失败：${e.message}`,'err'); appendLog(`[${label}] 提交失败：${e.message}`,'ERROR'); }
 }
-/* 兼容旧调用名 */
-const simulateCollect = (label, steps) => submitJob('/api/collect', {macro_only:false,etf_only:false,index_only:false}, label);
-
 /* ==========================================================================
  * 真实数据加载层：把后端 API 响应映射为视图函数所需的变量
  * ========================================================================== */
@@ -384,7 +381,7 @@ function dashShell(grp){
     : `${grp==='etf'?`<label class="prec-field">叠加指数 <select class="form-select" style="width:120px"><option>上证指数 000001</option><option>沪深300 000300</option><option>科创50 000688</option><option>创业板指 399006</option></select></label>`:''}
        <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
        <label class="prec-field">结束 <input class="prec-input" type="date" data-range-end value="${LAST}" style="width:125px"></label>
-       ${rangeQuick('dash-'+grp,12)}<span class="hint" data-range-hint>点选快捷范围回显真实区间；手改日期进入自定义</span>`;
+       ${rangeQuick('dash-'+grp,12)}`;
   return head(`数据看板 · ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}`,
       grp==='macro'?'8 张图 · 统一日期联动':grp==='etf'?'4 张图 · 汇金 / 黄金 · 日期联动':'2 张图 · 图1图2各一行 · 两融双 grid 联动')
     + `<div class="card"><div class="card-header"><h3><i class="ti ti-chart-line" style="color:var(--blue)"></i> ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}</h3>
@@ -401,8 +398,7 @@ const VIEWS = {
     statCard('chart-line','ic-purple',fmt(S.index_rows),'指数日线',fmt(S.index_codes)+' 指数','t-blue')+
     statCard('scale','ic-orange',fmt(S.trade_rows),'交易观测','5 张原始表','t-green'))
     +`<div class="grid-2"><div class="card"><div class="card-header"><h3><i class="ti ti-chart-area" style="color:var(--blue)"></i> 数据资产分布</h3></div><div class="card-body"><div id="ovAssetChart" class="chart-box sm"></div></div></div>
-      <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--ok)"></i> 最近运行</h3></div><div class="card-body" data-recent-runs>${recentRunsTable()}</div></div></div>
-      <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 模块导航</h3></div><div class="card-body"><p class="hint" style="font-size:12px;line-height:1.9">顶部 5 模块：<b>总览 / 数据采集 / 数据处理 / 数据看板 / 运维监控</b>。左侧列出当前模块全部功能项，点击切换。所有按钮、Tab、筛选、分页、图表联动均可操作。</p></div></div>`,
+      <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--ok)"></i> 最近运行</h3></div><div class="card-body" data-recent-runs>${recentRunsTable()}</div></div></div>`,
 
   /* ---------------- 数据采集：控制台 ---------------- */
   console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')+statRow(
@@ -410,7 +406,7 @@ const VIEWS = {
     statCard('coins','ic-green',fmt(S.etf_rows),'ETF 数据',fmt(S.etf_codes)+' 标的','t-blue')+
     statCard('chart-line','ic-purple',fmt(S.index_rows),'指数数据',fmt(S.index_codes)+' 指数','t-blue')+
     statCard('alert-triangle','ic-red',fmt(S.failed_total),'累计失败','需关注','t-orange'))
-    +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 点击操作按钮观察实时日志</span></div>
+    +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>
       <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#9aabc2;padding:0 0 6px;border-bottom:1px solid #edf1f7"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>
         <div class="ctl-params"><input class="prec-input" type="date" value="${LAST}" style="width:120px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:120px"><button class="btn btn-sm" data-act="date-default">默认</button></div>
@@ -663,6 +659,222 @@ function renderMarginSplitNode(node, chart, months){
   },{notMerge:true});
   return ins;
 }
+/* ==========================================================================
+ * ETF 维度图表（1:1 复刻生产）：
+ *  - etf_overlay：上下双 grid（上=指数折线，下=份额/净流入柱），联动 dataZoom
+ *  - etf_rank：ETF 净流入横向排名柱，点击柱子展开该 ETF 每日明细
+ *  - 普通 ETF 时间序列：份额/净流入柱线 + 竖向网格
+ * ========================================================================== */
+const ETF_RANGE = () => {
+  const view = $('.view.active');
+  const s = view?.querySelector('[data-range-start]')?.value || '';
+  const e = view?.querySelector('[data-range-end]')?.value || '';
+  const months = readQuickMonths(view, 12);
+  const p = { months };
+  if (s) p.start = s;
+  if (e) p.end = e;
+  return p;
+};
+const fmtNum = (v, d=2) => (v==null||v==='') ? '—' : Number(v).toLocaleString('zh-CN',{maximumFractionDigits:d});
+const signed = (v, unit) => { const n=Number(v||0); return `<span class="${n>=0?'up':'down'}">${n>=0?'+':''}${fmtNum(n)} <small>${unit}</small></span>`; };
+
+function renderEtfChartNode(node, chart, months){
+  if(!node) return null;
+  const ins = echarts.getInstanceByDom(node)||echarts.init(node);
+  const isRank = chart.layout==='etf_rank';
+  const allCats = [...new Set((chart.series||[]).flatMap(s=>(s.data||[]).map(p=>p[0])))];
+  const categories = isRank ? allCats : allCats.sort();
+  const dataOf = s => { const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
+  const hasBar = (chart.series||[]).some(s=>s.type==='bar');
+
+  if(chart.layout==='etf_overlay'){
+    const idxName = chart.index_name || '上证指数 (点)';
+    const idxLookup = new Map(chart.index_data||[]);
+    const idxValues = categories.map(c=>idxLookup.has(c)?idxLookup.get(c):null);
+    const lowerAxes = (chart.y_axes||[]).map((a,i)=>({
+      type:'value', name:a.name||'', position:a.position||'left', offset:a.offset||0, gridIndex:1,
+      nameTextStyle:{fontSize:9,padding:[0,0,0,a.offset?32:0]}, axisLabel:{fontSize:9},
+      splitLine:{show:true,lineStyle:{color:i===0?'#e6eaf0':'#eef1f6',type:i===0?'solid':'dashed'}},
+    }));
+    ins.setOption({animation:false,color:CLR,
+      grid:[{left:62,right:34+(lowerAxes.length-1)*62,top:52,height:'30%'},
+            {left:62,right:34+(lowerAxes.length-1)*62,top:'50%',bottom:96}],
+      axisPointer:{link:[{xAxisIndex:'all'}]},
+      legend:{top:4,type:'scroll',textStyle:{fontSize:10}},
+      tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
+      xAxis:[
+        {type:'category',gridIndex:0,data:categories,boundaryGap:hasBar,axisLabel:{show:false},axisTick:{show:false},splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}}},
+        {type:'category',gridIndex:1,data:categories,boundaryGap:hasBar,splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}},axisLabel:{fontSize:9,hideOverlap:true,rotate:30,margin:14}},
+      ],
+      yAxis:[{type:'value',name:idxName,position:'left',gridIndex:0,scale:true,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9,formatter:v=>Number(v).toFixed(0)},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},...lowerAxes],
+      dataZoom:[{type:'inside',xAxisIndex:[0,1]},{type:'slider',xAxisIndex:[0,1],height:20,bottom:8,brushSelect:false,showDetail:true,handleSize:'110%',dataBackground:{lineStyle:{opacity:.3},areaStyle:{opacity:.1}}}],
+      series:[
+        {name:idxName,type:'line',xAxisIndex:0,yAxisIndex:0,data:idxValues,smooth:true,showSymbol:false,connectNulls:true,lineStyle:{width:2,color:'#3b5bdb'},itemStyle:{color:'#3b5bdb'},areaStyle:{color:'#3b5bdb',opacity:.08}},
+        ...(chart.series||[]).map((s,i)=>({name:s.name,type:s.type||'bar',xAxisIndex:1,yAxisIndex:(s.y_axis_index||0)+1,data:dataOf(s),barMaxWidth:20,barGap:'20%',itemStyle:{color:CLR[(i+1)%CLR.length]}})),
+      ],
+    },{notMerge:true});
+    return ins;
+  }
+
+  const axisCount=(chart.y_axes||[]).length||1;
+  ins.setOption({animation:false,color:CLR,
+    grid: isRank ? {left:62,right:24,top:30,bottom:82} : {left:62,right:34+(axisCount-1)*62,top:54,bottom:92},
+    legend: isRank?{show:false}:{top:6,type:'scroll',textStyle:{fontSize:10}},
+    tooltip:{trigger:'axis',axisPointer:{type:isRank?'shadow':'cross'},confine:true,
+      valueFormatter:isRank?(v)=>(v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 亿元'):undefined},
+    xAxis:{type:'category',data:categories,boundaryGap:hasBar,
+      splitLine:{show:!isRank,lineStyle:{color:'#eef1f6',type:'dashed'}},
+      axisLabel:{fontSize:9,hideOverlap:!isRank,rotate:isRank?42:30,interval:isRank?0:'auto',margin:isRank?8:14}},
+    yAxis:(chart.y_axes||[{name:''}]).map((a,i)=>({type:'value',name:a.name||'',position:a.position||'left',axisLabel:{fontSize:9},nameTextStyle:{fontSize:9},splitLine:{show:i===0,lineStyle:{color:i===0?'#e6eaf0':'#eef1f6',type:i===0?'solid':'dashed'}}})),
+    series:(chart.series||[]).map((s,i)=>({name:s.name,type:s.type||'line',data:dataOf(s),yAxisIndex:s.y_axis_index||0,
+      smooth:s.type!=='bar',showSymbol:false,connectNulls:true,barMaxWidth:isRank?16:20,barGap:'20%',
+      lineStyle:{width:2,color:CLR[i%CLR.length]},itemStyle:{color:CLR[i%CLR.length]}})),
+  },{notMerge:true});
+  return ins;
+}
+
+/* ---- ETF 明细交互（按天 / 单 ETF / 总份额） ---- */
+let etfDetailState = {code:'', page:1, start:'', end:''};
+
+async function etfLoadDailyDetail(){
+  const tableBox = byId('etfDailyTable'), totalBox = byId('etfDailyTotal');
+  if(!tableBox||!totalBox) return;
+  const p = ETF_RANGE();
+  const qs = new URLSearchParams({months:String(p.months||12)});
+  if(p.start) qs.set('start',p.start); if(p.end) qs.set('end',p.end);
+  try{
+    const res = await api('/api/dashboard/etf-daily?'+qs.toString());
+    const t=res.total||{share:0,cap:0,net:0,days:0};
+    totalBox.innerHTML=`
+      <div class="etf-daily-total-card"><span>区间合计申赎净流入</span><b class="${t.net>=0?'up':'down'}">${t.net>=0?'+':''}${fmtNum(t.net)} <small>亿元</small></b></div>
+      <div class="etf-daily-total-card"><span>区间合计流通份额变化</span><b class="${t.share>=0?'up':'down'}">${t.share>=0?'+':''}${fmtNum(t.share)} <small>亿份</small></b></div>
+      <div class="etf-daily-total-card"><span>统计范围</span><b class="neutral">${t.days} 个交易日 · ${esc(res.range||'')}</b></div>`;
+    const rows=res.rows||[];
+    tableBox.innerHTML=`<table><thead><tr><th>交易日期</th><th>申赎净流入(亿元)</th><th>流通份额变化(亿份)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr class="etf-day-row" data-date="${esc(r.date)}">
+        <td>${esc(r.date)}</td><td class="num"><span class="${(r.net||0)>=0?'up':'down'}">${r.net==null?'—':((r.net>=0?'+':'')+fmtNum(r.net))}</span></td>
+        <td class="num"><span class="${(r.share||0)>=0?'up':'down'}">${r.share>=0?'+':''}${fmtNum(r.share)}</span></td><td class="num">${r.count}</td>
+        <td><button type="button" class="btn btn-sm etf-day-toggle" data-date="${esc(r.date)}">展开</button></td></tr>
+        <tr class="etf-day-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="5"></td></tr>`).join('')}</tbody></table>`;
+    tableBox.querySelectorAll('.etf-day-toggle').forEach(b=>b.addEventListener('click',()=>etfToggleDayDetail(b.dataset.date)));
+  }catch(e){ tableBox.innerHTML=`<div class="hint">按天明细加载失败：${esc(e.message||e)}</div>`; }
+}
+async function etfToggleDayDetail(date){
+  const row=$(`.etf-day-row[data-date="${date}"]`), detail=$(`.etf-day-detail-row[data-detail-date="${date}"]`);
+  if(!row||!detail) return;
+  const btn=row.querySelector('.etf-day-toggle');
+  if(!detail.hidden){ detail.hidden=true; btn.textContent='展开'; return; }
+  detail.hidden=false; btn.textContent='收起';
+  const cell=detail.querySelector('td'); cell.innerHTML='<div class="hint">加载当日明细…</div>';
+  try{
+    const p=ETF_RANGE(), qs=new URLSearchParams({months:String(p.months||12),date});
+    if(p.start)qs.set('start',p.start); if(p.end)qs.set('end',p.end);
+    const res=await api('/api/dashboard/etf-daily?'+qs.toString());
+    const rows=res.rows||[];
+    cell.innerHTML=`<div class="etf-day-detail-title">${esc(date)} 当日各 ETF 明细（按申赎净流入降序，共 ${rows.length} 只）· 申赎净流入=份额变化×当日净值，剔除市值波动与份额折算</div>
+      <table class="etf-day-detail-table"><thead><tr><th>ETF 名称</th><th>代码</th><th>申赎净流入(亿元)</th><th>份额变化(亿份)</th><th>变化率</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.code)}</td>
+        <td class="num"><span class="${(r.net||0)>=0?'up':'down'}">${r.net==null?'折算日':((r.net>=0?'+':'')+fmtNum(r.net))}</span></td>
+        <td class="num"><span class="${(r.share||0)>=0?'up':'down'}">${r.share>=0?'+':''}${fmtNum(r.share)}</span></td>
+        <td class="num">${r.share_rate==null?'—':fmtNum(r.share_rate)+'%'}</td></tr>`).join('')}</tbody></table>`;
+  }catch(e){ cell.innerHTML=`<div class="hint">加载失败：${esc(e.message||e)}</div>`; }
+}
+async function etfOpenRankDetail(chart, meta){
+  const panel=$(`[data-detail-for="${chart.id}"]`); if(!panel) return;
+  if(!panel.hidden && etfDetailState.code===meta.code){ panel.hidden=true; etfDetailState.code=''; return; }
+  etfDetailState.code=meta.code; etfDetailState.page=1;
+  etfDetailState.start=chart.detail_start||''; etfDetailState.end=chart.detail_end||'';
+  panel.hidden=false; panel.innerHTML='<div class="hint">加载每日明细…</div>';
+  await etfRenderRankPage(panel, chart, meta);
+}
+async function etfRenderRankPage(panel, chart, meta){
+  const qs=new URLSearchParams({code:meta.code,page:String(etfDetailState.page),page_size:'100',order:'desc'});
+  if(etfDetailState.start)qs.set('start',etfDetailState.start); if(etfDetailState.end)qs.set('end',etfDetailState.end);
+  try{
+    const res=await api('/api/data/etf?'+qs.toString());
+    if(etfDetailState.code!==meta.code) return;
+    const rows=res.rows||[];
+    const netCell=v=>v==null?'<span class="muted-inline">折算日</span>':`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${fmtNum(v)} <small>亿元</small></span>`;
+    panel.innerHTML=`<div class="etf-day-detail-title">${esc(meta.name)}（${esc(meta.code)}）· 每日申赎明细（共 ${fmtNum(res.total)} 条，第 ${res.page} 页）</div>
+      <table class="etf-day-detail-table"><thead><tr><th>交易日期</th><th>申赎净流入(亿元)</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率(%)</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r['交易日期'])}</td><td class="num">${netCell(r['净流入(亿元)'])}</td>
+        <td class="num">${fmtNum(r['份额(亿份)'])}</td><td class="num">${signed(r['份额变化(亿份)'],'亿份')}</td>
+        <td class="num">${r['份额变化率(%)']==null?'—':fmtNum(r['份额变化率(%)'])+'%'}</td></tr>`).join('')}</tbody></table>
+      <div class="pager" style="margin-top:8px">${res.page>1?`<button class="btn btn-sm" data-act="etf-rank-prev">上一页</button>`:''}<span class="hint"> 第 ${res.page}/${res.pages} 页 </span>${res.page<res.pages?`<button class="btn btn-sm" data-act="etf-rank-next">下一页</button>`:''}</div>`;
+    panel.querySelector('[data-act="etf-rank-prev"]')?.addEventListener('click',()=>{etfDetailState.page--;etfRenderRankPage(panel,chart,meta);});
+    panel.querySelector('[data-act="etf-rank-next"]')?.addEventListener('click',()=>{etfDetailState.page++;etfRenderRankPage(panel,chart,meta);});
+  }catch(e){ panel.innerHTML=`<div class="hint">加载失败：${esc(e.message||e)}</div>`; }
+}
+function etfRenderSharesBlock(totalBox, tableBox, res, rangeParams){
+  const t=res.total||{shares:0,days:0};
+  const asc=[...(res.rows||[])].sort((a,b)=>String(a.date).localeCompare(String(b.date)));
+  let running=0; asc.forEach(r=>{running+=(r.change||0); r._cum=Number(running.toFixed(4));});
+  const cum=Number(running.toFixed(4));
+  totalBox.innerHTML=`<div class="etf-daily-total-card"><span>最新交易日总份额</span><b class="neutral">${fmtNum(t.shares)} <small>亿份</small></b></div>
+    <div class="etf-daily-total-card"><span>区间累计份额变化</span><b class="${cum>=0?'up':'down'}">${cum>=0?'+':''}${fmtNum(cum)} <small>亿份</small></b></div>
+    <div class="etf-daily-total-card"><span>统计交易日数</span><b class="neutral">${t.days} 个交易日 · ${esc(res.range||'')}</b></div>`;
+  const desc=[...asc].reverse();
+  tableBox.innerHTML=`<table><thead><tr><th>交易日期</th><th>汇金总份额(亿份)</th><th>较上日变化(亿份)</th><th>累计份额变化(亿份)</th><th>ETF数</th><th style="width:72px">当日明细</th></tr></thead>
+    <tbody>${desc.map(r=>`<tr class="etf-shares-row" data-date="${esc(r.date)}">
+      <td>${esc(r.date)}</td><td class="num"><b>${fmtNum(r.shares)}</b></td>
+      <td class="num"><span class="${(r.change||0)>=0?'up':'down'}">${r.change==null?'—':((r.change>=0?'+':'')+fmtNum(r.change))}</span></td>
+      <td class="num"><span class="${r._cum>=0?'up':'down'}">${r._cum>=0?'+':''}${fmtNum(r._cum)}</span></td><td class="num">${r.count}</td>
+      <td><button type="button" class="btn btn-sm etf-shares-toggle" data-date="${esc(r.date)}">展开</button></td></tr>
+      <tr class="etf-shares-detail-row" data-detail-date="${esc(r.date)}" hidden><td colspan="6"></td></tr>`).join('')}</tbody></table>`;
+  tableBox.querySelectorAll('.etf-shares-toggle').forEach(b=>b.addEventListener('click',()=>etfToggleSharesDayDetail(b.dataset.date,tableBox,rangeParams)));
+  return {asc,cum};
+}
+async function etfLoadSharesDetail(){
+  const tableBox=byId('etfSharesTable'), totalBox=byId('etfSharesTotal');
+  if(!tableBox||!totalBox) return;
+  const p=ETF_RANGE(); const rangeParams={months:p.months||12};
+  if(p.start)rangeParams.start=p.start; if(p.end)rangeParams.end=p.end;
+  try{
+    const qs=new URLSearchParams({...rangeParams,view:'total'});
+    const res=await api('/api/dashboard/etf-daily?'+qs.toString());
+    const {asc}=etfRenderSharesBlock(totalBox,tableBox,res,rangeParams);
+    const box=byId('etfSharesCumChart');
+    if(box){
+      const ins=echarts.getInstanceByDom(box)||echarts.init(box);
+      ins.setOption({animation:false,color:CLR,
+        grid:{left:62,right:44,top:30,bottom:70},
+        legend:{top:2,type:'scroll',textStyle:{fontSize:9}},tooltip:{trigger:'axis',axisPointer:{type:'shadow'},confine:true},
+        xAxis:{type:'category',data:asc.map(r=>r.date),axisLabel:{fontSize:9,hideOverlap:true,rotate:30,margin:12}},
+        yAxis:[{type:'value',name:'总份额 (亿份)',position:'left',axisLabel:{fontSize:9},nameTextStyle:{fontSize:9},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},
+               {type:'value',name:'累计变化 (亿份)',position:'right',axisLabel:{fontSize:9},nameTextStyle:{fontSize:9},splitLine:{show:false}}],
+        series:[{name:'汇金总份额',type:'bar',data:asc.map(r=>r.shares),yAxisIndex:0,itemStyle:{color:CLR[0]}},
+                {name:'累计份额变化',type:'line',data:asc.map(r=>r._cum),yAxisIndex:1,smooth:true,showSymbol:false,lineStyle:{width:2,color:CLR[1]},itemStyle:{color:CLR[1]}}],
+      },{notMerge:true});
+      ins.off('click');
+      ins.on('click',pp=>{
+        if(pp.componentType!=='series'||pp.seriesType!=='bar'||pp.dataIndex==null) return;
+        const date=asc[pp.dataIndex]?.date; if(!date) return;
+        etfToggleSharesDayDetail(date,tableBox,rangeParams);
+        const row=tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`);
+        if(row) row.scrollIntoView({behavior:'smooth',block:'center'});
+      });
+    }
+  }catch(e){ tableBox.innerHTML=`<div class="hint">总份额明细加载失败：${esc(e.message||e)}</div>`; }
+}
+async function etfToggleSharesDayDetail(date, tableBox, rangeParams){
+  const row=tableBox.querySelector(`.etf-shares-row[data-date="${date}"]`), detail=tableBox.querySelector(`.etf-shares-detail-row[data-detail-date="${date}"]`);
+  if(!row||!detail) return;
+  const btn=row.querySelector('.etf-shares-toggle');
+  if(!detail.hidden){ detail.hidden=true; btn.textContent='展开'; return; }
+  detail.hidden=false; btn.textContent='收起';
+  const cell=detail.querySelector('td'); cell.innerHTML='<div class="hint">加载当日明细…</div>';
+  try{
+    const qs=new URLSearchParams({...(rangeParams||{}),view:'total',date});
+    ['start','end'].forEach(k=>{if(!qs.get(k))qs.delete(k);});
+    const res=await api('/api/dashboard/etf-daily?'+qs.toString());
+    const rows=res.rows||[];
+    cell.innerHTML=`<div class="etf-day-detail-title">${esc(date)} 当日各 ETF 份额明细（按份额降序，共 ${rows.length} 只 · 合计 ${fmtNum(res.total_shares||0)} 亿份）· 占比=该 ETF 份额 / 汇金总份额</div>
+      <table class="etf-day-detail-table"><thead><tr><th>ETF 名称</th><th>代码</th><th>份额(亿份)</th><th>占比</th><th>较上日变化(亿份)</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.code)}</td><td class="num"><b>${fmtNum(r.shares)}</b></td>
+        <td class="num">${fmtNum(r.pct)}%</td><td class="num"><span class="${(r.change||0)>=0?'up':'down'}">${r.change==null?'—':((r.change>=0?'+':'')+fmtNum(r.change))}</span></td></tr>`).join('')}</tbody></table>`;
+  }catch(e){ cell.innerHTML=`<div class="hint">加载失败：${esc(e.message||e)}</div>`; }
+}
+
 function renderDash(){
   const grp = curView.replace('dash','');
   if(!DB[grp]) return;
@@ -673,17 +885,48 @@ function renderDash(){
   const months = grp==='macro'
     ? ({'近一年':12,'近6个月':6,'近3年':36,'近5年':60,'全部':999}[macroSel?.value]||12)
     : readQuickMonths(view, 12);
-  box.innerHTML = list.map(c=>`<div class="card"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#9aabc2" title="${esc(c.note)}"></i>`:''}</div><div class="card-body" style="padding:6px"><div class="chart-box ${c.layout==='trade_margin_split'?'tall':''}"></div></div></div>`).join('');
+  // ETF 图1（叠指数的汇金图）与图2 各自的明细卡片：按卡片类型占满一行
+  const cardHtml = (c)=>{
+    const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split');
+    const tall = c.layout==='trade_margin_split' || c.layout==='etf_rank';
+    const extra = c.layout==='etf_overlay' ? `<div class="card extra-detail-card" data-extra="daily">
+        <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 按天流通份额 / 申赎净流入明细</h3><span class="hint" style="margin-left:auto">点击某天展开当日各 ETF 明细</span></div>
+        <div class="card-body"><div class="etf-daily-total" id="etfDailyTotal"></div><div class="table-wrap" id="etfDailyTable"><div class="hint">加载中…</div></div></div></div>
+      <div class="card extra-detail-card" data-extra="shares">
+        <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 每日总份额（含累计变化）</h3><span class="hint" style="margin-left:auto">柱子=每日份额存量，折线=累计变化，点击柱子展开当日 ETF 明细</span></div>
+        <div class="card-body"><div class="chart-box" id="etfSharesCumChart" style="height:300px"></div><div class="etf-daily-total" id="etfSharesTotal"></div><div class="table-wrap" id="etfSharesTable"><div class="hint">加载中…</div></div></div></div>` : '';
+    const rankDetail = c.layout==='etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : '';
+    return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#9aabc2" title="${esc(c.note)}"></i>`:''}</div>
+      <div class="card-body" style="padding:6px"><div class="chart-box ${tall?'tall':''} ${c.layout==='etf_overlay'?'overlay':''}"></div>${rankDetail}</div></div>${extra}`;
+  };
+  box.innerHTML = list.map(cardHtml).join('');
   const meta = view.querySelector('[data-dash-meta]');
   if(meta) meta.textContent = `宏观 8 图 · ETF 4 图 · 交易 2 图 · 已渲染 ${list.length} 图`;
-  setTimeout(()=>list.forEach(c=>{
-    const node = box.querySelector('.chart-box');
-    // 按卡片顺序取对应节点
-    const idx = list.indexOf(c);
-    const target = box.children[idx]?.querySelector('.chart-box');
-    if(!target) return;
-    if(c.layout==='trade_margin_split') renderMarginSplitNode(target,c,months); else renderChartNode(target,c,months);
-  }),40);
+  setTimeout(()=>{
+    list.forEach((c,idx)=>{
+      const card = box.querySelector(`[data-chart-card="${c.id}"]`);
+      const target = card?.querySelector('.chart-box');
+      if(!target) return;
+      let ins;
+      if(grp==='etf') ins = renderEtfChartNode(target,c,months);
+      else if(c.layout==='trade_margin_split') ins = renderMarginSplitNode(target,c,months);
+      else ins = renderChartNode(target,c,months);
+      if(c.layout==='etf_rank' && ins){
+        target.style.cursor='pointer'; target.title='点击任意 ETF 柱子，展开该 ETF 每日明细';
+        ins.off('click');
+        ins.on('click', p=>{
+          if(p.componentType!=='series'||p.dataIndex==null) return;
+          const m=(c.rank_meta||[])[p.dataIndex]; if(!m?.code) return;
+          etfOpenRankDetail(c,m);
+        });
+      }
+    });
+    // ETF 明细数据加载
+    if(grp==='etf'){
+      if(byId('etfDailyTable')) etfLoadDailyDetail();
+      if(byId('etfSharesTable')) etfLoadSharesDetail();
+    }
+  },40);
 }
 function renderOverview(){
   const node = byId('ovAssetChart'); if(!node) return;
@@ -890,9 +1133,9 @@ function handleAction(act, btn, e){
         tr.innerHTML=`<td><label class="switch-row"><input type="checkbox" checked></label></td><td><div class="cell-clip">${esc(code)}</div></td><td><div class="cell-clip">${esc(name)}</div></td><td><div class="cell-clip">${esc(g('cat')||'自定义')}</div></td><td><div class="cell-clip">${esc(g('src')||'手动')}</div></td><td><div class="cell-clip">${esc(g('freq')||'月')}</div></td><td><button class="btn btn-sm" data-act="macro-remove">删除</button></td>`;
         body.appendChild(tr); }
       ['code','name','cat','src','freq'].forEach(s=>{const el=view?.querySelector(`[data-macro-${s}]`);if(el)el.value='';});
-      toast(`已新增指标：${name}（原型本地，宏观配置以服务端目录为准）`,'ok'); break;
+      toast(`已加入配置表：${name}`,'ok'); break;
     }
-    case 'macro-remove': btn.closest('tr')?.remove(); toast('已删除宏观指标（本地）','info'); break;
+    case 'macro-remove': btn.closest('tr')?.remove(); toast('已从配置表删除宏观指标','info'); break;
     case 'idx-row-remove': case 'etf-row-remove': {
       const row=btn.closest('tr'); const code=row?.querySelector('td')?.textContent?.trim();
       const isIdx=act==='idx-row-remove';
@@ -1102,13 +1345,11 @@ function bindEvents(){
 $('#hdDate').textContent = LAST ? ('交易日 ' + LAST) : '—';
 $('#hdTime').textContent = now();
 setInterval(()=>{ $('#hdTime').textContent = now(); },1000);
-$('#bannerDate').textContent = LAST ? ('最近交易日 ' + LAST) : '—';
 bindEvents();
 (async function init(){
   await loadAllBase();
   $('#hdDate').textContent = LAST ? ('交易日 ' + LAST) : '—';
-  $('#bannerDate').textContent = LAST ? ('最近交易日 ' + LAST) : '—';
-  buildSidebar();
+    buildSidebar();
   renderViews();
   // 看板日期控件默认近一年
   if(LAST){ const e=new Date(LAST); const st=new Date(e); st.setMonth(st.getMonth()-12);

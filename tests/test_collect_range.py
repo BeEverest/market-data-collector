@@ -1,6 +1,7 @@
 """全量采集日期范围：验证前端参数贯穿 API 层与三类采集器。"""
 from __future__ import annotations
 
+from datetime import datetime
 from unittest.mock import Mock
 
 import pandas as pd
@@ -68,6 +69,28 @@ class TestCollectDateOverride:
         assert "collect_macro" not in captured
         assert "collect_index" not in captured
         assert captured["collect_etf"]["start_date"] == "2024-01-01"
+
+    def test_scheduled_macro_locked_to_current_month(self, monkeypatch, range_config):
+        """定时调度：宏观锁定当月，忽略 config 与外部区间；ETF/指数不受影响。"""
+        captured = _capture_collectors(monkeypatch)
+        main._collect(
+            range_config, Mock(), start_date="2019-01-01", end_date="2019-12-31",
+            macro_current_month=True,
+        )
+        month = datetime.now().strftime("%Y-%m")
+        assert captured["collect_macro"]["start_date"] == month
+        assert captured["collect_macro"]["end_date"] == month
+        assert captured["collect_etf"]["start_date"] == "2019-01-01"
+        assert captured["collect_etf"]["end_date"] == "2019-12-31"
+        assert captured["collect_index"]["start_date"] == "2019-01-01"
+        assert captured["collect_index"]["end_date"] == "2019-12-31"
+
+    def test_manual_macro_keeps_config_range(self, monkeypatch, range_config):
+        """手动采集：显式关闭当月模式，宏观保持 config 区间。"""
+        captured = _capture_collectors(monkeypatch)
+        main._collect(range_config, Mock(), macro_current_month=False)
+        assert captured["collect_macro"]["start_date"] == "2020-01-01"
+        assert captured["collect_macro"]["end_date"] == "2020-12-31"
 
 
 class TestApiCollectDateRange:

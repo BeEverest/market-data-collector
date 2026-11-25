@@ -779,6 +779,39 @@ def api_data_index(code: str | None = None, start: str | None = None,
     return _paged(df, page, page_size)
 
 
+@app.get("/api/data/trade")
+def api_data_trade(code: str | None = None, start: str | None = None,
+                   end: str | None = None, page: int = 1, page_size: int = 25,
+                   order: str = "desc"):
+    """采集数据·日交易 Tab：分页预览 5 张交易原始表（code 选表，保留原单位）。"""
+    page = max(1, page)
+    page_size = min(max(1, page_size), 100)
+    date_order = "asc" if str(order).lower() == "asc" else "desc"
+    table = (code or "exchange").strip().lower()
+    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+        table = "exchange"
+    db_path = _db_path(_cfg())
+    if not db_path:
+        return {"total": 0, "pages": 1, "page": page, "page_size": page_size, "rows": []}
+    df = storage.read_trade_raw(db_path, table)
+    if df.empty:
+        return {"total": 0, "pages": 1, "page": page, "page_size": page_size, "rows": []}
+    if start:
+        df = df[df["trade_date"] >= str(start)[:10]]
+    if end:
+        df = df[df["trade_date"] <= str(end)[:10]]
+    df = df.sort_values("trade_date", ascending=(date_order == "asc")).reset_index(drop=True)
+    total = len(df)
+    pages = max(1, (total + page_size - 1) // page_size)
+    if page > pages:
+        page = pages
+    chunk = df.iloc[(page - 1) * page_size: page * page_size]
+    return {
+        "total": total, "pages": pages, "page": page, "page_size": page_size,
+        "rows": _frame_to_records(chunk, page_size),
+    }
+
+
 @app.get("/api/derived")
 def api_derived(month: str | None = None):
     """数据处理模块：返回指定月份的派生指标与可选月份列表。"""

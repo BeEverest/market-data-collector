@@ -107,20 +107,32 @@ def get_listing_dates(
     monitor=None,
     retries: int = 2,
     timeout: float = 12.0,
+    known: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """解析 ETF 上市/成立日期（YYYY-MM-DD）。
 
     数据源：天天基金基金档案页（fundf10.eastmoney.com/jbgk_<code>.html）的「成立日期」。
     ETF 的交易所上市日通常紧随成立日，成立之前必然无有效份额/净值，故以成立日作为
     采集下界基准，保守且可靠。解析结果带模块级缓存，避免重复请求。
+
+    known：调用方传入的持久化缓存（config/SQLite 的 listing_dates）。这些日期已确认
+    可靠，直接作为命中，启动时不再联网重复请求档案页——从根源避免天天基金限流。
+    仅对 known 与模块缓存中都没有的代码才联网解析。
     返回 {6位基金代码: 日期}，解析失败的基金不纳入（采集时不过滤）。
     """
     import re
 
     todo = [str(c).strip().zfill(6) for c in codes if str(c).strip()]
+    # 先并入调用方持久化缓存，确保已有日期不重复联网
+    if known:
+        for c, d in known.items():
+            cc = str(c).strip().zfill(6)
+            if cc in todo and str(d).strip():
+                _listing_date_cache.setdefault(cc, str(d).strip())
     result = {c: _listing_date_cache[c] for c in todo if c in _listing_date_cache}
     missing = [c for c in todo if c not in result]
     if not missing:
+        logger.info("  ├ 上市日期解析：共 %d 只，全部命中持久化/内存缓存，无需联网", len(todo))
         return result
 
     h = {
@@ -498,7 +510,7 @@ def collect_etf(
     # 解析并补全上市/成立日期；调用方传入的 dict 会被原地更新，便于持久化到配置
     if listing_dates is None:
         listing_dates = {}
-    resolved = get_listing_dates(sorted(target_codes), monitor=monitor)
+    resolved = get_listing_dates(sorted(target_codes), monitor=monitor, known=listing_dates)
     for code, date in resolved.items():
         listing_dates[code] = date
     if listing_dates:

@@ -54,6 +54,47 @@ from processors.etf_change import compute_etf_changes
 
 ETF_TAG_OPTIONS = ["宽基", "汇金", "黄金"]
 
+# 采集数据·日交易 Tab：原始表中文字段名（不在此表的字段原样透传；run_id 显式剔除）。
+# 排序在映射前的英文 trade_date 上完成，此处仅用于预览表头展示。
+TRADE_RAW_COLUMNS_CN = {
+    "biz_key": "业务键",
+    "trade_date": "交易日期",
+    "sse_amount": "沪市成交额(亿元)",
+    "sse_volume": "沪市成交量(手)",
+    "sse_float_mv": "沪市流通市值(元)",
+    "sse_total_mv": "沪市总市值(元)",
+    "szse_amount": "深市成交额(元)",
+    "szse_float_mv": "深市流通市值(元)",
+    "szse_total_mv": "深市总市值(元)",
+    "financing_balance": "融资余额(亿元)",
+    "securities_balance": "融券余额(亿元)",
+    "financing_buy": "融资买入额(亿元)",
+    "securities_sell": "融券卖出额(亿元)",
+    "margin_ratio": "平均维持担保比例(%)",
+    "debt_investors": "有负债投资者数(人)",
+    "collateral_value": "担保物总价值(亿元)",
+    "active_investors": "参与交易投资者数(人)",
+    "individual_investors": "个人投资者数(人)",
+    "institutional_investors": "机构投资者数(人)",
+    "broker_count": "证券公司数(家)",
+    "branch_count": "营业部数(家)",
+    "code": "代码",
+    "name": "名称",
+    "pct_change": "涨跌幅(%)",
+    "volume": "成交量(手)",
+    "amount": "成交额(元)",
+    "last_price": "最新价",
+    "up_count": "上涨家数",
+    "down_count": "下跌家数",
+    "flat_count": "平盘家数",
+    "close_price": "收盘价",
+    "top5_amount_yi": "前5%成交额(亿元)",
+    "total_amount_yi": "全A成交额(亿元)",
+    "concentration5": "成交集中度前5%(%)",
+    "source": "数据来源",
+    "collected_at": "采集时间",
+}
+
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
 
 # ---------------- 全局状态 ----------------
@@ -576,7 +617,17 @@ scheduler = Scheduler()
 # ---------------- API ----------------
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    """首页：为静态资源注入 mtime 版本号，避免浏览器缓存旧版 CSS/JS 导致改动不生效。"""
+    html_path = BASE_DIR / "static" / "index.html"
+    html = html_path.read_text(encoding="utf-8")
+    for asset in ("style.css", "app.js", "echarts.min.js"):
+        asset_path = BASE_DIR / "static" / asset
+        try:
+            version = int(asset_path.stat().st_mtime)
+        except OSError:
+            version = 0
+        html = html.replace(f"/static/{asset}\"", f"/static/{asset}?v={version}\"")
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/status")
@@ -806,9 +857,16 @@ def api_data_trade(code: str | None = None, start: str | None = None,
     if page > pages:
         page = pages
     chunk = df.iloc[(page - 1) * page_size: page * page_size]
+    rows = []
+    for record in _frame_to_records(chunk, page_size):
+        # 表头中文化；run_id 是内部采集批次号，不对预览暴露
+        rows.append({
+            TRADE_RAW_COLUMNS_CN.get(k, k): v
+            for k, v in record.items() if k != "run_id"
+        })
     return {
         "total": total, "pages": pages, "page": page, "page_size": page_size,
-        "rows": _frame_to_records(chunk, page_size),
+        "rows": rows,
     }
 
 
@@ -1645,7 +1703,16 @@ def api_health():
 
 
 # ---------------- 静态文件 ----------------
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+class _NoCacheStaticFiles(StaticFiles):
+    """静态资源禁用强缓存：配合 index 的 mtime 版本号，保证每次发版即时生效。"""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
+app.mount("/static", _NoCacheStaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 def main():

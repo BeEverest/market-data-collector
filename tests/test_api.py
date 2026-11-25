@@ -231,3 +231,34 @@ class TestRetryTaskApi:
         assert resp.json()["job_id"] == "fake-job-id"
         assert called["kind"] == "retry"
         assert callable(called["func"])
+
+
+class TestTradeRawApi:
+    """采集系统·日交易预览：5 张交易原始表均可预览，非法表名被拒。"""
+
+    def test_all_five_tables_supported(self, client, db_path):
+        import pandas as pd
+        d = "2026-11-24"
+        storage.upsert_trade_exchange(db_path, pd.DataFrame([
+            {"trade_date": d, "sse_amount": 5000.0, "szse_amount": 6e11}]), "t")
+        storage.upsert_trade_margin(db_path, pd.DataFrame([
+            {"trade_date": d, "financing_balance": 1.8e12}]), "t")
+        storage.upsert_trade_snapshot(db_path, pd.DataFrame([
+            {"trade_date": d, "code": "000001", "name": "平安银行", "pct_change": 1.2}]), "t")
+        storage.upsert_trade_breadth(db_path, pd.DataFrame([
+            {"trade_date": d, "up_count": 3000, "down_count": 2000, "flat_count": 100}]), "t")
+        storage.upsert_trade_congestion(db_path, pd.DataFrame([
+            {"trade_date": d, "concentration5": 47.64, "close_price": 3548.37}]), "t")
+        for table in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+            r = client.get(f"/api/trade/raw?table={table}")
+            assert r.status_code == 200, table
+            assert r.json()["total"] >= 1, table
+            assert r.json()["rows"], table
+        breadth = client.get("/api/trade/raw?table=breadth").json()["rows"][0]
+        assert breadth["up_count"] == 3000
+        cong = client.get("/api/trade/raw?table=congestion").json()["rows"][0]
+        assert cong["concentration5"] == 47.64
+
+    def test_invalid_table_rejected(self, client):
+        r = client.get("/api/trade/raw?table=not_a_table")
+        assert r.status_code == 400

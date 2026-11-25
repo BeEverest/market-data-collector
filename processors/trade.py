@@ -1,11 +1,11 @@
 """交易指标计算层（数据处理模块「交易」子 Tab）。
 
-只读取 3 张交易原始表 + 政策常量，按确认口径派生 10 项指标，写入 trade_observation 宽表。
+只读取 5 张交易原始表 + 政策常量，按确认口径派生 10 项指标，写入 trade_observation 宽表。
 所有规则为纯函数（compute_trade），便于单测；recompute_trade 负责增量/全量重算与幂等落库。
 
 口径（详见技术方案第四篇）：
   - 全A成交额 = 沪成交金额(亿元) + 深成交金额(元)÷1e8
-  - 成交集中度前5% = 个股成交额降序前 5% 个股成交额之和 ÷ 全A个股成交额之和 ×100%
+  - 成交集中度前5% = 快照日按个股成交额降序前 5% 之和 ÷ 全A个股成交额之和 ×100%；历史日取乐咕大盘拥挤度原始值
   - 两融余额 = 融资余额 + 融券余额（全市场，亿元）
   - 融资余额占流通市值比 = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100%
   - 融资买入额占比 = 融资买入额 ÷ 全A成交额 ×100%
@@ -79,14 +79,19 @@ def margin_policy_for(policy: list[dict] | None, trade_date: str) -> float | Non
 
 def compute_trade(exchange_row: dict | None, margin_row: dict | None,
                   snapshot_df: pd.DataFrame | None, policy: list[dict] | None,
-                  trade_date: str) -> dict:
-    """纯函数：输入某交易日三类原始数据 + 政策常量，输出该日 10 指标 + 涨跌家数。
+                  trade_date: str, breadth_row: dict | None = None,
+                  congestion_row: dict | None = None) -> dict:
+    """纯函数：输入某交易日原始数据 + 政策常量，输出该日 10 指标 + 涨跌家数。
 
     exchange_row / margin_row : 对应原始表的单行 dict（无数据传 None）
     snapshot_df               : 该交易日全A个股快照 DataFrame
+    breadth_row               : MCP 市场宽度原始行（快照缺失时兜底涨跌家数）
+    congestion_row            : 乐咕大盘拥挤度原始行（快照缺失时兜底成交集中度）
     """
     ex = exchange_row or {}
     mg = margin_row or {}
+    br = breadth_row or {}
+    cg = congestion_row or {}
     snap = snapshot_df if snapshot_df is not None else pd.DataFrame()
 
     def num(v):
@@ -103,7 +108,7 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
     if sse_amt is not None and szse_amt is not None:
         total_amount = round(sse_amt + szse_amt / 1e8, 4)
 
-    # 指标2 成交集中度前5%
+    # 指标2 成交集中度前5%（快照日派生；历史日取乐咕原始值）
     concentration5 = None
     if not snap.empty and "amount" in snap.columns:
         amounts = pd.to_numeric(snap["amount"], errors="coerce").dropna()
@@ -111,6 +116,9 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
         if len(amounts) > 0 and amounts.sum() > 0:
             n5 = max(1, int(len(amounts) * 0.05))
             concentration5 = round(amounts.head(n5).sum() / amounts.sum() * 100, 4)
+    elif cg:
+        # 历史快照不可回溯，用乐咕大盘拥挤度原始值兜底（单位：%）
+        concentration5 = num(cg.get("concentration5"))
 
     # 指标3/6/7/10 两融直取
     margin_ratio = num(mg.get("margin_ratio"))
@@ -145,6 +153,12 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
     if not snap.empty and "pct_change" in snap.columns:
         pct = pd.to_numeric(snap["pct_change"], errors="coerce").dropna()
         up, down, flat = int((pct > 0).sum()), int((pct < 0).sum()), int((pct == 0).sum())
+    elif br:
+        # 历史快照不可回溯，用东方财富 MCP 市场宽度原始数据兜底
+        up, down, flat = num(br.get("up_count")), num(br.get("down_count")), num(br.get("flat_count"))
+        up = int(up) if up is not None else None
+        down = int(down) if down is not None else None
+        flat = int(flat) if flat is not None else None
 
     sources = []
     if ex:
@@ -153,6 +167,10 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
         sources.append("margin")
     if not snap.empty:
         sources.append("snapshot")
+    if br and snap.empty:
+        sources.append("breadth")
+    if cg and snap.empty:
+        sources.append("congestion")
 
     return {
         "trade_date": trade_date,
@@ -189,9 +207,9 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
     policy = _load_policy(config)
     computed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 候选交易日 = 交易所 ∪ 两融 ∪ 快照
+    # 候选交易日 = 交易所 ∪ 两融 ∪ 市场宽度 ∪ 成交集中度 ∪ 快照
     dates: set[str] = set()
-    for t in ("exchange", "margin"):
+    for t in ("exchange", "margin", "breadth", "congestion"):
         dates.update(storage.trade_raw_dates(db_path, t))
     snap_dates = storage.trade_raw_dates(db_path, "snapshot")
     dates.update(snap_dates)
@@ -203,7 +221,9 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
                 "SELECT DISTINCT trade_date FROM ("
                 " SELECT trade_date, run_id FROM trade_exchange_raw UNION ALL"
                 " SELECT trade_date, run_id FROM trade_margin_raw UNION ALL"
-                " SELECT trade_date, run_id FROM trade_snapshot_raw"
+                " SELECT trade_date, run_id FROM trade_snapshot_raw UNION ALL"
+                " SELECT trade_date, run_id FROM trade_breadth_raw UNION ALL"
+                " SELECT trade_date, run_id FROM trade_congestion_raw"
                 ") WHERE run_id=?", (run_id,)
             ).fetchall()
         run_dates = {str(r["trade_date"])[:10] for r in rows}
@@ -219,9 +239,13 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
         mg_df = storage.read_trade_raw(db_path, "margin", day, day)
         # 快照表代码主键含日期，按 trade_date 过滤已覆盖
         snap_df = storage.read_trade_raw(db_path, "snapshot", day, day)
+        br_df = storage.read_trade_raw(db_path, "breadth", day, day)
+        cg_df = storage.read_trade_raw(db_path, "congestion", day, day)
         ex_row = ex_df.iloc[0].to_dict() if not ex_df.empty else None
         mg_row = mg_df.iloc[0].to_dict() if not mg_df.empty else None
-        rec = compute_trade(ex_row, mg_row, snap_df, policy, day)
+        br_row = br_df.iloc[0].to_dict() if not br_df.empty else None
+        cg_row = cg_df.iloc[0].to_dict() if not cg_df.empty else None
+        rec = compute_trade(ex_row, mg_row, snap_df, policy, day, br_row, cg_row)
         rec["computed_at"] = computed_at
         results.append(rec)
 
@@ -249,6 +273,8 @@ def latest_snapshot(db_path: str) -> dict:
         "raw_exchange": len(storage.read_trade_raw(db_path, "exchange")),
         "raw_margin": len(storage.read_trade_raw(db_path, "margin")),
         "raw_snapshot": len(storage.read_trade_raw(db_path, "snapshot")),
+        "raw_breadth": len(storage.read_trade_raw(db_path, "breadth")),
+        "raw_congestion": len(storage.read_trade_raw(db_path, "congestion")),
     }
     return {"latest": latest, "coverage": coverage,
             "indicators": [{"code": c, **m} for c, m in INDICATORS.items()]}

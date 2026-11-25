@@ -59,20 +59,20 @@ ETF_TAG_OPTIONS = ["宽基", "汇金", "黄金"]
 TRADE_RAW_COLUMNS_CN = {
     "biz_key": "业务键",
     "trade_date": "交易日期",
-    "sse_amount": "沪市成交额(亿元)",
+    "sse_amount": "沪市成交额(万亿)",
     "sse_volume": "沪市成交量(手)",
-    "sse_float_mv": "沪市流通市值(元)",
-    "sse_total_mv": "沪市总市值(元)",
-    "szse_amount": "深市成交额(元)",
-    "szse_float_mv": "深市流通市值(元)",
-    "szse_total_mv": "深市总市值(元)",
-    "financing_balance": "融资余额(亿元)",
-    "securities_balance": "融券余额(亿元)",
-    "financing_buy": "融资买入额(亿元)",
-    "securities_sell": "融券卖出额(亿元)",
+    "sse_float_mv": "沪市流通市值(万亿)",
+    "sse_total_mv": "沪市总市值(万亿)",
+    "szse_amount": "深市成交额(万亿)",
+    "szse_float_mv": "深市流通市值(万亿)",
+    "szse_total_mv": "深市总市值(万亿)",
+    "financing_balance": "融资余额(万亿)",
+    "securities_balance": "融券余额(万亿)",
+    "financing_buy": "融资买入额(万亿)",
+    "securities_sell": "融券卖出额(万亿)",
     "margin_ratio": "平均维持担保比例(%)",
     "debt_investors": "有负债投资者数(人)",
-    "collateral_value": "担保物总价值(亿元)",
+    "collateral_value": "担保物总价值(万亿)",
     "active_investors": "参与交易投资者数(人)",
     "individual_investors": "个人投资者数(人)",
     "institutional_investors": "机构投资者数(人)",
@@ -82,17 +82,32 @@ TRADE_RAW_COLUMNS_CN = {
     "name": "名称",
     "pct_change": "涨跌幅(%)",
     "volume": "成交量(手)",
-    "amount": "成交额(元)",
+    "amount": "成交额(亿)",
     "last_price": "最新价",
     "up_count": "上涨家数",
     "down_count": "下跌家数",
     "flat_count": "平盘家数",
     "close_price": "收盘价",
-    "top5_amount_yi": "前5%成交额(亿元)",
-    "total_amount_yi": "全A成交额(亿元)",
+    "top5_amount_yi": "前5%成交额(万亿)",
+    "total_amount_yi": "全A成交额(万亿)",
     "concentration5": "成交集中度前5%(%)",
     "source": "数据来源",
     "collected_at": "采集时间",
+}
+
+# 日交易预览金额字段换算除数（原值单位 → 目标单位）：
+#   亿元 → 万亿：除以 1e4；元 → 万亿：除以 1e12；
+#   全A个股快照成交额 amount：元 → 亿，除以 1e8（个股量级用亿更直观）。
+# 仅金额类字段换算；成交量(手)、投资者/家数、比例(%)、价格等保持原样。
+TRADE_RAW_AMOUNT_DIVISOR = {
+    # 亿元
+    "sse_amount": 1e4, "sse_float_mv": 1e4, "sse_total_mv": 1e4,
+    "financing_balance": 1e4, "securities_balance": 1e4,
+    "financing_buy": 1e4, "securities_sell": 1e4, "collateral_value": 1e4,
+    "top5_amount_yi": 1e4, "total_amount_yi": 1e4,
+    # 元
+    "szse_amount": 1e12, "szse_float_mv": 1e12, "szse_total_mv": 1e12,
+    "amount": 1e8,  # 全A个股快照成交额：元 → 亿（个股量级用亿更直观）
 }
 
 app = FastAPI(title="投研大盘数据采集系统", version="1.0")
@@ -834,7 +849,10 @@ def api_data_index(code: str | None = None, start: str | None = None,
 def api_data_trade(code: str | None = None, start: str | None = None,
                    end: str | None = None, page: int = 1, page_size: int = 25,
                    order: str = "desc"):
-    """采集数据·日交易 Tab：分页预览 5 张交易原始表（code 选表，保留原单位）。"""
+    """采集数据·日交易 Tab：分页预览 5 张交易原始表（code 选表）。
+
+    金额字段统一换算为万亿、保留两位小数；其它字段原样。表头中文化，隐藏 run_id。
+    """
     page = max(1, page)
     page_size = min(max(1, page_size), 100)
     date_order = "asc" if str(order).lower() == "asc" else "desc"
@@ -859,11 +877,15 @@ def api_data_trade(code: str | None = None, start: str | None = None,
     chunk = df.iloc[(page - 1) * page_size: page * page_size]
     rows = []
     for record in _frame_to_records(chunk, page_size):
-        # 表头中文化；run_id 是内部采集批次号，不对预览暴露
-        rows.append({
-            TRADE_RAW_COLUMNS_CN.get(k, k): v
-            for k, v in record.items() if k != "run_id"
-        })
+        item = {}
+        for k, v in record.items():
+            if k == "run_id":  # 内部采集批次号，不对预览暴露
+                continue
+            if k in TRADE_RAW_AMOUNT_DIVISOR and isinstance(v, (int, float)):
+                # 金额统一换算为万亿并保留两位小数；非金额字段原样
+                v = round(v / TRADE_RAW_AMOUNT_DIVISOR[k], 2)
+            item[TRADE_RAW_COLUMNS_CN.get(k, k)] = v
+        rows.append(item)
     return {
         "total": total, "pages": pages, "page": page, "page_size": page_size,
         "rows": rows,
@@ -1002,11 +1024,15 @@ def api_collect_trade(payload: dict | None = None):
 @app.get("/api/dashboard")
 def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None,
                   etf_start: str | None = None, etf_end: str | None = None,
-                  overlay_index: str = "000001", trade_days: int = 60):
-    """数据看板：宏观 7 张图 + 汇金/黄金 ETF 变化 2 张柱状图，共用系统数据源。
+                  overlay_index: str = "000001", trade_days: int | None = None,
+                  trade_months: int = 12, trade_start: str | None = None,
+                  trade_end: str | None = None):
+    """数据看板：宏观/ETF/交易三组图，共用系统数据源。
 
-    months/etf_months 均为月份范围（0=全部），默认近一年；days 为兼容旧前端的别名。
-    etf_start/etf_end 为 YYYY-MM-DD 精确日期区间，优先于 etf_months。
+    months/etf_months/trade_months 均为月份范围（0=全部），默认近一年；
+    days 为兼容旧前端的别名（仅作用于 ETF）。
+    etf_start/etf_end、trade_start/trade_end 为 YYYY-MM-DD 精确日期区间，
+    分别优先于 etf_months、trade_months。交易 Tab 日期口径与 ETF 完全一致。
     overlay_index 为汇金图上方叠加的指数代码，默认上证指数 000001。
     """
     cfg = _cfg()
@@ -1015,6 +1041,7 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
     if days is not None:  # 兼容旧参数（原 days 表示交易日数，仅用于回退）
         etf_months = int(days)
     etf_months = max(0, min(int(etf_months or 0), 240))
+    trade_months = max(0, min(int(trade_months or 0), 240))
 
     derived_df = storage.read_derived(db)
     _, macro_df = storage.read_macro(db, limit=None)
@@ -1040,12 +1067,17 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "etf_months": etf_months,
         "etf_start": etf_start or "",
         "etf_end": etf_end or "",
+        "trade_months": trade_months,
+        "trade_start": trade_start or "",
+        "trade_end": trade_end or "",
         "overlay_index": overlay_index,
         "index_options": index_options,
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
                                            etf_start, etf_end, index_df, overlay_index)},
-        "trade": {"charts": build_trade_charts(storage.read_trade(db), trade_days)},
+        "trade": {"charts": build_trade_charts(
+            storage.read_trade(db), days=trade_days,
+            months=trade_months, start=trade_start, end=trade_end)},
     }
 
 

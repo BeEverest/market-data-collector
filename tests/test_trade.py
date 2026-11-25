@@ -69,6 +69,12 @@ class TestComputeTrade:
         assert r["up_count"] is None
         assert r["source_set"] == ""
 
+    def test_congestion_fallback_without_snapshot(self):
+        r = compute_trade(None, None, None, None, "2022-07-06",
+                          congestion_row={"concentration5": 41.88})
+        assert r["concentration5"] == pytest.approx(41.88)
+        assert r["source_set"] == "congestion"
+
 
 class TestTradeStorage:
     def test_raw_upsert_idempotent(self, db_path):
@@ -82,7 +88,18 @@ class TestTradeStorage:
     def test_trade_biz_key(self):
         assert storage.trade_biz_key("2026-11-24") == "20261124"
         assert storage.trade_raw_biz_key("EX", "2026-11-24") == "EX_20261124"
+        assert storage.trade_raw_biz_key("CG", "2026-11-24") == "CG_20261124"
         assert storage.trade_snapshot_biz_key("1", "2026-11-24") == "000001_20261124"
+
+    def test_congestion_raw_upsert_idempotent(self, db_path):
+        cg = pd.DataFrame([{"trade_date": "2022-07-06", "concentration5": 41.88,
+                            "source": "乐咕", "collected_at": "now"}])
+        assert storage.upsert_trade_congestion(db_path, cg, "run1") == 1
+        assert storage.upsert_trade_congestion(db_path, cg, "run2") == 1
+        got = storage.read_trade_raw(db_path, "congestion")
+        assert len(got) == 1
+        assert got.iloc[0]["concentration5"] == pytest.approx(41.88)
+        assert got.iloc[0]["run_id"] == "run2"
 
     def test_recompute_and_read(self, db_path):
         storage.upsert_trade_exchange(db_path, pd.DataFrame([{
@@ -102,8 +119,22 @@ class TestTradeStorage:
         assert snap["coverage"]["trade_days"] == 1
         assert len(snap["indicators"]) == 10
 
+    def test_recompute_uses_congestion_fallback(self, db_path):
+        storage.upsert_trade_exchange(db_path, pd.DataFrame([{
+            "trade_date": "2022-07-06", "sse_amount": 5000.0, "szse_amount": 5.9e11,
+            "source": "test", "collected_at": "now"}]), "run1")
+        storage.upsert_trade_congestion(db_path, pd.DataFrame([{
+            "trade_date": "2022-07-06", "concentration5": 41.88,
+            "source": "乐咕", "collected_at": "now"}]), "run1")
+        n = recompute_trade(db_path, config={}, full=True)
+        assert n == 1
+        df = storage.read_trade(db_path)
+        assert df.iloc[0]["concentration5"] == pytest.approx(41.88)
+        assert "congestion" in df.iloc[0]["source_set"].split("+")
+
     def test_clear_tables_include_raw_not_derived(self):
         assert "trade_exchange_raw" in storage.CLEAR_TABLES
+        assert "trade_congestion_raw" in storage.CLEAR_TABLES
         assert "trade_observation" not in storage.CLEAR_TABLES  # 计算表不随清理删除
 
 

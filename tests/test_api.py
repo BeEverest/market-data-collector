@@ -262,3 +262,53 @@ class TestTradeRawApi:
     def test_invalid_table_rejected(self, client):
         r = client.get("/api/trade/raw?table=not_a_table")
         assert r.status_code == 400
+
+
+class TestTradeDataPreview:
+    """采集数据·日交易 Tab：中文字段表头、隐藏 run_id；首页静态资源版本号注入。"""
+
+    def test_chinese_headers_and_no_run_id(self, client, db_path):
+        import pandas as pd
+        d = "2026-11-24"
+        storage.upsert_trade_breadth(db_path, pd.DataFrame([
+            {"trade_date": d, "up_count": 3000, "down_count": 2000, "flat_count": 100}
+        ]), "run_should_not_leak")
+        data = client.get(
+            f"/api/data/trade?code=breadth&start={d}&end={d}"
+        ).json()
+        assert data["total"] >= 1
+        row = data["rows"][0]
+        assert row["交易日期"] == d
+        assert row["上涨家数"] == 3000
+        assert row["下跌家数"] == 2000
+        assert row["平盘家数"] == 100
+        assert "run_id" not in row
+        assert "trade_date" not in row
+        assert "业务键" in row
+
+    def test_chinese_date_sortable(self, client, db_path):
+        import pandas as pd
+        for d in ("2026-11-20", "2026-11-24"):
+            storage.upsert_trade_breadth(db_path, pd.DataFrame([
+                {"trade_date": d, "up_count": 1}
+            ]), "t")
+        desc = client.get("/api/data/trade?code=breadth&order=desc").json()["rows"]
+        asc = client.get("/api/data/trade?code=breadth&order=asc").json()["rows"]
+        assert desc[0]["交易日期"] > desc[-1]["交易日期"]
+        assert asc[0]["交易日期"] < asc[-1]["交易日期"]
+
+    def test_index_injects_asset_versions(self, client, base):
+        static = base / "static"
+        static.mkdir(exist_ok=True)
+        (static / "index.html").write_text(
+            '<link rel="stylesheet" href="/static/style.css">'
+            '<script src="/static/app.js"></script>',
+            encoding="utf-8",
+        )
+        (static / "style.css").write_text("body{}", encoding="utf-8")
+        (static / "app.js").write_text("//js", encoding="utf-8")
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "/static/style.css?v=" in resp.text
+        assert "/static/app.js?v=" in resp.text
+        assert resp.headers["cache-control"] == "no-store"

@@ -417,6 +417,8 @@ def _do_collect(macro_only: bool = False, etf_only: bool = False,
     macro_df, etf_df, index_df = _collect(
         config, monitor, macro_only=macro_only, etf_only=etf_only, index_only=index_only,
         start_date=start, end_date=end,
+        # 定时调度下宏观固定只更新当月一期；手动/接口采集保持原有区间语义
+        macro_current_month=(trigger == "定时调度"),
     )
     # SQLite 按业务键 upsert；空 DataFrame 不会覆盖库中已有数据
     logger.info("%s步骤 4/5 写入存储：宏观 %d 行 / ETF %d 行 / 指数 %d 行（按业务键幂等 upsert）",

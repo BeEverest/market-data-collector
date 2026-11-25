@@ -850,11 +850,11 @@ def api_derived_export(month: str | None = None):
 @app.get("/api/trade/raw")
 def api_trade_raw(table: str = "exchange", start: str | None = None,
                   end: str | None = None, limit: int = 200):
-    """采集系统·交易预览 Tab：预览 3 张原始表的落库数据（含原始单位）。"""
+    """采集系统·日交易预览 Tab：预览 5 张交易原始表的落库数据（含原始单位）。"""
     cfg = _cfg()
     db = _require_db(cfg)
-    if table not in ("exchange", "margin", "snapshot"):
-        raise HTTPException(status_code=400, detail="table 应为 exchange/margin/snapshot")
+    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+        raise HTTPException(status_code=400, detail="table 应为 exchange/margin/snapshot/breadth/congestion")
     df = storage.read_trade_raw(db, table, start, end)
     total = len(df)
     return {"table": table, "total": total,

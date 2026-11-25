@@ -197,6 +197,33 @@
     </div>
   </section>
 
+  <!-- 日交易预览（紧跟 ETF 之后，采集层只读原始表） -->
+  <section class="card module-trade-preview" id="tradePreviewCard">
+    <div class="card-head">
+      <div class="title-group">
+        <h2>日交易预览</h2>
+        <span class="module-chip part">采集只读</span>
+      </div>
+      <span class="hint">采集系统「交易」类别落库的原始数据（保留接口原单位）· 计算请到「数据处理·交易计算」Tab</span>
+    </div>
+    <div class="etf-calc-controls">
+      <label class="prec-field">原始表
+        <select id="tradeRawTable" class="prec-input">
+          <option value="exchange">交易所每日概况（沪深成交额）</option>
+          <option value="margin">两融账户</option>
+          <option value="snapshot">全A个股快照</option>
+          <option value="breadth">市场宽度（涨跌家数）</option>
+          <option value="congestion">成交集中度（前5%）</option>
+        </select>
+      </label>
+      <label class="prec-field">起始日期 <input id="tradeRawStart" class="prec-input" type="date"></label>
+      <label class="prec-field">结束日期 <input id="tradeRawEnd" class="prec-input" type="date"></label>
+      <button type="button" class="btn tiny" id="tradeRawRefreshBtn">刷新</button>
+      <span class="hint" id="tradeRawMeta">加载中…</span>
+    </div>
+    <div class="table-wrap tall" id="tradeRawTableWrap"><div class="empty">加载中…</div></div>
+  </section>
+
   <!-- 指数标的配置 -->
   <section class="card module-index" id="indexConfigCard">
     <div class="card-head">
@@ -412,30 +439,6 @@
     </div>
   </section>
 
-  <!-- 交易原始数据预览 -->
-  <section class="card module-trade-preview">
-    <div class="card-head">
-      <div class="title-group">
-        <h2>交易 · 原始数据预览</h2>
-        <span class="module-chip part">采集只读</span>
-      </div>
-      <span class="hint">采集系统「交易」类别落库的原始数据（保留接口原单位）· 计算请到「数据处理·交易计算」Tab</span>
-    </div>
-    <div class="etf-calc-controls">
-      <label class="prec-field">原始表
-        <select id="tradeRawTable" class="prec-input">
-          <option value="exchange">交易所每日概况</option>
-          <option value="margin">两融账户</option>
-          <option value="snapshot">全A个股快照</option>
-        </select>
-      </label>
-      <label class="prec-field">起始日期 <input id="tradeRawStart" class="prec-input" type="date"></label>
-      <label class="prec-field">结束日期 <input id="tradeRawEnd" class="prec-input" type="date"></label>
-      <button type="button" class="btn tiny" id="tradeRawRefreshBtn">刷新</button>
-      <span class="hint" id="tradeRawMeta">加载中…</span>
-    </div>
-    <div class="table-wrap tall" id="tradeRawTableWrap"><div class="empty">加载中…</div></div>
-  </section>
   </div><!-- /collectModule -->
 
   <!-- 数据处理模块：与采集系统共用本页，顶部导航切换 -->

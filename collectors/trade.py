@@ -46,6 +46,12 @@ def catalog() -> list[dict]:
         {"code": "snapshot", "name": "全A个股快照", "iface": "stock_zh_a_spot",
          "unit": "元", "granularity": "交易日", "source": SOURCE_SNAPSHOT,
          "fields": "逐股涨跌幅/成交量/成交额（派生集中度与涨跌家数）"},
+        {"code": "breadth", "name": "市场宽度（涨跌家数）", "iface": "mx_comprehensive_finance_data",
+         "unit": "家", "granularity": "交易日", "source": "东方财富MCP·全A涨跌家数",
+         "fields": "上涨/下跌/平盘家数（历史补数）"},
+        {"code": "congestion", "name": "成交集中度（前5%）", "iface": "legulegu api/stockdata/ashares-congestion",
+         "unit": "%", "granularity": "交易日", "source": "乐咕乐股·大盘拥挤度",
+         "fields": "前5%成交额/全部A股成交额/集中度（历史补数）"},
     ]
 
 

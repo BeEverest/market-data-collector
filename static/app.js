@@ -1107,7 +1107,7 @@ async function loadData() {
   const start = $('filterStart').value.trim();
   const end = $('filterEnd').value.trim();
   const pageSize = Math.min(Math.max(parseInt($('filterPageSize').value, 10) || 25, 1), MAX_PAGE_SIZE);
-  const dateCol = dataTab === 'macro' ? '日期' : (dataTab === 'trade' ? 'trade_date' : '交易日期');
+  const dateCol = dataTab === 'macro' ? '日期' : '交易日期';
   const url = `/api/data/${dataTab}?code=${encodeURIComponent(code)}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}&page=${dataPage}&page_size=${pageSize}&order=${dataDateOrder}`;
   try {
     const res = await api(url);

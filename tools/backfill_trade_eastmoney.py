@@ -30,6 +30,13 @@ HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text
 SOURCE_ADD = "东方财富MCP·上证指数成交额(历史补数)"
 
 
+def _check_mcp_payload(payload: dict) -> dict:
+    """识别 MCP 业务错误（如积分耗尽）：有 message 无 data 时必须抛错，不能当空数据。"""
+    if isinstance(payload, dict) and "data" not in payload and payload.get("message"):
+        raise RuntimeError(f"东方财富MCP业务错误：{payload['message']}")
+    return payload
+
+
 def mcp_call(query: str, tool: str = "mx_index_block_finance_data", timeout: int = 120) -> dict:
     s = requests.Session()
     init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -44,9 +51,18 @@ def mcp_call(query: str, tool: str = "mx_index_block_finance_data", timeout: int
     payload = r.json()
     if payload.get("error"):
         raise RuntimeError(str(payload["error"]))
+    _check_mcp_payload(payload)
     content = payload.get("result", {}).get("content", [])
     text = content[0].get("text", "") if content else ""
-    return json.loads(text)
+    if not text:
+        raise RuntimeError("MCP 返回空 content")
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"MCP 返回非 JSON 内容：{text[:200]}") from exc
+    # 业务错误也可能藏在 content.text 内层，必须同样识别
+    _check_mcp_payload(result)
+    return result
 
 
 def parse_amount_safe(data: dict) -> dict[str, float]:

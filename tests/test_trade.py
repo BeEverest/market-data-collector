@@ -168,6 +168,57 @@ class TestTradeStorage:
         assert set(raw) == {"breadth", "congestion"}
         assert calls == ["breadth", "congestion"]
 
+    def test_mcp_quota_message_is_business_error(self):
+        """MCP 返回 message 但无 data 时必须抛错，不能被解析成空数据。"""
+        from tools.backfill_trade_eastmoney import _check_mcp_payload
+
+        with pytest.raises(RuntimeError, match="积分已用完"):
+            _check_mcp_payload({"message": "你的积分已用完～请购买套餐包"})
+        assert _check_mcp_payload({"data": []}) == {"data": []}
+
+    def test_breadth_mcp_error_recorded_as_failed(self, monkeypatch):
+        """涨跌家数采集遇到 MCP 业务错误时，监控记为失败并保留原因。"""
+        import importlib
+        import json as json_mod
+
+        mcp_mod = importlib.import_module("tools.backfill_trade_eastmoney")
+
+        class FakeResp:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self.payload
+
+        def fake_post(self, url, headers=None, json=None, timeout=None):
+            if (json or {}).get("method") == "initialize":
+                return FakeResp({"result": {}})
+            inner = json_mod.dumps({"message": "你的积分已用完～请购买套餐包"}, ensure_ascii=False)
+            return FakeResp({"result": {"content": [{"text": inner}]}})
+
+        # 保留真实 mcp_call，只替换底层 HTTP 响应，验证业务错误识别链路
+        monkeypatch.setattr(mcp_mod.requests.Session, "post", fake_post)
+
+        class FakeMonitor:
+            def __init__(self):
+                self.records = []
+
+            def record(self, **kw):
+                self.records.append(kw)
+
+        mon = FakeMonitor()
+        df = trade_collector._collect_breadth(
+            "2026-11-25", "2026-11-25", monitor=mon,
+            collected_at="2026-11-26 21:18:36",
+        )
+        assert df.empty
+        assert len(mon.records) == 1
+        assert mon.records[0]["status"] == "failed"
+        assert "积分已用完" in mon.records[0]["error"]
+
     def test_clear_tables_protect_raw_not_derived(self):
         assert "trade_exchange_raw" not in storage.CLEAR_TABLES
         assert "trade_congestion_raw" not in storage.CLEAR_TABLES

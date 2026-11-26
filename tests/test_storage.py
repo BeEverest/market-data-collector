@@ -266,3 +266,25 @@ class TestCollectionStat:
         # 06 位补零后 biz_key 稳定，重复写入同码仍覆盖
         storage.append_collection_stats(db_path, [{**stat, "rows": 6}])
         assert len(storage.read_collection_stats(db_path)) == 1
+
+    def test_today_new_counts_only_real_inserts(self, db_path):
+        """净新增只计真实 INSERT；重复 upsert 与接口返回行数累计不得混入。"""
+        today = pd.Timestamp.now().strftime("%Y-%m-%d")
+        df = pd.DataFrame([{
+            "指标代码": "M2", "指标名称": "货币供应量(M2)", "日期": "2026-11",
+            "数值": 3000000, "单位": "亿元", "采集时间": f"{today} 09:00:00",
+        }])
+        storage.upsert_macro(db_path, df, "r1")
+        storage.upsert_macro(db_path, df, "r2")  # 同业务键更新，不是新增
+        counts = storage.status_counts(db_path)
+        assert counts["today_new"].get("宏观") == 1
+        assert counts["today_written"].get("宏观", 0) == 0
+
+        storage.append_collection_stats(db_path, [{
+            "run_id": "r2", "run_type": "interface", "run_date": today,
+            "category": "宏观", "code": "M2", "name": "货币供应量", "rows": 24,
+            "collected_at": f"{today} 09:00:00",
+        }])
+        counts = storage.status_counts(db_path)
+        assert counts["today_new"].get("宏观") == 1
+        assert counts["today_written"].get("宏观") == 24

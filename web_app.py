@@ -664,6 +664,7 @@ def api_status():
     failed_count = 0
     today_calls = 0
     today_new = {}
+    today_written = {}
     trade_rows = 0
     trade_raw_rows = {}
     if db_path:
@@ -676,6 +677,7 @@ def api_status():
         etf_rows, etf_codes = counts["etf_rows"], counts["etf_codes"]
         index_rows, index_codes = counts["index_rows"], counts["index_codes"]
         today_new = counts.get("today_new", {})
+        today_written = counts.get("today_written", {})
         trade_rows = counts.get("trade_rows", 0)
         trade_raw_rows = counts.get("trade_raw_rows", {})
     else:
@@ -709,6 +711,7 @@ def api_status():
         "trade_rows": trade_rows,
         "trade_raw_rows": trade_raw_rows,
         "today_new": today_new,
+        "today_written": today_written,
         "scheduler": {
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
             "time": cfg.get("scheduler", {}).get("time", "08:30"),

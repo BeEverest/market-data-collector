@@ -1056,7 +1056,8 @@ const VIEWS = {
     + statRow(
         summaryCard('database','ic-blue','采集数量汇总','已入库数据行数 · 交易按5张原始表合计',
           {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()})
-        + summaryCard('calendar-plus','ic-purple','当日采集数据汇总','collection_stat 今日写入行数 · 按类别统计',
+        + summaryCard('calendar-plus','ic-purple','当日净新增汇总',
+          `今日净新增（升级后统计）· 写入累计 ${fmt(Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0))}（含重复采集）`,
           todayNewByCat())
       )
     +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>

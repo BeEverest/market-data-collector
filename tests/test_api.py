@@ -39,6 +39,8 @@ class TestReadOnlyApis:
         assert data["etf_rows"] == 3
         assert data["etf_codes"] == 2
         assert data["failed_total"] == 2
+        assert isinstance(data["today_new"], dict)       # 净新增口径
+        assert isinstance(data["today_written"], dict)   # 写入量累计口径（对账用）
         assert data["scheduler"]["enabled"] is False
         assert data["running"] is False
 

@@ -480,17 +480,21 @@ class TestWebPage:
         assert page._js_errors == []
 
     def test_console_shows_two_category_summary_cards(self, page):
-        """采集控制台展示两张分类汇总卡片：采集数量汇总 / 当日采集数据汇总，各含宏观/指数/ETF/交易。"""
+        """采集控制台展示两张分类汇总卡片：存量汇总 / 当日净新增，各含宏观/指数/ETF/交易。"""
         _switch(page, "console")
         cards = page.locator("#v-console .summary-card")
         assert cards.count() == 2
         titles = cards.locator(".summary-title").all_inner_texts()
         assert any("采集数量汇总" in t for t in titles)
-        assert any("当日采集数据汇总" in t for t in titles)
+        assert any("当日净新增汇总" in t for t in titles)
         # 每张卡片都应含四个类别小计
         for i in range(cards.count()):
             labels = cards.nth(i).locator(".summary-cell-lbl").all_inner_texts()
             assert labels == ["宏观", "指数", "ETF", "交易"]
+        # 第二张卡片取今日真实新增入库行数（new_row_log），不是接口返回行数累计
+        net = page.evaluate("S.today_new")
+        vals2 = cards.nth(1).locator(".summary-cell-val").all_inner_texts()
+        assert vals2[0].replace(",", "") == str(int(net.get("宏观", 0)))
         assert page._js_errors == []
 
     def test_monitor_stats_dual_dimension_filter(self, page):

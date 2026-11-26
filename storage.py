@@ -285,6 +285,50 @@ def init_schema(path: str | Path) -> None:
                 run_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_tobs_date ON trade_observation(trade_date DESC);
+
+            -- 真实新增入库行流水：仅 AFTER INSERT 触发，幂等 upsert 的 UPDATE 分支不计入。
+            -- 用于「当日净新增」统计，区别于 collection_stat 的接口返回行数累计。
+            CREATE TABLE IF NOT EXISTS new_row_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT,
+                run_date TEXT,
+                category TEXT NOT NULL,
+                code TEXT NOT NULL,
+                collected_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_newlog_date ON new_row_log(run_date, category);
+            CREATE TRIGGER IF NOT EXISTS trg_macro_new_row AFTER INSERT ON macro_observation BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '宏观', NEW.code, NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_etf_new_row AFTER INSERT ON etf_observation BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), 'ETF', NEW.code, NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_index_new_row AFTER INSERT ON index_observation BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '指数', NEW.code, NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tex_new_row AFTER INSERT ON trade_exchange_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'exchange', NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tmargin_new_row AFTER INSERT ON trade_margin_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'margin', NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tsnap_new_row AFTER INSERT ON trade_snapshot_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'snapshot', NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tbreadth_new_row AFTER INSERT ON trade_breadth_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'breadth', NEW.collected_at);
+            END;
+            CREATE TRIGGER IF NOT EXISTS trg_tcongestion_new_row AFTER INSERT ON trade_congestion_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'congestion', NEW.collected_at);
+            END;
             """
         )
         conn.execute(
@@ -1181,14 +1225,20 @@ def status_counts(path: str | Path) -> dict:
         today_calls = conn.execute(
             "SELECT COUNT(*) AS n FROM interface_run WHERE run_date=?", (today,)
         ).fetchone()["n"]
-        # 当日各类别新增采集行数（按 run_date=今天 汇总 collection_stat）。
-        # 口径为「今日采集写入的行数」，重复采集同一历史区间会累加，属预期。
+        # 当日净新增：new_row_log 仅记录真正 INSERT 的业务行；幂等 upsert 的 UPDATE 分支不计入。
         today_new: dict[str, int] = {}
+        for row in conn.execute(
+            "SELECT category, COUNT(*) AS n FROM new_row_log "
+            "WHERE run_date=? GROUP BY category", (today,)
+        ):
+            today_new[row["category"]] = int(row["n"] or 0)
+        # 当日接口写入行数累计（含重复采集/全历史接口返回），仅用于对账，不再作为「新增」展示。
+        today_written: dict[str, int] = {}
         for row in conn.execute(
             "SELECT category, SUM(rows) AS rows FROM collection_stat "
             "WHERE run_date=? GROUP BY category", (today,)
         ):
-            today_new[row["category"]] = int(row["rows"] or 0)
+            today_written[row["category"]] = int(row["rows"] or 0)
         last = conn.execute(
             "SELECT run_id, run_date, run_time, run_type FROM interface_run "
             "ORDER BY run_time DESC LIMIT 1"
@@ -1212,7 +1262,7 @@ def status_counts(path: str | Path) -> dict:
         "etf_rows": int(etf["rows"]), "etf_codes": int(etf["codes"]),
         "index_rows": int(index["rows"]), "index_codes": int(index["codes"]),
         "trade_rows": int(trade["rows"]), "trade_raw_rows": raw_rows,
-        "today_new": today_new,
+        "today_new": today_new, "today_written": today_written,
         "failed_total": int(failed), "today_calls": int(today_calls),
         "last_run": last_run,
         "last_counts": last_counts,

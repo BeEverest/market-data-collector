@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import storage
+from collectors import trade as trade_collector
 from processors.dashboard import build_trade_charts
 from processors.trade import (
     INDICATORS, compute_trade, latest_snapshot, margin_policy_for, recompute_trade,
@@ -148,6 +149,24 @@ class TestTradeStorage:
         df = storage.read_trade(db_path)
         assert df.iloc[0]["concentration5"] == pytest.approx(41.88)
         assert "congestion" in df.iloc[0]["source_set"].split("+")
+
+    def test_precise_sources_include_breadth_and_congestion(self, monkeypatch):
+        calls = []
+
+        def fake(name):
+            def inner(*args, **kwargs):
+                calls.append(name)
+                return pd.DataFrame([{"trade_date": "2026-11-25"}])
+            return inner
+
+        monkeypatch.setattr(trade_collector, "_collect_breadth", fake("breadth"))
+        monkeypatch.setattr(trade_collector, "_collect_congestion", fake("congestion"))
+        raw = trade_collector.collect_trade(
+            sources=["breadth", "congestion"], start_date="2026-11-25",
+            end_date="2026-11-25", monitor=None,
+        )
+        assert set(raw) == {"breadth", "congestion"}
+        assert calls == ["breadth", "congestion"]
 
     def test_clear_tables_protect_raw_not_derived(self):
         assert "trade_exchange_raw" not in storage.CLEAR_TABLES

@@ -315,7 +315,7 @@ def _collect_stat_records(monitor: Monitor, macro_df: pd.DataFrame,
 
 def collect_trade_raw(config: dict, monitor: Monitor, *, start_date=None, end_date=None,
                       sources: list[str] | None = None) -> dict[str, pd.DataFrame]:
-    """采集交易原始数据（只落库、不计算）。返回 {exchange/margin/snapshot: DataFrame}。"""
+    """采集交易原始数据（只落库、不计算）。返回五类原始源 DataFrame。"""
     fetch_cfg = config.get("fetch", {})
     trade_cfg = config.get("trade", {})
     raw = collect_trade(
@@ -330,7 +330,7 @@ def collect_trade_raw(config: dict, monitor: Monitor, *, start_date=None, end_da
 
 
 def _finish_trade(monitor: Monitor, raw: dict[str, pd.DataFrame], config: dict) -> dict[str, int]:
-    """把交易原始数据写入 3 张原始表（幂等 upsert），并记录采集统计。返回各表写入行数。"""
+    """把交易原始数据写入 5 张原始表（幂等 upsert），并记录采集统计。返回各表写入行数。"""
     db_path = _db_path(config)
     if not db_path:
         logger.warning("[交易] 交易原始表需 SQLite 存储，文件模式跳过")
@@ -341,6 +341,8 @@ def _finish_trade(monitor: Monitor, raw: dict[str, pd.DataFrame], config: dict) 
         "exchange": storage.upsert_trade_exchange(db_path, raw.get("exchange"), monitor.run_id),
         "margin": storage.upsert_trade_margin(db_path, raw.get("margin"), monitor.run_id),
         "snapshot": storage.upsert_trade_snapshot(db_path, raw.get("snapshot"), monitor.run_id),
+        "breadth": storage.upsert_trade_breadth(db_path, raw.get("breadth"), monitor.run_id),
+        "congestion": storage.upsert_trade_congestion(db_path, raw.get("congestion"), monitor.run_id),
     }
     # 采集统计：交易按原始源类别细分
     stat_records = []
@@ -354,8 +356,9 @@ def _finish_trade(monitor: Monitor, raw: dict[str, pd.DataFrame], config: dict) 
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
     storage.append_collection_stats(db_path, stat_records)
-    logger.info("[交易] 原始落库完成：交易所 %d / 两融 %d / 快照 %d 行（业务键幂等）",
-                written["exchange"], written["margin"], written["snapshot"])
+    logger.info("[交易] 原始落库完成：交易所 %d / 两融 %d / 快照 %d / 涨跌家数 %d / 成交集中度 %d 行（业务键幂等）",
+                written["exchange"], written["margin"], written["snapshot"],
+                written["breadth"], written["congestion"])
     return written
 
 

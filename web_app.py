@@ -469,7 +469,8 @@ def _do_collect_trade(sources: list[str] | None = None, start: str | None = None
     written = _finish_trade(monitor, raw, config)
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     summary = (f"交易原始落库：交易所 {written.get('exchange', 0)} / 两融 {written.get('margin', 0)} / "
-               f"快照 {written.get('snapshot', 0)} 行，接口失败 {failed} 次。请到数据处理·交易 Tab 计算。")
+               f"快照 {written.get('snapshot', 0)} / 涨跌家数 {written.get('breadth', 0)} / "
+               f"成交集中度 {written.get('congestion', 0)} 行，接口失败 {failed} 次。请到数据处理·交易 Tab 计算。")
     logger.info("%s交易采集完成：%s", tag, summary)
     return summary
 
@@ -1017,7 +1018,7 @@ def api_collect_trade(payload: dict | None = None):
     if isinstance(sources, str):
         sources = [s.strip() for s in sources.split(",") if s.strip()]
     if sources:
-        sources = [s for s in sources if s in ("exchange", "margin", "snapshot")]
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion")]
     start = (payload.get("start") or "").strip() or None
     end = (payload.get("end") or "").strip() or None
     job_id = _submit("collect", lambda: _do_collect_trade(sources, start, end))
@@ -1627,7 +1628,7 @@ def api_collect_interface(payload: dict):
         sources = payload.get("codes") or payload.get("sources") or []
         if isinstance(sources, str):
             sources = [s.strip() for s in sources.split(",") if s.strip()]
-        sources = [s for s in sources if s in ("exchange", "margin", "snapshot")]
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion")]
         start = (payload.get("start") or "").strip() or None
         end = (payload.get("end") or "").strip() or None
         job_id = _submit("interface", lambda: _do_collect_trade(sources or None, start, end))

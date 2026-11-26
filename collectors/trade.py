@@ -32,6 +32,7 @@ SOURCE_MARGIN = "中国证券金融两融账户（akshare stock_margin_account_i
 SOURCE_SNAPSHOT = "新浪财经全A快照（akshare stock_zh_a_spot）"
 
 RAW_KEYS = ("exchange", "margin", "snapshot")
+SOURCES_KEYS = RAW_KEYS + ("breadth", "congestion")
 
 
 def catalog() -> list[dict]:
@@ -48,10 +49,10 @@ def catalog() -> list[dict]:
          "fields": "逐股涨跌幅/成交量/成交额（派生集中度与涨跌家数）"},
         {"code": "breadth", "name": "市场宽度（涨跌家数）", "iface": "mx_comprehensive_finance_data",
          "unit": "家", "granularity": "交易日", "source": "东方财富MCP·全A涨跌家数",
-         "fields": "上涨/下跌/平盘家数（历史补数）"},
+         "fields": "上涨/下跌/平盘家数（支持精确采集与历史补数）"},
         {"code": "congestion", "name": "成交集中度（前5%）", "iface": "legulegu api/stockdata/ashares-congestion",
          "unit": "%", "granularity": "交易日", "source": "乐咕乐股·大盘拥挤度",
-         "fields": "前5%成交额/全部A股成交额/集中度（历史补数）"},
+         "fields": "前5%成交额/全部A股成交额/集中度（支持精确采集与历史补数）"},
     ]
 
 
@@ -208,18 +209,26 @@ def _collect_margin(start_date: str, end_date: str, *, retries: int,
     return out
 
 
-def _snapshot_trade_date(df: pd.DataFrame) -> str:
-    """快照所属交易日：新浪快照时间戳多为纯时间（如 15:30:01），不含日期，
-    故统一锚定「最近已结束交易日」。凌晨定时任务取到的是上一交易日收盘快照，
-    与该锚定一致。若时间戳含日期（YYYY-MM-DD）则优先采用。"""
+def _snapshot_trade_date(df: pd.DataFrame, now: datetime | None = None) -> str:
+    """快照所属交易日。
+
+    新浪 `stock_zh_a_spot` 的时间戳多为纯时间（如 15:30:01），不含日期：
+    - 含完整日期时优先采用；
+    - 仅含时间时，必须确认本地已收盘（15:00 后）才标记为当天；
+    - 盘中/凌晨取到的是实时或不稳定快照，禁止回退并错标到上一交易日。
+
+    历史交易日请用 `tools/backfill_trade_snapshot.py` 按明确日期补数。
+    """
+    now = now or datetime.now()
     if "时间戳" in df.columns:
         stamps = df["时间戳"].dropna().astype(str)
         if not stamps.empty:
             sample = stamps.iloc[0].strip()
-            # 含完整日期才用；纯 HH:MM:SS 不可作交易日
             if len(sample) >= 10 and sample[4] in "-/" and sample[:4].isdigit():
                 return sample[:10].replace("/", "-")
-    return last_completed_trade_day()
+    if (now.hour > 15 or (now.hour == 15 and now.minute >= 0)) and now.date().weekday() < 5:
+        return now.date().isoformat()
+    return ""
 
 
 def _collect_snapshot(start_date: str, end_date: str, *, retries: int,
@@ -238,6 +247,13 @@ def _collect_snapshot(start_date: str, end_date: str, *, retries: int,
         logger.warning("[交易·快照] %s", reason)
         return pd.DataFrame()
     trade_date = _snapshot_trade_date(raw)
+    if not trade_date:
+        reason = "实时快照未收盘或时间戳无日期，禁止错标到上一交易日"
+        _report(monitor, key="trade.stock_snapshot", name="全A个股快照",
+                status="failed", params={}, started=started, attempts=retries,
+                rows=0, error=reason)
+        logger.warning("[交易·快照] %s", reason)
+        return pd.DataFrame()
     # 快照只在落库日有效：若指定区间不含该交易日，跳过（不可回溯历史）
     if not (start_date <= trade_date <= end_date):
         _report(monitor, key="trade.stock_snapshot", name="全A个股快照",
@@ -265,6 +281,66 @@ def _collect_snapshot(start_date: str, end_date: str, *, retries: int,
     return out
 
 
+def _collect_breadth(start_date: str, end_date: str, *, monitor,
+                     collected_at: str) -> pd.DataFrame:
+    """按明确区间采集涨跌家数（东方财富 MCP），失败仅留痕不影响其它源。"""
+    started = time.time()
+    try:
+        from tools.backfill_trade_breadth import SOURCE, parse_breadth
+        from tools.backfill_trade_eastmoney import mcp_call
+
+        query = (f"东方财富全A(沪深京)(800004.EI)指数在{start_date}至{end_date}每个交易日的"
+                 "上涨家数、下跌家数、平盘家数，请完整列出所有交易日")
+        got = parse_breadth(mcp_call(query, tool="mx_comprehensive_finance_data"))
+        rows = [{
+            "trade_date": day, "up_count": rec.get("up_count"),
+            "down_count": rec.get("down_count"), "flat_count": rec.get("flat_count"),
+            "source": SOURCE, "collected_at": collected_at,
+        } for day, rec in sorted(got.items()) if start_date <= day <= end_date]
+        df = pd.DataFrame(rows)
+        _report(monitor, key="trade.market_breadth", name="涨跌家数",
+                status="success", params={"start": start_date, "end": end_date},
+                started=started, attempts=1, rows=len(df))
+        return df
+    except Exception as exc:  # noqa: BLE001 - 外部数据不可用时只记失败
+        _report(monitor, key="trade.market_breadth", name="涨跌家数",
+                status="failed", params={"start": start_date, "end": end_date},
+                started=started, attempts=1, rows=0, error=describe_failure(exc))
+        logger.warning("[交易·涨跌家数] 采集失败：%s", exc)
+        return pd.DataFrame()
+
+
+def _collect_congestion(start_date: str, end_date: str, *, monitor,
+                        collected_at: str) -> pd.DataFrame:
+    """按明确区间采集成交集中度（乐咕同源接口 + 最新表）。"""
+    started = time.time()
+    try:
+        from tools.backfill_trade_congestion import (
+            fetch_api_items, parse_api_items, parse_latest_table,
+        )
+
+        items, html = fetch_api_items()
+        values: dict[str, dict] = {}
+        values.update(parse_api_items(items, start_date, end_date))
+        values.update(parse_latest_table(html, start_date, end_date))
+        rows = []
+        for day in sorted(values):
+            row = dict(values[day])
+            row["collected_at"] = collected_at
+            rows.append(row)
+        df = pd.DataFrame(rows)
+        _report(monitor, key="trade.congestion", name="成交集中度",
+                status="success", params={"start": start_date, "end": end_date},
+                started=started, attempts=1, rows=len(df))
+        return df
+    except Exception as exc:  # noqa: BLE001 - 外部数据不可用时只记失败
+        _report(monitor, key="trade.congestion", name="成交集中度",
+                status="failed", params={"start": start_date, "end": end_date},
+                started=started, attempts=1, rows=0, error=describe_failure(exc))
+        logger.warning("[交易·成交集中度] 采集失败：%s", exc)
+        return pd.DataFrame()
+
+
 def _default_range() -> tuple[str, str]:
     day = last_completed_trade_day()
     return day, day
@@ -273,16 +349,16 @@ def _default_range() -> tuple[str, str]:
 def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
                   end_date: str | None = None, *, monitor=None, retries: int = 3,
                   retry_interval: float = 2.0, sources: list[str] | None = None) -> dict[str, pd.DataFrame]:
-    """采集交易原始数据，返回 {exchange/margin/snapshot: DataFrame}。
+    """采集交易原始数据，返回 {exchange/margin/snapshot/breadth/congestion: DataFrame}。
 
-    codes    : 兼容接口，实际以 sources 选择原始数据源；codes 含 "exchange"/"margin"/"snapshot" 时等同 sources
+    codes    : 兼容接口，实际以 sources 选择原始数据源
     start/end: YYYY-MM-DD；留空时默认最近一个已结束交易日（单日）
-    sources  : 要采集的原始源列表，留空采集全部三类
+    sources  : 要采集的原始源列表，留空采集全部五类
     """
-    selected = list(sources or codes or RAW_KEYS)
-    selected = [s for s in selected if s in RAW_KEYS]
+    selected = list(sources or codes or SOURCES_KEYS)
+    selected = [s for s in selected if s in SOURCES_KEYS]
     if not selected:
-        selected = list(RAW_KEYS)
+        selected = list(SOURCES_KEYS)
 
     if not start_date and not end_date:
         start_date, end_date = _default_range()
@@ -306,4 +382,10 @@ def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
         result["snapshot"] = _collect_snapshot(start_date, end_date, retries=retries,
                                                retry_interval=retry_interval, monitor=monitor,
                                                collected_at=collected_at)
+    if "breadth" in selected:
+        result["breadth"] = _collect_breadth(start_date, end_date, monitor=monitor,
+                                             collected_at=collected_at)
+    if "congestion" in selected:
+        result["congestion"] = _collect_congestion(start_date, end_date, monitor=monitor,
+                                                   collected_at=collected_at)
     return result

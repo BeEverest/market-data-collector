@@ -462,6 +462,25 @@ class TestWebPage:
         assert "出口额" not in text
         assert page._js_errors == []
 
+    def test_monitor_default_range_includes_today(self, page):
+        """运维监控默认日期上限为今天，当日运行记录不能被最近交易日截掉。"""
+        _switch(page, "mon-detail")
+        bar = page.locator("#v-mon-detail [data-monitor-filter]")
+        today = page.evaluate("TODAY")
+        assert bar.locator("[data-mon-end]").input_value() == today
+        page.evaluate("""d => {
+          MONITOR_RAW.detail.push({
+            '运行日期': d, '运行时间': d + ' 21:18:36', '运行ID': 'today_probe',
+            '运行类型': 'interface', '类别': '交易', '接口键': 'trade.market_breadth',
+            '接口名称': '市场宽度', '调用参数': '{}', '状态': 'success',
+            '尝试次数': 1, '数据行数': 0, '失败原因': '', '耗时(秒)': 0.1,
+          });
+          renderMonitorTable('detail');
+        }""", today)
+        body = page.locator('#v-mon-detail [data-monitor-table="detail"] tbody').inner_text()
+        assert "today_probe" in body
+        assert page._js_errors == []
+
     def test_monitor_failure_filter_keeps_only_failed_rows(self, page):
         """运维监控失败明细按状态筛选生效。"""
         _switch(page, "mon-failures")

@@ -101,6 +101,8 @@ function shiftMonth(iso, months){
   return d.toISOString().slice(0,10);
 }
 const CURRENT_MONTH = new Date().toISOString().slice(0,7);
+/* 本地自然日：运维监控按运行日期筛选，需覆盖当日（不能截到最近交易日） */
+const TODAY = (()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})();
 /* 定时调度宏观滚动窗口：当前月往前 lookback 个月（默认 2），返回 YYYY-MM 起止 */
 function macroSchedWindow(){
   const lb = Number(S.scheduler?.macro_lookback_months ?? 2);
@@ -414,10 +416,10 @@ async function loadStatus(){
   try {
     S = await api('/api/status');
     LAST = S.last_trade_date || '';
-    WEEK_START = shiftDate(LAST, -6);
-    // 运维监控日期控件默认最近一周（按最近交易日回推 6 天）；仅初始化，用户改动后不覆盖
+    WEEK_START = shiftDate(TODAY, -6);
+    // 运维监控按运行日期筛选，默认最近一周且上限为今天；仅初始化，用户改动后不覆盖
     Object.values(MONITOR_STATE).forEach(st=>{
-      if(!st.start && !st.end && WEEK_START){ st.start = WEEK_START; st.end = LAST; }
+      if(!st.start && !st.end && WEEK_START){ st.start = WEEK_START; st.end = TODAY; }
     });
     const scheduler = S.scheduler || {};
     if($('#dpSchedEnabled')) $('#dpSchedEnabled').checked = !!scheduler.enabled;
@@ -862,7 +864,7 @@ function monitorView(kind){
       <button class="btn btn-danger btn-sm" data-act="monitor-clean-toggle"><i class="ti ti-eraser"></i> 清理监控</button></div>
     <div class="card-body">
       <div class="card" data-monitor-clean style="display:none;background:#132842;margin-bottom:12px"><div class="card-body">
-        <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">时间范围</label><input class="prec-input" type="date" data-mc-start style="width:130px" value="${esc(WEEK_START)}"><span class="hint">~</span><input class="prec-input" type="date" data-mc-end style="width:130px" value="${esc(LAST)}">
+        <div class="ctl-params" style="margin-bottom:8px"><label class="prec-field">时间范围</label><input class="prec-input" type="date" data-mc-start style="width:130px" value="${esc(WEEK_START)}"><span class="hint">~</span><input class="prec-input" type="date" data-mc-end style="width:130px" value="${esc(TODAY)}">
           <select class="form-select" style="width:100px"><option>全部状态</option><option>成功</option><option>失败</option></select>
           <select class="form-select" style="width:110px"><option>全部类型</option><option>全量</option><option>定时</option></select>
           <select class="form-select" style="width:90px"><option>全部类别</option><option>宏观</option><option>ETF</option></select></div>

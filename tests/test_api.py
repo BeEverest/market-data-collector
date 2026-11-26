@@ -114,6 +114,34 @@ class TestReadOnlyApis:
         assert row["规模变化(亿元)"] == pytest.approx(8.96)
         assert row["规模变化率(%)"] == pytest.approx(8.96 / 341.04 * 100, abs=1e-3)
 
+    def test_etf_add_full_info_persisted(self, client):
+        """新增 ETF：代码/名称/标签/上市日期一次写入并可从 SQLite 读回。"""
+        cfg = client.get("/api/etf/config").json()
+        codes = list(cfg["codes"])
+        codes.append("159300")
+        payload = {
+            "codes": codes,
+            "names": {"159300": "沪深300ETF测试"},
+            "listing_dates": {"159300": "2024-05-10"},
+            "tags": {"159300": ["沪深300", "汇金"]},
+        }
+        saved = client.post("/api/etf/config", json=payload)
+        assert saved.status_code == 200
+        view = saved.json()["config"]
+        item = next(x for x in view["items"] if x["code"] == "159300")
+        assert item["name"] == "沪深300ETF测试"
+        assert item["listing_date"] == "2024-05-10"
+        assert item["tags"] == ["汇金", "沪深300"]  # 按选项顺序归一
+        # 重新读取（走 SQLite）仍完整
+        reread = client.get("/api/etf/config").json()
+        item2 = next(x for x in reread["items"] if x["code"] == "159300")
+        assert item2["name"] == "沪深300ETF测试"
+        assert item2["listing_date"] == "2024-05-10"
+        assert item2["tags"] == ["汇金", "沪深300"]
+        # 非法上市日期被拒绝
+        bad = client.post("/api/etf/config", json={"listing_dates": {"159300": "2024/05/10"}})
+        assert bad.status_code == 400
+
     def test_macro_pagination_and_date_filter(self, client):
         r = client.get("/api/data/macro", params={"page": 1, "page_size": 2})
         data = r.json()

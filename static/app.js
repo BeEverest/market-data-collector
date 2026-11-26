@@ -178,6 +178,48 @@ function openEtfTagEditor(idx){
   });
 }
 
+/* 新增 ETF：代码 / 名称 / 标签(多选) / 上市日期 一次填齐，全部写入 SQLite */
+let ETF_ADD_DRAFT = {};
+function openEtfAddModal(preCode=''){
+  const opts = ETF_CFG.tag_options||ETF_TAG_OPTIONS;
+  ETF_ADD_DRAFT = {code:preCode||'', name:'', listing:'', tags:[]};
+  const body = `<div class="etf-add-form" style="display:grid;gap:10px;padding:2px 0">
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:70px">基金代码</span><input class="prec-input" data-add-code maxlength="6" placeholder="6 位基金代码" value="${esc(preCode)}" style="flex:1"></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:70px">基金名称</span><input class="prec-input" data-add-name placeholder="如：沪深300ETF华泰" style="flex:1"></label>
+    <div style="font-size:13px"><div style="margin-bottom:6px">分组标签 <span class="hint">（可多选）</span></div>
+      <div class="etf-tag-picker" style="display:flex;flex-wrap:wrap;gap:8px 14px">
+      ${opts.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" value="${esc(t)}" style="width:auto"> ${esc(t)}</label>`).join('')}
+      </div></div>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:70px">上市日期</span><input class="prec-input" type="date" data-add-listing style="flex:1"><span class="hint">可留空</span></label>
+  </div>`;
+  modal('新增 ETF 标的', body, ()=>{
+    const {code, name, listing, tags} = ETF_ADD_DRAFT;
+    if(!/^\d{1,6}$/.test(code)){ toast('请输入 1~6 位数字的基金代码','warn'); return; }
+    const normalized = code.padStart(6,'0');
+    if((ETF_CFG.items||[]).some(x=>x.code===normalized)){ toast(`${normalized} 已存在`,'warn'); return; }
+    if(!name){ toast('请填写基金名称','warn'); return; }
+    // 一次性构造完整标的并整体提交，确保四项都落到 SQLite
+    ETF_CFG.items = ETF_CFG.items||[];
+    ETF_CFG.items.push({code:normalized, name, listing_date:listing, tags});
+    saveEtfConfigUI(byId('v-etfcfg'), true).then(ok=>{
+      if(ok){ rerenderView('etfcfg'); toast(`已新增 ${normalized} ${name}`,'ok'); }
+      else { ETF_CFG.items = ETF_CFG.items.filter(x=>x.code!==normalized); rerenderView('etfcfg'); }
+    });
+  }, '确认新增');
+  const root = byId('modalRoot');
+  const sync = ()=>{
+    ETF_ADD_DRAFT.code = (root.querySelector('[data-add-code]')?.value||'').trim();
+    ETF_ADD_DRAFT.name = (root.querySelector('[data-add-name]')?.value||'').trim();
+    ETF_ADD_DRAFT.listing = (root.querySelector('[data-add-listing]')?.value||'').trim();
+    ETF_ADD_DRAFT.tags = [...root.querySelectorAll('.etf-tag-picker input:checked')].map(x=>x.value);
+  };
+  root.querySelectorAll('input').forEach(el=>{
+    el.addEventListener('input', sync);
+    el.addEventListener('change', sync);
+  });
+  root.querySelector('[data-add-code]')?.focus();
+}
+
 /* ---------------- 实时监控日志（真实 /api/live-logs + /api/jobs） ---------------- */
 function appendLog(text, level='INFO'){
   const body = byId('logBody'); if(!body) return;
@@ -834,7 +876,7 @@ const VIEWS = {
     <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称'],INDEX_ITEMS.map(x=>[x[0],x[1]]),{action:'idx-row-remove',actionLabel:'删除'})}</div></div></div>`,
 
   etfcfg:()=>head('ETF 采集配置','26 只标的 · 分组标签与上市日期缓存')+`<div class="card"><div class="card-header"><h3><i class="ti ti-coins" style="color:var(--ok)"></i> ETF 标的配置</h3><span class="sub">分组标签可多选 · 自动解析上市日</span></div><div class="card-body">
-    <div class="ctl-params"><input class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" style="width:150px" data-etf-new><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 添加</button><span class="hint" style="margin-left:8px">标签枚举：${esc((ETF_CFG.tag_options||ETF_TAG_OPTIONS).join('、'))}（可多选）</span></div>
+    <div class="ctl-params"><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 新增 ETF</button><span class="hint" style="margin-left:8px">代码 / 名称 / 标签 / 上市日期一次填齐，存入 SQLite · 标签枚举：${esc((ETF_CFG.tag_options||ETF_TAG_OPTIONS).join('、'))}（可多选）</span></div>
     <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(ETF_CFG.start_date||LAST)}" style="width:125px" data-etf-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(ETF_CFG.end_date||LAST)}" style="width:125px" data-etf-end><label class="prec-field">最近 <input class="prec-input" type="number" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:60px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认最近一个交易日</span></div>
     <div class="table-responsive" style="margin-top:12px"><table class="table table-hover"><thead><tr><th>代码</th><th>名称</th><th>标签</th><th>上市日期</th><th style="width:150px">操作</th></tr></thead><tbody>${(ETF_CFG.items||[]).map((x,i)=>`<tr>
       <td><div class="cell-clip">${esc(x.code)}</div></td>
@@ -1670,22 +1712,19 @@ function handleAction(act, btn, e){
       break;
     }
     case 'sched-run-now': submitJob('/api/collect', {macro_only:false,etf_only:false,index_only:false}, '定时调度立即触发'); break;
-    case 'idx-add': case 'etf-add': {
-      const isIdx = act==='idx-add';
-      const inp = view?.querySelector(isIdx?'[data-idx-new]':'[data-etf-new]');
+    case 'etf-add': { openEtfAddModal(); break; }
+    case 'idx-add': {
+      const inp = view?.querySelector('[data-idx-new]');
       const val = inp?.tagName==='SELECT' ? inp.value : (inp?.value||'').trim();
       if(!val){ toast('请先选择或输入代码','warn'); break; }
-      const cfg = isIdx ? INDEX_CFG : ETF_CFG;
+      const cfg = INDEX_CFG;
       if(!cfg.items.some(x=>x.code===val)) cfg.items.push({code:val, name:inp?.selectedOptions?.[0]?.text?.split(' ').slice(1).join(' ')||val, tags:[]});
-      const wrap = view?.querySelector(`[data-chips="${isIdx?'idx':'etf'}"]`);
+      const wrap = view?.querySelector('[data-chips="idx"]');
       if(wrap){ const chip=document.createElement('span'); chip.className='chip';
         const label=inp?.tagName==='SELECT'?inp.selectedOptions[0].text:val;
-        chip.innerHTML=`<i class="ti ti-${isIdx?'chart-dots':'coins'}"></i> ${esc(label)}<span class="x" data-act="chip-remove">×</span>`;
+        chip.innerHTML=`<i class="ti ti-chart-dots"></i> ${esc(label)}<span class="x" data-act="chip-remove">×</span>`;
         wrap.appendChild(chip); }
-      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>{
-        if(!isIdx) rerenderView('etfcfg');
-        toast(`已添加${isIdx?'指数':'ETF'}：${val}`,'ok');
-      });
+      saveIndexConfigUI(view, true).then(()=>toast(`已添加指数：${val}`,'ok'));
       break;
     }
     case 'chip-remove': {
@@ -1932,12 +1971,16 @@ async function saveEtfConfigUI(view, quiet){
   const valOr = (sel, fallback) => { const el=view?.querySelector(sel); return el ? el.value.trim() : (fallback||''); };
   const payload = {
     codes:(ETF_CFG.items||[]).map(x=>x.code),
-    tags:{},
+    tags:{}, names:{}, listing_dates:{},
     start_date:valOr('[data-etf-start]', ETF_CFG.start_date),
     end_date:valOr('[data-etf-end]', ETF_CFG.end_date),
     default_trade_days:Number(valOr('[data-etf-days]', ETF_CFG.default_trade_days)) || Number(ETF_CFG.default_trade_days||60),
   };
-  (ETF_CFG.items||[]).forEach(x=>{ if(x.tags?.length) payload.tags[x.code]=x.tags; });
+  (ETF_CFG.items||[]).forEach(x=>{
+    if(x.tags?.length) payload.tags[x.code]=x.tags;
+    if(x.name) payload.names[x.code]=x.name;
+    if(x.listing_date) payload.listing_dates[x.code]=x.listing_date;
+  });
   try { const res=await postJSON('/api/etf/config', payload); if(res.config) ETF_CFG=res.config; loadCatalog(); if(!quiet)toast('ETF 配置已保存','ok'); return true; }
   catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
 }

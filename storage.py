@@ -1221,7 +1221,7 @@ def status_counts(path: str | Path) -> dict:
 
 # ---------- ETF 配置 ----------
 DEFAULT_ETF_CONFIG = {
-    "codes": [], "listing_dates": {}, "start_date": "",
+    "codes": [], "names": {}, "listing_dates": {}, "start_date": "",
     "end_date": "", "default_trade_days": 1,
 }
 

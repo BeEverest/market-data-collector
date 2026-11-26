@@ -355,6 +355,30 @@ class TestWebPage:
         assert "汇金" in first_row_tags and "沪深300" in first_row_tags
         assert page._js_errors == []
 
+    def test_etf_add_modal_persists_all_fields(self, page):
+        """新增 ETF 弹窗一次填齐代码/名称/标签/上市日期并写入表格。"""
+        _switch(page, "etfcfg")
+        before = page.locator('#v-etfcfg tbody tr').count()
+        page.locator('#v-etfcfg [data-act="etf-add"]').click()
+        page.wait_for_selector('#modalRoot .etf-add-form')
+        page.locator('#modalRoot [data-add-code]').fill("159300")
+        page.locator('#modalRoot [data-add-name]').fill("沪深300ETF测试")
+        page.locator('#modalRoot [data-add-listing]').fill("2024-05-10")
+        page.locator('#modalRoot .etf-tag-picker input[value="沪深300"]').check()
+        page.locator('#modalRoot .etf-tag-picker input[value="汇金"]').check()
+        page.locator('#modalRoot [data-act="modal-ok"]').click()
+        page.wait_for_timeout(700)
+
+        rows = page.locator('#v-etfcfg tbody tr')
+        assert rows.count() == before + 1
+        added = rows.last
+        cells = [added.locator("td").nth(i).inner_text() for i in range(4)]
+        assert cells[0] == "159300"
+        assert cells[1] == "沪深300ETF测试"
+        assert "汇金" in cells[2] and "沪深300" in cells[2]
+        assert cells[3] == "2024-05-10"
+        assert page._js_errors == []
+
     def test_preview_filter_applies_code_and_date(self, page):
         """数据预览筛选按代码/日期重载表格。"""
         _switch(page, "prev-macro")

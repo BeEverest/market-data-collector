@@ -182,7 +182,10 @@ def _etf_config_view() -> dict:
     db_path = _db_path(cfg)
     etf = storage.get_etf_config(db_path, cfg.get("etf", {})) if db_path else cfg.get("etf", {})
     codes = [str(c).strip().zfill(6) for c in etf.get("codes", []) if str(c).strip()]
-    name_map = get_fund_name_map()
+    dynamic_names = get_fund_name_map()
+    # 配置中持久化的名称优先，动态行情名称兜底（新增标的的名称由表单写入 SQLite）
+    stored_names = {str(k).zfill(6): str(v) for k, v in (etf.get("names") or {}).items()}
+    name_map = {**dynamic_names, **stored_names}
     listing = {str(k).zfill(6): v for k, v in (etf.get("listing_dates") or {}).items()}
     tag_map = {
         str(k).zfill(6): [t for t in (v if isinstance(v, list) else str(v).split(",")) if t]
@@ -197,6 +200,7 @@ def _etf_config_view() -> dict:
     return {
         "codes": codes,
         "items": items,
+        "names": stored_names,
         "tags": tag_map,
         "tag_options": ETF_TAG_OPTIONS,
         "start_date": etf.get("start_date", ""),
@@ -1490,6 +1494,8 @@ def api_etf_config_set(payload: dict):
         etf["codes"] = codes
         listing = etf.get("listing_dates") or {}
         etf["listing_dates"] = {k: v for k, v in listing.items() if k in codes}
+        names = etf.get("names") or {}
+        etf["names"] = {k: v for k, v in names.items() if k in codes}
         tags = etf.get("tags") or {}
         etf["tags"] = {k: v for k, v in tags.items() if k in codes}
         updated = True
@@ -1543,6 +1549,46 @@ def api_etf_config_set(payload: dict):
             if ordered:
                 cleaned[code] = ordered
         etf["tags"] = cleaned
+        updated = True
+
+    # 名称：{代码: 名称}，仅接受已配置标的；空值视为清除该项。
+    if "names" in payload:
+        raw = payload["names"]
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="names 应为 {代码: 名称}")
+        names = dict(etf.get("names") or {})
+        for key, val in raw.items():
+            code = str(key).strip().zfill(6)
+            if code not in etf.get("codes", []):
+                raise HTTPException(status_code=400, detail=f"名称对应的 ETF 未配置：{code}")
+            name = str(val or "").strip()
+            if name:
+                names[code] = name
+            else:
+                names.pop(code, None)
+        etf["names"] = {k: v for k, v in names.items() if k in etf.get("codes", [])}
+        updated = True
+
+    # 上市日期：{代码: YYYY-MM-DD}，仅接受已配置标的；空值视为清除。
+    if "listing_dates" in payload:
+        raw = payload["listing_dates"]
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="listing_dates 应为 {代码: YYYY-MM-DD}")
+        listing = dict(etf.get("listing_dates") or {})
+        for key, val in raw.items():
+            code = str(key).strip().zfill(6)
+            if code not in etf.get("codes", []):
+                raise HTTPException(status_code=400, detail=f"上市日期对应的 ETF 未配置：{code}")
+            date = str(val or "").strip()
+            if date:
+                try:
+                    datetime.strptime(date, "%Y-%m-%d")
+                except ValueError:
+                    raise HTTPException(status_code=400, detail=f"{code} 上市日期格式应为 YYYY-MM-DD")
+                listing[code] = date
+            else:
+                listing.pop(code, None)
+        etf["listing_dates"] = {k: v for k, v in listing.items() if k in etf.get("codes", [])}
         updated = True
 
     if not updated:

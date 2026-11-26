@@ -137,6 +137,21 @@ class TestMacroDashboard:
         s_full = next(c for c in full if c["id"] == "gold")["series"][0]
         assert [d for d, _ in s_full["data"]] == ["2025-01", "2026-08", "2026-10"]
 
+    def test_absolute_date_range(self):
+        charts = build_macro_charts(
+            _derived_rows(self.codes, ["2025-01", "2026-08", "2026-10"]),
+            _macro_rows(), _index_rows(), months=12,
+            start="2026-09-01", end="2026-10-31")
+        s = next(c for c in charts if c["id"] == "gold")["series"][0]
+        assert [d for d, _ in s["data"]] == ["2026-10"]
+        # 绝对区间优先于 months，且月份边界按 YYYY-MM 包含
+        charts2 = build_macro_charts(
+            _derived_rows(self.codes, ["2025-01", "2026-08", "2026-10"]),
+            _macro_rows(), _index_rows(), months=1,
+            start="2026-08-15", end="2026-10-01")
+        s2 = next(c for c in charts2 if c["id"] == "gold")["series"][0]
+        assert [d for d, _ in s2["data"]] == ["2026-08", "2026-10"]
+
 
 class TestEtfDashboard:
     def test_aggregates_by_tag_and_months(self):
@@ -412,6 +427,16 @@ class TestDashboardApi:
         data2 = client.get("/api/dashboard?months=12&etf_months=12&overlay_index=000001").json()
         assert data2["overlay_index"] == "000001"
         assert data2["etf"]["charts"][0]["index_code"] == "000001"
+
+    def test_dashboard_endpoint_macro_date_range(self, client, db_path):
+        storage.upsert_derived(db_path, _derived_rows(["GOLD_NEW_TON"], ["2026-08", "2026-10"]))
+        data = client.get(
+            "/api/dashboard?months=1&macro_start=2026-09-01&macro_end=2026-10-31"
+        ).json()
+        assert data["macro_start"] == "2026-09-01"
+        assert data["macro_end"] == "2026-10-31"
+        gold = next(c for c in data["macro"]["charts"] if c["id"] == "gold")
+        assert [d for d, _ in gold["series"][0]["data"]] == ["2026-10"]
 
     def test_dashboard_endpoint_etf_date_range(self, client):
         data = client.get(

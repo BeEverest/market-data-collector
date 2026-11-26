@@ -1025,6 +1025,7 @@ def api_collect_trade(payload: dict | None = None):
 
 @app.get("/api/dashboard")
 def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = None,
+                  macro_start: str | None = None, macro_end: str | None = None,
                   etf_start: str | None = None, etf_end: str | None = None,
                   overlay_index: str = "000001", trade_days: int | None = None,
                   trade_months: int = 12, trade_start: str | None = None,
@@ -1033,8 +1034,8 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
 
     months/etf_months/trade_months 均为月份范围（0=全部），默认近一年；
     days 为兼容旧前端的别名（仅作用于 ETF）。
-    etf_start/etf_end、trade_start/trade_end 为 YYYY-MM-DD 精确日期区间，
-    分别优先于 etf_months、trade_months。交易 Tab 日期口径与 ETF 完全一致。
+    macro_start/macro_end、etf_start/etf_end、trade_start/trade_end 为 YYYY-MM-DD 精确日期区间，
+    分别优先于 months、etf_months、trade_months。宏观 / ETF / 交易 Tab 日期口径完全一致。
     overlay_index 为汇金图上方叠加的指数代码，默认上证指数 000001。
     """
     cfg = _cfg()
@@ -1066,6 +1067,8 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
     return {
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "months": months,
+        "macro_start": macro_start or "",
+        "macro_end": macro_end or "",
         "etf_months": etf_months,
         "etf_start": etf_start or "",
         "etf_end": etf_end or "",
@@ -1074,7 +1077,8 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "trade_end": trade_end or "",
         "overlay_index": overlay_index,
         "index_options": index_options,
-        "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months)},
+        "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months,
+                                               macro_start, macro_end)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
                                            etf_start, etf_end, index_df, overlay_index)},
         "trade": {"charts": build_trade_charts(

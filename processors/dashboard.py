@@ -223,6 +223,14 @@ def _slice(series: list[list], cutoff: str) -> list[list]:
     return [[d, v] for d, v in series if d[:7] >= cutoff]
 
 
+def _slice_range(series: list[list], start: str | None, end: str | None) -> list[list]:
+    """按 YYYY-MM / YYYY-MM-DD 起止月份截取月度序列（含边界）。"""
+    low = str(start)[:7] if start else ""
+    high = str(end)[:7] if end else ""
+    return [[d, v] for d, v in series
+            if (not low or str(d)[:7] >= low) and (not high or str(d)[:7] <= high)]
+
+
 def _chart(spec: dict, series: list[dict]) -> dict:
     return {
         "id": spec["id"],
@@ -235,8 +243,13 @@ def _chart(spec: dict, series: list[dict]) -> dict:
 
 
 def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
-                       index_df: pd.DataFrame, months: int | None = 60) -> list[dict]:
-    """装配宏观 7 张图；months 控制展示最近 N 个月（None/0 为全部）。"""
+                       index_df: pd.DataFrame, months: int | None = 60,
+                       start: str | None = None, end: str | None = None) -> list[dict]:
+    """装配宏观 8 张图；months 控制展示最近 N 个月（None/0 为全部）。
+
+    start/end 为 YYYY-MM-DD（或 YYYY-MM）绝对日期区间，与 ETF/交易看板口径一致；
+    任一给出即优先于 months，避免"近3年/自定义"仍被默认近一年数据限制。
+    """
     specs = {s["id"]: s for s in MACRO_CHART_SPECS}
     raw = {
         "gdp_yoy": _macro_yoy(macro_df, "CN_GDP"),
@@ -257,11 +270,13 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
         "hh_new_yoy": _derived_pairs(derived_df, "HH_DEPOSIT_NEW_YOY"),
         "gold_new": _derived_pairs(derived_df, "GOLD_NEW_TON"),
     }
-    cutoff = _cutoff_date(list(raw.values()), months)
+    use_range = bool(start or end)
+    cutoff = "" if use_range else _cutoff_date(list(raw.values()), months)
 
     def s(name, key, axis=0, chart_type="line"):
+        data = _slice_range(raw[key], start, end) if use_range else _slice(raw[key], cutoff)
         return {
-            "name": name, "data": _slice(raw[key], cutoff),
+            "name": name, "data": data,
             "y_axis_index": axis, "type": chart_type,
         }
 

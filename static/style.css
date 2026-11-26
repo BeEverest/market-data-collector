@@ -293,3 +293,24 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 .th-sort{background:none;border:0;color:inherit;cursor:pointer;font:inherit;padding:0;display:inline-flex;align-items:center;gap:4px}
 .th-sort:hover{color:var(--blue)}
 .th-sort .sort-ico{color:var(--blue);font-size:12px}
+/* 采集控制台三卡整体布局 */
+.stat-card-wide{min-height:118px;padding:16px 18px!important;background:linear-gradient(135deg,var(--card) 0%,var(--card-2) 100%)!important}
+.stat-card-wide .val{font-size:26px!important;line-height:1.25!important}
+.stat-card-wide .lbl{font-size:12.5px!important;font-weight:600!important}
+/* 派生指标卡片 */
+.indicator-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.indicator-card{padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--card-2);display:flex;flex-direction:column;gap:6px;min-height:138px}
+.indicator-card .ic-top{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.indicator-card .code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#7bb0ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.indicator-card .ic-name{font-size:12.5px;font-weight:650;color:var(--ink)}
+.indicator-card .ic-value{font-size:20px;font-weight:700;color:#eaf1fb;font-variant-numeric:tabular-nums}
+.indicator-card .ic-value small{font-size:10px;font-weight:500;color:var(--muted)}
+.indicator-card .ic-formula{font-size:10px;line-height:1.45;color:var(--muted);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.indicator-card .ic-source{font-size:9.5px;color:#6f89aa;margin-top:auto}
+.formula-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}
+.formula-item{padding:9px 11px;border:1px solid var(--line);border-radius:7px;background:rgba(91,155,255,.06);display:flex;flex-direction:column;gap:4px}
+.formula-item b{font-size:11.5px;color:var(--ink)}
+.formula-item span{font-size:10px;line-height:1.55;color:var(--muted)}
+/* ETF 计算分页表格 */
+[data-etfcalc-body] .table-wrap,[data-etfcalc-shares-body] .table-wrap{max-height:440px}
+[data-etfcalc-pager]{padding:2px 14px 8px}

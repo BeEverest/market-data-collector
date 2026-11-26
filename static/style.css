@@ -322,18 +322,18 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 
 
 /* 采集控制台分类汇总卡片（采集数量汇总 / 当日采集数据汇总） */
-.summary-card{min-height:150px;padding:15px 18px!important}
-.summary-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.summary-head .ic{width:38px;height:38px;border-radius:10px;display:grid;place-items:center;font-size:19px;margin-bottom:0;flex-shrink:0}
-.summary-title{font-size:14px;font-weight:700;color:var(--ink)}
-.summary-sub{font-size:10.5px;color:var(--muted);margin-top:2px}
-.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
-.summary-cell{border:1px solid var(--line);border-radius:8px;padding:9px 6px;text-align:center;background:rgba(91,155,255,.05)}
-.summary-cell-ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:14px;margin:0 auto 5px}
+.summary-card{min-height:0;padding:11px 14px!important}
+.summary-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.summary-head .ic{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;font-size:16px;margin-bottom:0;flex-shrink:0}
+.summary-title{font-size:13px;font-weight:700;color:var(--ink);line-height:1.2}
+.summary-sub{font-size:10px;color:var(--muted);margin-top:1px}
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.summary-cell{border:1px solid var(--line);border-radius:7px;padding:6px 4px;text-align:center;background:rgba(91,155,255,.05)}
+.summary-cell-ic{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:12px;margin:0 auto 3px}
 .summary-cell-ic.ic-blue,.summary-head .ic.ic-blue{background:rgba(66,153,225,.16);color:#4dabf7}
 .summary-cell-ic.ic-purple,.summary-head .ic.ic-purple{background:rgba(174,62,201,.16);color:#e599f7}
 .summary-cell-ic.ic-green,.summary-head .ic.ic-green{background:rgba(47,179,68,.16);color:#69db7c}
 .summary-cell-ic.ic-orange,.summary-head .ic.ic-orange{background:rgba(247,103,7,.16);color:#ffa94d}
-.summary-cell-val{font-size:19px;font-weight:700;line-height:1.15;color:var(--ink)}
-.summary-cell-lbl{font-size:11px;color:var(--muted);margin-top:3px;font-weight:600}
+.summary-cell-val{font-size:17px;font-weight:700;line-height:1.15;color:var(--ink)}
+.summary-cell-lbl{font-size:10.5px;color:var(--muted);margin-top:2px;font-weight:600}
 @media(max-width:640px){.summary-grid{grid-template-columns:repeat(2,1fr)}}

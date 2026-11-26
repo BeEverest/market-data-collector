@@ -992,10 +992,12 @@ const VIEWS = {
 
   /* ---------------- 数据采集：控制台 ---------------- */
   console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')
-    + summaryCard('database','ic-blue','采集数量汇总','已入库观测行数 · 按类别统计',
-        {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:S.trade_rows})
-    + summaryCard('calendar-plus','ic-purple','当日采集数据汇总','collection_stat 今日写入行数 · 按类别统计',
-        todayNewByCat())
+    + statRow(
+        summaryCard('database','ic-blue','采集数量汇总','已入库观测行数 · 按类别统计',
+          {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:S.trade_rows})
+        + summaryCard('calendar-plus','ic-purple','当日采集数据汇总','collection_stat 今日写入行数 · 按类别统计',
+          todayNewByCat())
+      )
     +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>
       <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#8fa6c4;padding:0 0 6px;border-bottom:1px solid #243a59"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>

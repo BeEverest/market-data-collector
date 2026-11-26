@@ -111,6 +111,7 @@ function macroSchedWindow(){
   return {start, end};
 }
 let MACRO_INDS = [], ETF_ITEMS = [], INDEX_ITEMS = [], TRADE_LATEST = [];
+let TRADE_CFG = {sources:[], start_date:'', end_date:'', catalog:[]};
 let MONITOR_DATA = {overview:[],failures:[],health:[],detail:[],stats:[]};
 let MONITOR_RAW = {overview:[],failures:[],health:[],detail:[],stats:[]};
 const MONITOR_STATE = Object.fromEntries(['overview','failures','health','detail','stats'].map(k=>
@@ -294,6 +295,57 @@ function openIndexAddModal(){
   root.querySelector('[data-i-code]')?.focus();
 }
 
+/* 新增交易配置：代码 / 名称 / 接口 / 单位 / 粒度 弹窗填写，仅接受交易源目录内代码 */
+let TRADE_ADD_DRAFT = {};
+function openTradeAddModal(){
+  const cat = TRADE_CFG.catalog||[];
+  const chosen = new Set(TRADE_CFG.sources||[]);
+  const avail = cat.filter(x=>!chosen.has(x.code));
+  TRADE_ADD_DRAFT = {code:avail[0]?.code||'', name:'', iface:'', unit:'', granularity:'交易日'};
+  const body = `<div class="etf-add-form" style="display:grid;gap:10px;padding:2px 0">
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">选择源</span>
+      <select class="form-select" data-t-preset style="flex:1"><option value="">— 自定义填写 —</option>${avail.map(x=>`<option value="${esc(x.code)}">${esc(x.code)} · ${esc(x.name)}</option>`).join('')}</select></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">源代码</span><input class="prec-input" data-t-code placeholder="如：breadth" style="flex:1"></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">名称</span><input class="prec-input" data-t-name placeholder="如：市场宽度（涨跌家数）" style="flex:1"></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">接口</span><input class="prec-input" data-t-iface placeholder="采集接口" style="flex:1"></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">单位</span><input class="prec-input" data-t-unit placeholder="如：家 / % / 亿元" style="flex:1"></label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px"><span style="width:64px">粒度</span><input class="prec-input" data-t-gran placeholder="交易日" value="交易日" style="flex:1"></label>
+    <p class="hint" style="margin:0">仅支持交易源目录内的代码（${cat.map(x=>esc(x.code)).join(' / ')}）；描述字段供核对，最终按代码保存。</p>
+  </div>`;
+  modal('新增交易配置', body, ()=>{
+    const d = TRADE_ADD_DRAFT;
+    const code = (d.code||'').trim();
+    const item = cat.find(x=>x.code===code);
+    if(!code){ toast('请填写源代码','warn'); return; }
+    if(!item){ toast(`未知交易源：${code}；可选 ${cat.map(x=>x.code).join('/')}`,'warn'); return; }
+    if((TRADE_CFG.sources||[]).includes(code)){ toast(`${code} 已配置`,'warn'); return; }
+    TRADE_CFG.sources = [...(TRADE_CFG.sources||[]), code];
+    rerenderView('tradecfg');
+    toast(`已添加交易配置：${code} ${item.name}（点「保存配置」后生效）`,'ok');
+  }, '确认新增');
+  const root = byId('modalRoot');
+  const sync = ()=>{
+    TRADE_ADD_DRAFT.code = (root.querySelector('[data-t-code]')?.value||'').trim();
+    TRADE_ADD_DRAFT.name = (root.querySelector('[data-t-name]')?.value||'').trim();
+    TRADE_ADD_DRAFT.iface = (root.querySelector('[data-t-iface]')?.value||'').trim();
+    TRADE_ADD_DRAFT.unit = (root.querySelector('[data-t-unit]')?.value||'').trim();
+    TRADE_ADD_DRAFT.granularity = (root.querySelector('[data-t-gran]')?.value||'').trim();
+  };
+  root.querySelectorAll('input').forEach(el=>{ el.addEventListener('input',sync); el.addEventListener('change',sync); });
+  root.querySelector('[data-t-preset]')?.addEventListener('change', e=>{
+    const it = cat.find(x=>x.code===e.target.value);
+    if(it){
+      root.querySelector('[data-t-code]').value = it.code;
+      root.querySelector('[data-t-name]').value = it.name||'';
+      root.querySelector('[data-t-iface]').value = it.iface||'';
+      root.querySelector('[data-t-unit]').value = it.unit||'';
+      root.querySelector('[data-t-gran]').value = it.granularity||'';
+    }
+    sync();
+  });
+  root.querySelector('[data-t-code]')?.focus();
+}
+
 /* ---------------- 实时监控日志（真实 /api/live-logs + /api/jobs） ---------------- */
 function appendLog(text, level='INFO'){
   const body = byId('logBody'); if(!body) return;
@@ -387,6 +439,9 @@ async function loadConfigs(){
     INDEX_CFG = await api('/api/index/config');
     INDEX_ITEMS = (INDEX_CFG.items||[]).map(x=>[x.code, x.name, '—','—','—']);
   } catch(e){ console.warn('index cfg', e); }
+  try {
+    TRADE_CFG = await api('/api/trade/config');
+  } catch(e){ console.warn('trade cfg', e); }
 }
 async function loadTradeLatest(){
   try {
@@ -624,6 +679,7 @@ const NAV = {
       {id:'maccfg',name:'宏观指标配置',icon:'adjustments'},
       {id:'idxcfg',name:'指数标的配置',icon:'chart-dots'},
       {id:'etfcfg',name:'ETF 标的配置',icon:'coins'},
+      {id:'tradecfg',name:'交易参数配置',icon:'scale'},
     ]},
     {cap:'数据预览',items:[
       {id:'prev-macro',name:'宏观数据',icon:'table'},
@@ -667,6 +723,11 @@ const statCardWide = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-4">
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
 /* 分类汇总卡片：标题 + 宏观/指数/ETF/交易 四类小计 */
 const CATS4 = [['macro','宏观','ic-blue','t-blue'],['index','指数','ic-purple','t-blue'],['etf','ETF','ic-green','t-green'],['trade','交易','ic-orange','t-orange']];
+/* 交易采集数量：5 张交易原始表行数之和（与宏观/指数/ETF 观测表行数同口径） */
+function tradeRawTotal(){
+  const r = S.trade_raw_rows||{};
+  return Object.values(r).reduce((a,b)=>a+(Number(b)||0),0);
+}
 /* 把 collection_stat 的类别 key（中文或英文）归一到 macro/index/etf/trade */
 function todayNewByCat(){
   const out = {macro:0, index:0, etf:0, trade:0};
@@ -993,8 +1054,8 @@ const VIEWS = {
   /* ---------------- 数据采集：控制台 ---------------- */
   console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')
     + statRow(
-        summaryCard('database','ic-blue','采集数量汇总','已入库观测行数 · 按类别统计',
-          {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:S.trade_rows})
+        summaryCard('database','ic-blue','采集数量汇总','已入库数据行数 · 交易按5张原始表合计',
+          {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()})
         + summaryCard('calendar-plus','ic-purple','当日采集数据汇总','collection_stat 今日写入行数 · 按类别统计',
           todayNewByCat())
       )
@@ -1038,6 +1099,27 @@ const VIEWS = {
     <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(ETF_CFG.start_date||LAST)}" style="width:125px" data-etf-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(ETF_CFG.end_date||LAST)}" style="width:125px" data-etf-end><label class="prec-field">最近 <input class="prec-input" type="number" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:60px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认最近一个交易日</span></div>
     <div data-etfcfg-table style="margin-top:12px"></div>
     <div data-etfcfg-pager></div></div></div>`,
+
+  /* ---------------- 数据采集：交易参数配置 ---------------- */
+  tradecfg:()=>{
+    const cat = TRADE_CFG.catalog||[];
+    const sel = TRADE_CFG.sources||[];
+    const byCode = Object.fromEntries(cat.map(x=>[x.code,x]));
+    return head('交易参数配置','配置参与采集的交易原始数据源 · 可增删 · 区间可调')
+      + `<div class="card"><div class="card-header"><h3><i class="ti ti-scale" style="color:var(--orange)"></i> 已配置采集源</h3><span class="sub">${sel.length} / ${cat.length} 类 · 全量/精确采集按此范围执行</span></div><div class="card-body">
+        <div class="ctl-params" style="margin-bottom:12px"><button class="btn btn-sm" data-act="trade-add"><i class="ti ti-plus"></i> 新增交易配置</button>
+          <span class="hint" style="margin-left:8px">代码 / 名称 / 接口 / 单位 / 粒度在弹窗中填写 · 保存后生效</span></div>
+        <div data-trade-src-table>${tbl(['源代码','数据源名称','接口','单位','粒度','操作'],
+          sel.length ? sel.map(c=>{const x=byCode[c]||{};return [c, esc(x.name||c), esc(x.iface||'—'), esc(x.unit||'—'), esc(x.granularity||'—'), `<button class="btn btn-sm" data-act="trade-src-remove" data-code="${esc(c)}">删除</button>`];})
+            : [['—','尚未配置交易源，请从上方下拉添加','—','—','—','—']])}</div>
+        <div class="ctl-params" style="margin-top:12px"><label class="prec-field">采集区间 <input class="prec-input" type="date" value="${esc(TRADE_CFG.start_date||LAST)}" style="width:125px" data-trade-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(TRADE_CFG.end_date||LAST)}" style="width:125px" data-trade-end><button class="btn btn-primary btn-sm" data-act="save-trade-config">保存配置</button><span class="hint">默认最近一个交易日；留空 = 动态取最近已结束交易日</span></div>
+      </div></div>`
+      + `<div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 交易源目录（参考）</h3><span class="sub">采集层原始数据源 · 计算层据此派生 10 项交易指标</span></div><div class="card-body">
+        <div class="table-responsive">${tbl(['代码','数据源名称','接口','单位','粒度','字段说明','来源'],
+          cat.map(x=>[esc(x.code), esc(x.name), esc(x.iface), esc(x.unit), esc(x.granularity), esc(x.fields||'—'), esc(x.source||'—')]))}</div>
+        <div class="formula-note" style="margin-top:10px">交易原始表（exchange / margin / snapshot / breadth / congestion）为权威数据，**永不清理**；派生指标由计算层从原始表重算。</div>
+      </div></div>`;
+  },
 
   /* ---------------- 数据采集：预览 ---------------- */
   'prev-macro':()=>previewView('macro'), 'prev-etf':()=>previewView('etf'),
@@ -1857,6 +1939,25 @@ function handleAction(act, btn, e){
       break;
     }
     /* 配置 */
+    /* 交易参数配置：新增弹窗填写，删除后统一保存 */
+    case 'trade-add': { openTradeAddModal(); break; }
+    case 'trade-src-remove': {
+      const code = btn?.dataset?.code||'';
+      if(!code) break;
+      TRADE_CFG.sources = (TRADE_CFG.sources||[]).filter(x=>x!==code);
+      rerenderView('tradecfg');
+      toast(`已移除交易源：${code}（保存配置后生效）`,'info');
+      break;
+    }
+    case 'save-trade-config': {
+      const get = s => view?.querySelector(s)?.value||'';
+      saveTradeConfigUI({
+        sources: TRADE_CFG.sources||[],
+        start_date: get('[data-trade-start]'),
+        end_date: get('[data-trade-end]'),
+      });
+      break;
+    }
     case 'save-config': {
       if(curView==='etfcfg') { saveEtfConfigUI(view); }
       else if(curView==='idxcfg') { saveIndexConfigUI(view); }
@@ -2115,6 +2216,15 @@ function monitorCleanPayload(view){
   if(sels[1]) p.run_type=(sels[1].value||'').includes('全量')?'full':(sels[1].value||'').includes('定时')?'scheduled':(sels[1].value||'').includes('精确')?'interface':'';
   if(sels[2]) p.category=(sels[2].value||'').includes('宏观')?'macro':(sels[2].value||'').includes('ETF')?'etf':'';
   return p;
+}
+async function saveTradeConfigUI(payload, quiet){
+  try {
+    const res = await postJSON('/api/trade/config', payload);
+    if(res.config) TRADE_CFG = Object.assign({}, TRADE_CFG, res.config);
+    if(!quiet) toast(`交易配置已保存：${(res.config?.sources||[]).length} 类采集源`,'ok');
+    rerenderView('tradecfg');
+    return true;
+  } catch(e){ if(!quiet) toast('保存失败：'+e.message,'err'); return false; }
 }
 async function saveMacroConfigUI(view, quiet){
   const valOr = (sel, fallback) => { const el=view?.querySelector(sel); return el ? el.value.trim() : (fallback||''); };

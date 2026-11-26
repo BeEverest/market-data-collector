@@ -1475,6 +1475,75 @@ def api_macro_config_set(payload: dict):
     }
 
 
+@app.get("/api/trade/config")
+def api_trade_config_get():
+    """返回交易采集配置：参与采集的原始数据源 + 默认区间 + 可选项清单。"""
+    from collectors.trade import RAW_KEYS, catalog as trade_source_catalog
+    cfg = _cfg()
+    trade = cfg.get("trade", {})
+    valid = {it["code"] for it in trade_source_catalog()}
+    raw_sources = trade.get("sources")
+    if raw_sources is None:  # 缺省回退到采集器默认源
+        raw_sources = list(RAW_KEYS)
+    sources = [str(s).strip() for s in raw_sources if str(s).strip()]
+    sources = [s for s in sources if s in valid]
+    return {
+        "sources": sources,
+        "start_date": trade.get("start_date", ""),
+        "end_date": trade.get("end_date", ""),
+        "catalog": trade_source_catalog(),
+    }
+
+
+@app.post("/api/trade/config")
+def api_trade_config_set(payload: dict):
+    """更新交易采集配置。sources 仅接受合法原始源代码；可增删。"""
+    from collectors.trade import catalog as trade_source_catalog
+    cfg = _cfg()
+    trade = cfg.setdefault("trade", {})
+    valid = {it["code"] for it in trade_source_catalog()}
+    updated = False
+    if "sources" in payload:
+        raw = payload["sources"]
+        if isinstance(raw, str):
+            raw = [s.strip() for s in raw.split(",") if s.strip()]
+        if not isinstance(raw, list):
+            raise HTTPException(status_code=400, detail="sources 必须为数组或逗号分隔字符串")
+        bad = [str(s).strip() for s in raw if str(s).strip() not in valid]
+        if bad:
+            raise HTTPException(status_code=400, detail=f"未知交易源：{'、'.join(bad)}；可选 {'/'.join(sorted(valid))}")
+        # 去重保序
+        seen, sources = set(), []
+        for s in raw:
+            s = str(s).strip()
+            if s in valid and s not in seen:
+                seen.add(s); sources.append(s)
+        trade["sources"] = sources
+        updated = True
+    for key in ("start_date", "end_date"):
+        if key in payload:
+            val = str(payload[key] or "").strip()
+            if val:
+                try:
+                    datetime.strptime(val, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=f"{key} 格式应为 YYYY-MM-DD") from exc
+            trade[key] = val
+            updated = True
+    if not updated:
+        raise HTTPException(status_code=400, detail="无有效配置项")
+    cfg["trade"] = trade
+    _save_config(cfg)
+    return {
+        "ok": True,
+        "config": {
+            "sources": trade.get("sources", []),
+            "start_date": trade.get("start_date", ""),
+            "end_date": trade.get("end_date", ""),
+        },
+    }
+
+
 @app.get("/api/etf/config")
 def api_etf_config_get():
     """返回当前 ETF 标的配置（代码、名称、上市日期、区间）。"""

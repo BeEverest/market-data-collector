@@ -201,6 +201,32 @@ class TestReadOnlyApis:
         listing = {item["code"]: item["listing_date"] for item in cfg["items"]}
         assert listing["510050"] == "2004-12-30"
 
+    def test_trade_config_roundtrip(self, client):
+        """交易参数配置：读写 trade.sources + 区间，拒绝非法源。"""
+        cfg = client.get("/api/trade/config").json()
+        assert set(cfg["sources"]) == {"exchange", "margin", "snapshot"}
+        assert {it["code"] for it in cfg["catalog"]} == {
+            "exchange", "margin", "snapshot", "breadth", "congestion"}
+
+        saved = client.post("/api/trade/config", json={
+            "sources": ["exchange", "breadth", "congestion", "exchange"],
+            "start_date": "2026-11-01", "end_date": "2026-11-25",
+        })
+        assert saved.status_code == 200
+        c = saved.json()["config"]
+        assert c["sources"] == ["exchange", "breadth", "congestion"]  # 去重保序
+        assert c["start_date"] == "2026-11-01"
+        again = client.get("/api/trade/config").json()
+        assert again["sources"] == ["exchange", "breadth", "congestion"]
+
+        bad = client.post("/api/trade/config", json={"sources": ["no_such_source"]})
+        assert bad.status_code == 400
+        bad_date = client.post("/api/trade/config", json={"end_date": "2026/11/25"})
+        assert bad_date.status_code == 400
+        # 恢复默认，避免影响其他用例
+        client.post("/api/trade/config", json={
+            "sources": ["exchange", "margin", "snapshot"], "start_date": "", "end_date": ""})
+
     def test_import_rejects_etf_not_in_config(self, client):
         """文件导入仅允许已在 ETF 配置中的标的；未配置代码返回报错信息。"""
         import io

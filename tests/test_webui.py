@@ -550,3 +550,56 @@ class TestWebPage:
         assert layout["gapToBottom"] < 2
         assert layout["marginTop"] > 0
         assert page._js_errors == []
+
+    def test_console_trade_count_uses_raw_tables_sum(self, page):
+        """采集数量汇总卡片的交易数=5张交易原始表行数之和。"""
+        _switch(page, "console")
+        page.evaluate("""() => {
+          S.trade_rows = 2890;
+          S.trade_raw_rows = {exchange:100, margin:200, snapshot:500, breadth:300, congestion:400};
+          rerenderView('console');
+        }""")
+        cards = page.locator("#v-console .summary-card")
+        first = cards.first
+        labels = first.locator(".summary-cell-lbl").all_inner_texts()
+        vals = first.locator(".summary-cell-val").all_inner_texts()
+        idx = labels.index("交易")
+        # 100+200+500+300+400=1500，而非 trade_rows(2890)
+        assert vals[idx].replace(",", "") == "1500"
+        assert page._js_errors == []
+
+    def test_trade_config_page_add_remove_sources(self, page):
+        """交易参数配置页：区间默认最近交易日、5类源目录、弹窗新增与删除。"""
+        _switch(page, "tradecfg")
+        assert page.locator("#v-tradecfg [data-act=\"trade-add\"]").count() == 1
+        assert page.locator("#v-tradecfg [data-act=\"save-trade-config\"]").count() == 1
+        # 采集区间默认最近一个交易日（fixture 未配置 trade 日期，前端回退 LAST）
+        start = page.locator("#v-tradecfg [data-trade-start]").input_value()
+        end = page.locator("#v-tradecfg [data-trade-end]").input_value()
+        last = page.evaluate("LAST")
+        assert start and end and start == end == last
+        # catalog 参考表应有 5 类源（含 breadth/congestion）
+        cat_text = page.locator("#v-tradecfg").inner_text()
+        for code in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+            assert code in cat_text
+        initial_rows = page.locator("#v-tradecfg [data-trade-src-table] tbody tr").count()
+        # 弹窗填写新增：选择目录预设后代码/名称等自动带出
+        page.locator('#v-tradecfg [data-act="trade-add"]').click()
+        modal = page.locator("#modalRoot .modal-box")
+        assert modal.locator("[data-t-code]").count() == 1
+        modal.locator("[data-t-preset]").select_option("breadth")
+        assert modal.locator("[data-t-code]").input_value() == "breadth"
+        assert modal.locator("[data-t-name]").input_value()
+        modal.locator('[data-act="modal-ok"]').click()
+        page.wait_for_timeout(150)
+        assert page.locator("#v-tradecfg [data-trade-src-table] tbody tr").count() == initial_rows + 1
+        # 保存并复核后端已落库
+        page.locator('#v-tradecfg [data-act="save-trade-config"]').click()
+        page.wait_for_timeout(250)
+        saved = page.evaluate("() => TRADE_CFG.sources")
+        assert "breadth" in saved
+        # 删除刚加的源
+        page.locator('#v-tradecfg [data-act="trade-src-remove"][data-code="breadth"]').click()
+        page.wait_for_timeout(150)
+        assert page.locator("#v-tradecfg [data-trade-src-table] tbody tr").count() == initial_rows
+        assert page._js_errors == []

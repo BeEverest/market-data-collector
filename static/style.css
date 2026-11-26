@@ -298,6 +298,9 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 .stat-card-wide .val{font-size:26px!important;line-height:1.25!important}
 .stat-card-wide .lbl{font-size:12.5px!important;font-weight:600!important}
 /* 派生指标卡片 */
+.month-switch{display:inline-flex;align-items:center;gap:4px}
+.month-switch .btn{padding:5px 8px;line-height:1}
+.month-switch .btn i{font-size:15px}
 .indicator-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
 .indicator-card{padding:11px 12px;border:1px solid var(--line);border-radius:9px;background:var(--card-2);display:flex;flex-direction:column;gap:6px;min-height:138px}
 .indicator-card .ic-top{display:flex;align-items:center;justify-content:space-between;gap:6px}

@@ -298,7 +298,7 @@ async function loadDerived(month){
         <div class="ic-value">${esc(x.value==null?'—':x.value)} <small>${esc(x.unit||'')}</small></div>
         <div class="ic-formula" title="${esc(x.formula||'')}">${esc(x.formula||'口径未提供')}</div>
         <div class="ic-source">${esc(x.source||'')} · ${esc(x.date||month)}</div>
-      </div>`).join('')}</div></div>`).join('') || '<p class="hint">该月暂无派生指标数据</p>';
+      </div>`).join('')}</div></div>`).join('') || '<p class="hint">该月暂无宏观指标数据</p>';
       box.dataset.filled='1';
     }
     const formulaBox = $('.view.active [data-derived-formulas]');
@@ -468,7 +468,7 @@ const NAV = {
   ]},
   derived:{name:'数据处理',groups:[
     {cap:'指标计算',items:[
-      {id:'macrocalc',name:'派生指标',icon:'chart-area'},
+      {id:'macrocalc',name:'宏观指标',icon:'chart-area'},
       {id:'etfcalc',name:'ETF 计算',icon:'coins'},
       {id:'tradecalc',name:'交易计算',icon:'scale'},
     ]},
@@ -712,7 +712,7 @@ function dashShell(grp){
   const overlay = grp==='etf'
     ? `<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="汇金图上方叠加的指数日线"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`
     : '';
-  const hintText = grp==='macro' ? '数据来源：派生指标 / 宏观观测 / 上交所日线' : '';
+  const hintText = grp==='macro' ? '数据来源：宏观指标 / 宏观观测 / 上交所日线' : '';
   const ctl = `${overlay}
        <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
        <label class="prec-field">结束 <input class="prec-input" type="date" data-range-end value="${LAST}" style="width:125px"></label>
@@ -792,16 +792,23 @@ const VIEWS = {
     <div class="ctl-params" style="margin-bottom:10px"><label class="prec-field">细分口径 <span class="muted-inline">(全部)</span></label><select class="form-select" style="width:200px" data-clean-code><option>全部（该类别整体）</option><option>M1 同比</option><option>M2 同比</option></select></div>
     <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">时间范围 <span class="muted-inline">留空 = 全部</span></label><input class="prec-input" type="date" style="width:130px"><span class="hint">~</span><input class="prec-input" type="date" style="width:130px"></div>
     <div class="ctl-params"><button class="btn btn-sm" data-act="clean-preview"><i class="ti ti-eye"></i> 预览影响</button><button class="btn btn-danger btn-sm" data-act="clean-exec"><i class="ti ti-trash"></i> 执行清理</button><button class="btn btn-sm" data-act="clean-reset">重置</button></div>
-    <div class="clean-result" data-clean-result>预览结果：<span class="hint">将删除 0 行（请先预览影响）。派生指标表不在清理范围内。</span></div></div></div>`,
+    <div class="clean-result" data-clean-result>预览结果：<span class="hint">将删除 0 行（请先预览影响）。宏观指标计算表不在清理范围内。</span></div></div></div>`,
 
   /* ---------------- 数据处理 ---------------- */
-  macrocalc:()=>head('宏观计算 · 派生指标','14 项指标 · 手动重算兜底 · 指标口径卡片')+`<div class="trigger-grid" style="grid-template-columns:1fr">
+  macrocalc:()=>head('宏观指标','14 项指标 · 按月切换查看 · 手动重算兜底')+`<div class="trigger-grid" style="grid-template-columns:1fr">
     <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
       <div class="tc-row"><button class="btn btn-primary btn-sm" data-act="recalc-all">重新计算全部</button><button class="btn btn-sm" data-act="export" data-k="derived">导出 CSV</button></div>
       <div class="tc-row"><label class="prec-field">按月 <input class="prec-input" type="month" value="${esc(DERIVED_MONTH||CURRENT_MONTH)}" style="width:110px" data-derived-recalc-month></label><button class="btn btn-sm" data-act="recalc-month">重算该月</button></div>
       <div class="tc-row"><label class="prec-field">按指标 <select class="form-select" style="width:150px"><option>M1 同比</option><option>社融增量</option><option>CPI-PPI 剪刀差</option></select></label><button class="btn btn-sm" data-act="recalc-code">重算该指标</button></div>
       <div class="tc-note">默认月份为当前月；局部重算按业务键幂等覆盖，全量重算才整表替换清理陈旧口径行</div></div></div></div>
-    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 派生指标卡片</h3><label class="prec-field" style="margin-left:auto">查看月份 <input class="prec-input" type="month" value="${esc(DERIVED_MONTH||CURRENT_MONTH)}" style="width:110px" data-derived-view-month></label></div><div class="card-body" data-derived-body></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 宏观指标卡片</h3>
+      <div class="month-switch" style="margin-left:auto">
+        <button class="btn btn-sm" data-act="derived-month-step" data-step="-1" title="上个月"><i class="ti ti-chevron-left"></i></button>
+        <input class="prec-input" type="month" value="${esc(DERIVED_MONTH||CURRENT_MONTH)}" style="width:120px;text-align:center" data-derived-view-month>
+        <button class="btn btn-sm" data-act="derived-month-step" data-step="1" title="下个月"><i class="ti ti-chevron-right"></i></button>
+        <button class="btn btn-sm" data-act="derived-month-now" title="回到当前月">本月</button>
+      </div>
+    </div><div class="card-body" data-derived-body></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 指标口径说明</h3><span class="sub">随当前月份指标自动更新</span></div><div class="card-body" data-derived-formulas><p class="hint">加载中…</p></div></div>`,
 
   etfcalc:()=>head('ETF 计算','流通份额变化 / 申赎净流入 · 汇金维度')+`<div class="card"><div class="card-header"><h3><i class="ti ti-calculator" style="color:var(--blue)"></i> ETF 计算</h3><span class="sub">数据来自 etf_observation 全量历史 · 日期区间与 ETF 看板一致</span></div><div class="card-body">
@@ -879,7 +886,7 @@ function switchView(id){
   $$('.fn').forEach(x=>x.classList.toggle('active',x.dataset.view===id));
   if(id.startsWith('dash')) setTimeout(()=>{ loadDashboard(); }, 30);
   if(id==='ovCollect') setTimeout(renderOverview, 60);
-  if(id==='macrocalc') setTimeout(()=>loadDerived(CURRENT_MONTH), 30);
+  if(id==='macrocalc') setTimeout(()=>loadDerived(DERIVED_MONTH||CURRENT_MONTH), 30);
   if(id==='etfcalc') setTimeout(()=>loadEtfCalc(), 30);
   if(id.startsWith('prev-')) setTimeout(()=>loadPreview(id.replace('prev-','')).then(()=>rerenderView(id)), 30);
   if(id.startsWith('mon-')) setTimeout(()=>loadMonitor().then(()=>rerenderView(id)), 30);
@@ -1666,7 +1673,7 @@ function handleAction(act, btn, e){
     }
     case 'clean-reset': {
       const r=view?.querySelector('[data-clean-result]');
-      if(r) r.innerHTML='预览结果：<span class="hint">将删除 0 行（请先预览影响）。派生指标表不在清理范围内。</span>';
+      if(r) r.innerHTML='预览结果：<span class="hint">将删除 0 行（请先预览影响）。宏观指标计算表不在清理范围内。</span>';
       $$('input[type="date"]',view).forEach(x=>x.value=''); break;
     }
     /* 监控 */
@@ -1703,14 +1710,26 @@ function handleAction(act, btn, e){
     }
     case 'range': applyQuickRange(btn); break;
     case 'dash-refresh': loadDashboard().then(()=>toast('图表已刷新','ok')); break;
-    /* 派生 / 交易计算 */
+    /* 宏观指标 / 交易计算 */
+    case 'derived-month-step': case 'derived-month-now': {
+      const inp = view?.querySelector('[data-derived-view-month]');
+      let m = (inp?.value || DERIVED_MONTH || CURRENT_MONTH).slice(0,7);
+      if(act==='derived-month-now') m = CURRENT_MONTH;
+      else {
+        const step = Number(btn.dataset.step||0);
+        m = shiftMonth(m+'-01', step).slice(0,7);
+      }
+      if(inp) inp.value = m;
+      loadDerived(m);
+      break;
+    }
     case 'recalc-all': {
-      submitJob('/api/derived/recompute', {month:'', code:''}, '派生指标全量重算'); break;
+      submitJob('/api/derived/recompute', {month:'', code:''}, '宏观指标全量重算'); break;
     }
     case 'recalc-month': case 'recalc-code': {
       const m = view?.querySelector('[data-derived-recalc-month]')?.value||DERIVED_MONTH;
       const code = view?.querySelector('select')?.value||'';
-      submitJob('/api/derived/recompute', {month:act==='recalc-month'?m:'', code:act==='recalc-code'?code:''}, act==='recalc-month'?'派生指标按月重算':'派生指标按指标重算');
+      submitJob('/api/derived/recompute', {month:act==='recalc-month'?m:'', code:act==='recalc-code'?code:''}, act==='recalc-month'?'宏观指标按月重算':'宏观指标按指标重算');
       break;
     }
     case 'etfcalc-refresh': loadEtfCalc().then(()=>toast('ETF 计算已按当前日期范围刷新','ok')); break;

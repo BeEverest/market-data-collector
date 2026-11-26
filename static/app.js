@@ -114,7 +114,7 @@ let MACRO_INDS = [], ETF_ITEMS = [], INDEX_ITEMS = [], TRADE_LATEST = [];
 let MONITOR_DATA = {overview:[],failures:[],health:[],detail:[],stats:[]};
 let MONITOR_RAW = {overview:[],failures:[],health:[],detail:[],stats:[]};
 const MONITOR_STATE = Object.fromEntries(['overview','failures','health','detail','stats'].map(k=>
-  [k,{page:1,size:25,keyword:'',run_type:'',category:'',status:'',start:'',end:''}]));
+  [k,{page:1,size:25,keyword:'',run_type:'',category:'',subcode:'',status:'',start:'',end:''}]));
 const PREVIEW_STATE = Object.fromEntries(['macro','etf','index','trade','files'].map(k=>
   [k,{page:1,size:25,pages:1,total:0,code:'',start:'',end:'',order:'desc'}]));
 let DATA_TABS = {macro:[['日期','指标代码','指标名称','数值','单位','数据源','采集时间'],[]],
@@ -665,6 +665,23 @@ let curMod = 'overview', curView = 'ovCollect';
 const statCard = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-3"><div class="stat-card"><div class="ic ${c}"><i class="ti ti-${ic}"></i></div><div class="val">${val}</div><div class="lbl">${lbl}</div>${trend?`<span class="trend ${tc}">${trend}</span>`:''}</div></div>`;
 const statCardWide = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-4"><div class="stat-card stat-card-wide"><div class="ic ${c}"><i class="ti ti-${ic}"></i></div><div class="val">${val}</div><div class="lbl">${lbl}</div>${trend?`<span class="trend ${tc}">${trend}</span>`:''}</div></div>`;
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
+/* 分类汇总卡片：标题 + 宏观/指数/ETF/交易 四类小计 */
+const CATS4 = [['macro','宏观','ic-blue','t-blue'],['index','指数','ic-purple','t-blue'],['etf','ETF','ic-green','t-green'],['trade','交易','ic-orange','t-orange']];
+/* 把 collection_stat 的类别 key（中文或英文）归一到 macro/index/etf/trade */
+function todayNewByCat(){
+  const out = {macro:0, index:0, etf:0, trade:0};
+  const alias = {宏观:'macro', 'macro':'macro', 指数:'index', 'index':'index',
+                 ETF:'etf', etf:'etf', 交易:'trade', 'trade':'trade'};
+  Object.entries(S.today_new||{}).forEach(([k,v])=>{
+    const key = alias[k] || alias[String(k).toLowerCase()];
+    if(key) out[key] += Number(v)||0;
+  });
+  return out;
+}
+const summaryCard = (ic, color, title, sub, vals) => `<div class="col-sm-12 col-lg-6"><div class="stat-card stat-card-wide summary-card">
+  <div class="summary-head"><div class="ic ${color}"><i class="ti ti-${ic}"></i></div><div><div class="summary-title">${title}</div><div class="summary-sub">${sub}</div></div></div>
+  <div class="summary-grid">${CATS4.map(([k,lbl,icn,tc])=>`<div class="summary-cell"><div class="summary-cell-ic ${icn}"><i class="ti ti-${ic}"></i></div><div class="summary-cell-val ${tc}">${fmt(vals?.[k]??0)}</div><div class="summary-cell-lbl">${lbl}</div></div>`).join('')}</div>
+</div></div>`;
 const head = (t,d) => ''; // 视图标题条已移除，导航与卡片标题即可标识当前位置
 const tbl = (cols, rows, opts={}) => {
   const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map((c,ci)=>{
@@ -737,13 +754,30 @@ function previewView(kind){
     <div class="card-body"><div style="margin-bottom:10px">${filterBar(kind)}</div>
     <div data-preview-table="${kind}"></div><div data-preview-pager="${kind}"></div></div></div>`;
 }
+/* 采集量统计：维度2 细分口径选项（按维度1 类别级联，来自真实 collection_stat 行） */
+function subcodeOptionsHtml(cat, current){
+  const seen = new Map();
+  (MONITOR_RAW.stats||[]).forEach(r=>{
+    if(cat && String(r['类别口径']||'')!==cat) return;
+    const code = String(r['细分口径']??'').trim();
+    if(!code) return;
+    if(!seen.has(code)) seen.set(code, r['名称']||'');
+  });
+  const arr = [...seen.entries()].sort((a,b)=>String(a[0]).localeCompare(String(b[0])));
+  return `<option value="">维度2 · 全部细分口径（${arr.length}）</option>`
+    + arr.map(([code,name])=>`<option value="${esc(code)}" ${code===String(current)?'selected':''}>${esc(code)}${name?' '+esc(name):''}</option>`).join('');
+}
 function monitorView(kind){
   const names = {overview:'运行总览',failures:'失败明细',health:'接口健康度',detail:'调用明细',stats:'采集量统计'};
   const st = MONITOR_STATE[kind];
   const opts = (arr,val) => arr.map(([v,l])=>`<option value="${esc(v)}" ${v===val?'selected':''}>${l}</option>`).join('');
   const runTypes = [['','全部运行类型'],['full','全量 full'],['scheduled','定时 scheduled'],['interface','精确采集 interface'],['import','文件导入 import'],['retry','重跑 retry']];
-  const cats = [['','全部类别'],['宏观','宏观'],['ETF','ETF'],['指数','指数'],['交易','交易']];
+  // 采集量统计：维度1=宏观指标/指数/ETF/交易，维度2=对应细分口径（级联）
+  const cats = kind==='stats'
+    ? [['','维度1 · 全部'],['宏观','宏观指标'],['指数','指数'],['ETF','ETF'],['交易','交易']]
+    : [['','全部类别'],['宏观','宏观'],['ETF','ETF'],['指数','指数'],['交易','交易']];
   const states = [['','全部状态'],['success','成功'],['failed','失败']];
+  const subcodeHtml = kind==='stats' ? `<label class="prec-field">维度2</label><select class="form-select" data-mon-subcode style="width:190px" ${st.category?'':'disabled'}>${subcodeOptionsHtml(st.category, st.subcode)}</select>` : '';
   return head(`接口监控 · ${names[kind]}`,'成功率 / 失败明细 / 接口健康度 / 调用明细 / 采集量统计')
     + statRow(
       statCard('api','ic-blue',fmt(S.today_calls),'今日调用','全通道','')+
@@ -766,7 +800,8 @@ function monitorView(kind){
       <div class="ctl-params" style="margin-bottom:10px" data-monitor-filter data-kind="${kind}">
         <input class="prec-input" data-mon-keyword placeholder="接口名/接口键/失败原因 关键词" style="width:200px" value="${esc(st.keyword)}">
         <select class="form-select" data-mon-run-type style="width:135px">${opts(runTypes,st.run_type)}</select>
-        <select class="form-select" data-mon-category style="width:105px">${opts(cats,st.category)}</select>
+        <select class="form-select" data-mon-category ${kind==='stats'?'data-stat-dim1':''} style="width:${kind==='stats'?'125':'105'}px">${opts(cats,st.category)}</select>
+        ${subcodeHtml}
         <select class="form-select" data-mon-status style="width:100px">${opts(states,st.status)}</select>
         <input class="prec-input" type="date" data-mon-start style="width:125px" value="${esc(st.start)}">
         <span class="hint">~</span><input class="prec-input" type="date" data-mon-end style="width:125px" value="${esc(st.end)}">
@@ -796,6 +831,7 @@ function monitorFilteredRows(kind){
     if(kw && !Object.values(r).some(v=>String(v ?? '').toLowerCase().includes(kw))) return false;
     if(st.run_type && String(r['运行类型']||'')!==st.run_type) return false;
     if(st.category && String(r['类别']||r['类别口径']||'')!==st.category) return false;
+    if(kind==='stats' && st.subcode && String(r['细分口径']||'')!==st.subcode) return false;
     if(st.status && monitorStatus(r,kind)!==st.status) return false;
     const date = String(r['运行日期']||r['失败日期']||r['最近失败日期']||r['运行时间']||'').slice(0,10);
     if(st.start && date && date<st.start) return false;
@@ -955,10 +991,11 @@ const VIEWS = {
       <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--ok)"></i> 最近运行</h3></div><div class="card-body" data-recent-runs>${recentRunsTable()}</div></div></div>`,
 
   /* ---------------- 数据采集：控制台 ---------------- */
-  console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')+statRow(
-    statCardWide('database','ic-blue',fmt(S.macro_rows+S.etf_rows+S.index_rows+S.trade_rows),'采集总数',`含 ${fmt(S.trade_rows)} 条交易观测`,'t-blue')+
-    statCardWide('bullseye','ic-green',fmt(S.macro_indicators+S.etf_codes+S.index_codes),'采集指标数据量',`${fmt(S.macro_indicators)} 宏观 / ${fmt(S.etf_codes)} ETF / ${fmt(S.index_codes)} 指数`,'t-green')+
-    statCardWide('plus','ic-purple',fmt(Object.values(S.today_new||{}).reduce((a,b)=>a+Number(b||0),0)),'当日新增采集数量','按 collection_stat 统计','t-blue'))
+  console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')
+    + summaryCard('database','ic-blue','采集数量汇总','已入库观测行数 · 按类别统计',
+        {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:S.trade_rows})
+    + summaryCard('calendar-plus','ic-purple','当日采集数据汇总','collection_stat 今日写入行数 · 按类别统计',
+        todayNewByCat())
     +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>
       <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#8fa6c4;padding:0 0 6px;border-bottom:1px solid #243a59"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>
@@ -1794,9 +1831,18 @@ function handleAction(act, btn, e){
       Array.from(f.files).forEach(x=>form.append('files', x));
       setBusy(true,'文件导入'); appendLog(`[导入] 上传 ${f.files.length} 个文件`, 'INFO');
       api('/api/import/etf', {method:'POST', body:form}).then(res=>{
-        setBusy(false); appendLog(`[导入] 完成：${res.message||res.imported||'成功'}`,'OK');
-        toast('文件导入完成','ok'); loadStatus();
-      }).catch(err=>{ setBusy(false); toast('导入失败：'+err.message,'err'); });
+        setBusy(false);
+        const errs = res.errors||[];
+        if(errs.length){
+          appendLog(`[导入] 完成：成功 ${(res.imported||[]).length} / 失败 ${errs.length}`,'WARN');
+          errs.forEach(e=>appendLog(`[导入] 拒绝 ${e.file||'未知文件'}：${e.error||''}`,'ERR'));
+          toast(`导入完成，${errs.length} 个文件被拒绝：${errs[0].error||''}`,'warn');
+        } else {
+          appendLog(`[导入] 完成：${res.total_rows||0} 行全部成功`,'OK');
+          toast('文件导入完成','ok');
+        }
+        loadStatus();
+      }).catch(err=>{ setBusy(false); appendLog(`[导入] 失败：${err.message}`,'ERR'); toast('导入失败：'+err.message,'err'); });
       break;
     }
     case 'retry-all': modal('批量重跑失败','将重跑最近一次失败批次的全部接口。此操作不可撤销。',()=>{
@@ -1913,6 +1959,7 @@ function handleAction(act, btn, e){
       st.keyword=bar.querySelector('[data-mon-keyword]')?.value?.trim()||'';
       st.run_type=bar.querySelector('[data-mon-run-type]')?.value||'';
       st.category=bar.querySelector('[data-mon-category]')?.value||'';
+      st.subcode=bar.querySelector('[data-mon-subcode]')?.value||'';
       st.status=bar.querySelector('[data-mon-status]')?.value||'';
       st.start=bar.querySelector('[data-mon-start]')?.value||'';
       st.end=bar.querySelector('[data-mon-end]')?.value||'';
@@ -1926,7 +1973,8 @@ function handleAction(act, btn, e){
       const bar=view?.querySelector('[data-monitor-filter]'); if(!bar) break;
       const kind=bar.dataset.kind||curView.replace('mon-','');
       const st=MONITOR_STATE[kind]; if(!st) break;
-      Object.assign(st,{page:1,keyword:'',run_type:'',category:'',status:'',start:WEEK_START,end:LAST});
+      Object.assign(st,{page:1,keyword:'',run_type:'',category:'',subcode:'',start:WEEK_START,end:LAST});
+      st.status='';
       rerenderView(curView); toast('已重置筛选（最近一周）','info');
       break;
     }
@@ -2120,6 +2168,12 @@ function bindEvents(){
       if(sel) sel.innerHTML = precCodeOptionsHtml(t.value);
       const n = previewCodeOptions(t.value).length;
       toast(`类别已切换为「${t.selectedOptions[0]?.text}」，可选「全部」或单个（共 ${n} 项）`,'info');
+    }
+    if(t.matches('[data-stat-dim1]')){
+      const bar = t.closest('[data-monitor-filter]');
+      const sub = bar?.querySelector('[data-mon-subcode]');
+      if(sub){ sub.innerHTML = subcodeOptionsHtml(t.value, ''); sub.disabled = !t.value; }
+      const st = MONITOR_STATE.stats; if(st){ st.category = t.value; st.subcode = ''; st.page = 1; }
     }
     if(t.matches('[data-act="overlay-index"]')) loadDashboard();
     if(t.matches('[data-derived-view-month]')) loadDerived(t.value);

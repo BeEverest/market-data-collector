@@ -201,6 +201,43 @@ class TestReadOnlyApis:
         listing = {item["code"]: item["listing_date"] for item in cfg["items"]}
         assert listing["510050"] == "2004-12-30"
 
+    def test_import_rejects_etf_not_in_config(self, client):
+        """文件导入仅允许已在 ETF 配置中的标的；未配置代码返回报错信息。"""
+        import io
+        import pandas as pd
+
+        def xlsx_bytes(code: str) -> bytes:
+            buf = io.BytesIO()
+            frame = pd.DataFrame(
+                [["2026-11-25", 100000000, 200000000, "2026-11-26"]],
+                columns=["截止日期", "流通份额(份)", "流通规模(元)", "公告日期"],
+            )
+            frame.to_excel(buf, index=False)
+            buf.seek(0)
+            return buf.getvalue()
+
+        # 999999 不在配置的 ["510050","159915"] 中，应被拒绝且返回明确报错
+        resp = client.post(
+            "/api/import/etf",
+            files={"files": ("份额与规模_999999.xlsx", xlsx_bytes("999999"),
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["imported"] == []
+        assert data["errors"], "应返回被拒绝文件的报错信息"
+        assert any("不在 ETF 采样配置" in e["error"] for e in data["errors"])
+        assert any("999999" in e["error"] for e in data["errors"])
+
+        # 文件名不符合命名规则也应返回报错
+        bad = client.post(
+            "/api/import/etf",
+            files={"files": ("随便一个文件.xlsx", xlsx_bytes("510050"),
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+        )
+        assert bad.status_code == 200
+        assert any("文件名需符合" in e["error"] for e in bad.json()["errors"])
+
 
 class TestExportApis:
     def test_export_macro_returns_zip_and_download(self, client, base):

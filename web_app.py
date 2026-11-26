@@ -1352,7 +1352,7 @@ def api_catalog():
 @app.post("/api/import/etf")
 async def api_import_etf(files: list[UploadFile] = File(...)):
     """导入 Choice「份额与规模_<代码>.xlsx」文件，作为 ETF 采集数据写入 SQLite。"""
-    from importer import check_file_limit, import_choice_file
+    from importer import check_file_limit, code_from_filename, import_choice_file
 
     try:
         check_file_limit(files)
@@ -1362,6 +1362,8 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
     db_path = _db_path(cfg)
     if not db_path:
         raise HTTPException(status_code=400, detail="当前为文件模式，导入需要启用 SQLite 存储")
+    # 文件导入仅允许已在 ETF 采样配置中的标的；文件名代码不在配置内时返回报错信息
+    allowed_codes = set(_etf_config_view()["codes"])
 
     results: list[dict] = []
     errors: list[dict] = []
@@ -1381,6 +1383,19 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
                 logger.warning("ETF 文件导入跳过 [%s]：%s", name, msg)
                 errors.append({"file": name, "error": msg})
                 continue
+            # 校验标的是否已在 ETF 采样配置中：仅文件名符合命名规则且代码在配置内才允许导入
+            try:
+                fcode = code_from_filename(name)
+            except ValueError as exc:
+                msg = str(exc)
+                logger.warning("ETF 文件导入跳过 [%s]：%s", name, msg)
+                errors.append({"file": name, "error": msg})
+                continue
+            if fcode not in allowed_codes:
+                msg = f"标的 {fcode} 不在 ETF 采样配置中，请先在「ETF 标的配置」添加后再导入"
+                logger.warning("ETF 文件导入拒绝 [%s]：%s", name, msg)
+                errors.append({"file": name, "error": msg})
+                continue
             target = tmp_dir / name
             try:
                 with target.open("wb") as handle:
@@ -1395,9 +1410,10 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
                 errors.append({"file": name, "error": str(exc)})
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-    # 非 xlsx 文件（扩展名校验失败）也补一条监控记录，保证文件数统计完整
+    # 前置校验失败（扩展名 / 文件名格式 / 标的未配置）也补一条监控记录，保证文件数统计完整
+    precheck_errors = ("仅支持 .xlsx/.xlsm 文件", "文件名需符合", "不在 ETF 采样配置中")
     for err in errors:
-        if err["error"] == "仅支持 .xlsx/.xlsm 文件" and not any(
+        if any(mark in err["error"] for mark in precheck_errors) and not any(
             rec["interface_name"].endswith(f"({err['file']})") for rec in monitor.records
         ):
             monitor.record(

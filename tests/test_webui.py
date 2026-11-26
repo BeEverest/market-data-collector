@@ -478,3 +478,75 @@ class TestWebPage:
         rows = page.locator('#v-mon-failures [data-monitor-table="failures"] tbody tr')
         assert rows.count() == 2
         assert page._js_errors == []
+
+    def test_console_shows_two_category_summary_cards(self, page):
+        """采集控制台展示两张分类汇总卡片：采集数量汇总 / 当日采集数据汇总，各含宏观/指数/ETF/交易。"""
+        _switch(page, "console")
+        cards = page.locator("#v-console .summary-card")
+        assert cards.count() == 2
+        titles = cards.locator(".summary-title").all_inner_texts()
+        assert any("采集数量汇总" in t for t in titles)
+        assert any("当日采集数据汇总" in t for t in titles)
+        # 每张卡片都应含四个类别小计
+        for i in range(cards.count()):
+            labels = cards.nth(i).locator(".summary-cell-lbl").all_inner_texts()
+            assert labels == ["宏观", "指数", "ETF", "交易"]
+        assert page._js_errors == []
+
+    def test_monitor_stats_dual_dimension_filter(self, page):
+        """采集量统计按维度1(类别)+维度2(细分口径)两级筛选。"""
+        _switch(page, "mon-stats")
+        # 注入真实结构的 stats 行（类别口径 / 细分口径 / 名称）
+        page.evaluate("""() => {
+          MONITOR_RAW.stats = [
+            {'类别口径':'宏观','细分口径':'M1_YOY','名称':'M1同比','运行日期':'2026-11-25'},
+            {'类别口径':'宏观','细分口径':'M2_YOY','名称':'M2同比','运行日期':'2026-11-25'},
+            {'类别口径':'ETF','细分口径':'510050','名称':'上证50ETF','运行日期':'2026-11-25'},
+            {'类别口径':'ETF','细分口径':'159915','名称':'创业板ETF','运行日期':'2026-11-25'},
+          ];
+          MONITOR_STATE.stats = {page:1,size:25,keyword:'',run_type:'',category:'',subcode:'',status:'',start:'',end:''};
+          rerenderView('mon-stats');
+        }""")
+        assert page.locator("#v-mon-stats [data-stat-dim1]").count() == 1
+        assert page.locator("#v-mon-stats [data-mon-subcode]").count() == 1
+        # 维度1=ETF → 维度2 应级联出两个 ETF 细分口径
+        page.locator("#v-mon-stats [data-stat-dim1]").select_option("ETF")
+        opts = page.locator("#v-mon-stats [data-mon-subcode] option").all_inner_texts()
+        assert any("510050" in o for o in opts)
+        assert any("159915" in o for o in opts)
+        assert not any("M1_YOY" in o for o in opts)
+        # 选择维度2=510050 并筛选，表格只剩对应行
+        page.locator("#v-mon-stats [data-mon-subcode]").select_option("510050")
+        page.locator('#v-mon-stats [data-act="monitor-filter"]').click()
+        page.wait_for_timeout(150)
+        body = page.locator('#v-mon-stats [data-monitor-table="stats"] tbody').inner_text()
+        assert "510050" in body
+        assert "159915" not in body
+        assert "M1同比" not in body
+        assert page._js_errors == []
+
+    def test_sidebar_footer_pinned_at_bottom(self, page):
+        """侧栏底部展示生产系统版权信息，并通过 flex 固定在侧栏底部。"""
+        _switch(page, "console")
+        foot = page.locator("#sidebar .sidebar-foot")
+        assert foot.count() == 1
+        text = foot.inner_text()
+        assert "投研大盘数据平台" in text
+        assert "生产系统" in text
+        assert "2026 投研数据团队" in text
+        layout = page.evaluate("""() => {
+          const side = document.querySelector('#sidebar');
+          const foot = side.querySelector('.sidebar-foot');
+          const cs = getComputedStyle(side);
+          return {
+            display: cs.display, direction: cs.flexDirection,
+            marginTop: parseFloat(getComputedStyle(foot).marginTop),
+            gapToBottom: side.getBoundingClientRect().bottom - foot.getBoundingClientRect().bottom,
+          };
+        }""")
+        assert layout["display"] == "flex"
+        assert layout["direction"] == "column"
+        # flex + margin-top:auto 让 footer 贴底：与侧栏底部距离接近 0，且上方有较大留白
+        assert layout["gapToBottom"] < 2
+        assert layout["marginTop"] > 0
+        assert page._js_errors == []

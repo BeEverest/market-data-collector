@@ -181,6 +181,8 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
 .wide-card { grid-column: 1 / -1; }
 .chart-box.overlay { height: 480px; }
 .chart-box.tall { height: 420px; }
+/* 交易图1（市场成交与集中度）：双grid + 40%/50% 警戒线，单独拉高 */
+.chart-box.tm-tall { height: 560px; }
 
 /* 点击柱子展开的 ETF 每日明细面板 */
 .etf-daily-detail { margin-top: 10px; padding: 10px 12px; background: #f7f9fd; border: 1px solid var(--line); border-radius: 7px; }

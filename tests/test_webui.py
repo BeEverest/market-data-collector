@@ -307,6 +307,13 @@ class TestWebPage:
                   .some(p => p && p.link && p.link.length),
                 amountAxis: (opt.yAxis || [])[0] && (opt.yAxis || [])[0].name,
                 amountValues: ((opt.series || [])[0] || {}).data || [],
+                markLines: (opt.series || [])
+                  .filter(s => /集中度/.test(s.name || ''))
+                  .flatMap(s => ((s.markLine || {}).data || []).map(d => ({
+                    y: d.yAxis, color: d.lineStyle && d.lineStyle.color,
+                  }))),
+                chartHeight: dom.getBoundingClientRect().height,
+                tmTall: dom.classList.contains('tm-tall'),
               };
             }""",
             arg="trade_market",
@@ -317,6 +324,12 @@ class TestWebPage:
         assert detail["linked"] is True
         assert "万亿元" in detail["amountAxis"]
         assert all(v is None or round(float(v), 2) == float(v) for v in detail["amountValues"])
+        # 40% 分界 + 50% 红色警戒线
+        marks = {m["y"]: m["color"] for m in detail["markLines"]}
+        assert 40 in marks and 50 in marks
+        assert marks[50].lower() == "#e5484d"
+        assert detail["tmTall"] is True
+        assert detail["chartHeight"] >= 500
         assert page._js_errors == []
 
     def test_preview_filter_applies_code_and_date(self, page):

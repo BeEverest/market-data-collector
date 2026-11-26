@@ -1097,14 +1097,24 @@ function renderTradeMarketSplitNode(node, chart, months){
   const upper = (chart.series||[]).filter(s=>s.y_axis_index===0 || s.y_axis_index===1);
   const lower = (chart.series||[]).filter(s=>s.y_axis_index===2);
   const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
-  const item = (s,i,gi,yi)=>({
-    name:s.name, type:s.type||'line', xAxisIndex:gi, yAxisIndex:yi, data:dataOf(s),
-    smooth:s.type!=='bar', showSymbol:false, symbolSize:5, connectNulls:true,
-    barMaxWidth:22, barGap:'20%',
-    lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
-  });
+  const item = (s,i,gi,yi)=>{
+    const o = {
+      name:s.name, type:s.type||'line', xAxisIndex:gi, yAxisIndex:yi, data:dataOf(s),
+      smooth:s.type!=='bar', showSymbol:false, symbolSize:5, connectNulls:true,
+      barMaxWidth:22, barGap:'20%',
+      lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
+    };
+    // 集中度(前5%)在上图右轴(百分比)：标注 40% 分界 / 50% 红色警戒线。
+    if(/集中度/.test(s.name||'')){
+      o.markLine = {silent:true, symbol:'none', animation:false, data:[
+        {yAxis:40, lineStyle:{color:'#e0a100',type:'dashed',width:1.5}, label:{formatter:'40% 分界线',position:'insideEndTop',color:'#a87900',fontSize:10}},
+        {yAxis:50, lineStyle:{color:'#e5484d',type:'dashed',width:2}, label:{formatter:'50% 警戒线',position:'insideEndTop',color:'#c5282d',fontSize:10}},
+      ]};
+    }
+    return o;
+  };
   ins.setOption({animation:false,color:CLR,
-    grid:[{left:62,right:158,top:54,height:'27%'},{left:62,right:158,top:'50%',bottom:96}],
+    grid:[{left:62,right:158,top:54,height:'31%'},{left:62,right:158,top:'54%',bottom:96}],
     axisPointer:{link:[{xAxisIndex:'all'}]},
     legend:{top:4,type:'scroll',textStyle:{fontSize:10}},
     tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
@@ -1373,7 +1383,7 @@ function renderDash(){
         <div class="card-body"><div class="chart-box" id="etfSharesCumChart" style="height:300px"></div><div class="etf-daily-total" id="etfSharesTotal"></div><div class="table-wrap" id="etfSharesTable"><div class="hint">加载中…</div></div></div></div>` : '';
     const rankDetail = c.layout==='etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : '';
     return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#8fa6c4" title="${esc(c.note)}"></i>`:''}</div>
-      <div class="card-body" style="padding:6px"><div class="chart-box ${tall?'tall':''} ${c.layout==='etf_overlay'?'overlay':''}"></div>${rankDetail}</div></div>${extra}`;
+      <div class="card-body" style="padding:6px"><div class="chart-box ${tall?'tall':''} ${c.layout==='etf_overlay'?'overlay':''} ${c.layout==='trade_market_split'?'tm-tall':''}"></div>${rankDetail}</div></div>${extra}`;
   };
   box.innerHTML = list.map(cardHtml).join('');
   const meta = view.querySelector('[data-dash-meta]');

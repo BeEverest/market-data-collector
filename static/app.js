@@ -962,8 +962,20 @@ function switchMod(mod){
 /* ==========================================================================
  * 图表（ECharts）
  * ========================================================================== */
+/* X 轴必须取所有 series 的日期并集：图1 GDP 是季度点、进出口是月度点，
+   若只取第一条 series（GDP）作为 categories，进出口最新月份（如 2026-10）会没有坐标而不展示。 */
+function chartCategories(chart){
+  const cats = new Set();
+  (chart?.series||[]).forEach(s=>(s?.data||[]).forEach(p=>{
+    if(Array.isArray(p) && p[0]!=null && p[0]!=='') cats.add(String(p[0]));
+  }));
+  (chart?.index_data||[]).forEach(p=>{
+    if(Array.isArray(p) && p[0]!=null && p[0]!=='') cats.add(String(p[0]));
+  });
+  return [...cats].sort();
+}
 function filteredData(chart, months){
-  const categories = (chart.series[0]?.data||[]).map(p=>p[0]).sort();
+  const categories = chartCategories(chart);
   if(!months || months>=999) return categories;
   // 有些图（如 ETF 净流入细分）x 轴是名称而非日期，按时间过滤时原样保留
   const end = new Date(categories[categories.length-1]||LAST);

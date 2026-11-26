@@ -250,9 +250,11 @@
     "enabled": true,
     "time": "03:17",
     "run_type": "full",
+    "macro_lookback_months": 2,
     "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",
     "_time_help": "每日采集时刻，24小时制 HH:MM",
-    "_run_type_help": "full=全量采集 / macro=仅宏观 / etf=仅 ETF / index=仅指数"
+    "_run_type_help": "full=全量采集 / macro=仅宏观 / etf=仅 ETF / index=仅指数",
+    "_macro_lookback_months_help": "定时调度宏观采集窗口：当前月往前回溯 N 个月（含当月共 N+1 期）。宏观月度数据多在次月发布，仅采当月会漏掉刚发布的上月数据；默认 2（采最近 3 期），按业务键幂等 upsert 不重复"
   },
   "web": {
     "host": "0.0.0.0",

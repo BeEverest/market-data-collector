@@ -705,6 +705,7 @@ def api_status():
             "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
             "time": cfg.get("scheduler", {}).get("time", "08:30"),
             "run_type": cfg.get("scheduler", {}).get("run_type", "full"),
+            "macro_lookback_months": int(cfg.get("scheduler", {}).get("macro_lookback_months", 2)),
             "next_run": scheduler.next_run(),
         },
         "running": _run_lock.locked(),
@@ -1748,13 +1749,14 @@ def api_scheduler_get():
         "enabled": bool(cfg.get("enabled")),
         "time": cfg.get("time", "08:30"),
         "run_type": cfg.get("run_type", "full"),
+        "macro_lookback_months": int(cfg.get("macro_lookback_months", 2)),
         "next_run": scheduler.next_run(),
     }
 
 
 @app.post("/api/scheduler")
 def api_scheduler_set(payload: dict):
-    allowed = {"enabled", "time", "run_type"}
+    allowed = {"enabled", "time", "run_type", "macro_lookback_months"}
     if not any(k in payload for k in allowed):
         raise HTTPException(status_code=400, detail="无有效配置项")
     cfg = _cfg()
@@ -1771,6 +1773,14 @@ def api_scheduler_set(payload: dict):
         if payload["run_type"] not in ("full", "macro", "etf", "index"):
             raise HTTPException(status_code=400, detail="run_type 应为 full/macro/etf/index")
         sched["run_type"] = payload["run_type"]
+    if "macro_lookback_months" in payload:
+        try:
+            lookback = int(payload["macro_lookback_months"])
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="macro_lookback_months 应为 0~12 的整数")
+        if not 0 <= lookback <= 12:
+            raise HTTPException(status_code=400, detail="macro_lookback_months 应为 0~12 的整数")
+        sched["macro_lookback_months"] = lookback
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True, "config": api_scheduler_get()}
 

@@ -181,8 +181,21 @@ def compute_derived(macro_df: pd.DataFrame, computed_at: str | None = None,
     dates = ([d for d in all_dates if d in target_months]
              if target_months is not None else all_dates)
 
+    # 进出口同比优先用官方累计（TRADE_CUM_TOTAL，仅 2023 年起）；
+    # 官方累计缺失的早期月份，用月度进出口总额 TRADE_TOTAL 在年内逐月累加重建累计，
+    # 使同比可回溯至月度数据起点（2015 年起，首个同比为 2016-01）。
+    official_cum = _values(macro_df, "TRADE_CUM_TOTAL")
+    trade_monthly = _values(macro_df, "TRADE_TOTAL")
+    trade_cum = dict(official_cum)
+    rebuilt_cum: dict[str, float] = {}
+    for d in sorted(trade_monthly):
+        prev_m = _shift_month(d, -1)
+        rebuilt_cum[d] = (rebuilt_cum.get(prev_m, 0.0) if prev_m[:4] == d[:4] else 0.0) + trade_monthly[d]
+    for d, v in rebuilt_cum.items():
+        trade_cum.setdefault(d, v)
+
     raw = {
-        "trade_cum": _values(macro_df, "TRADE_CUM_TOTAL"),
+        "trade_cum": trade_cum,
         "sfr": _values(macro_df, "SFR_STOCK"),
         "m1": _values(macro_df, "M1"),
         "m2": _values(macro_df, "M2"),

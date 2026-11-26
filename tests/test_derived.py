@@ -53,6 +53,24 @@ class TestComputeDerived:
         # 83 万盎司 = 83 × 10^4 × 31.1034768 克 ÷ 10^6 克/吨 = 25.816 吨（÷100，不是 ÷10000）
         assert got[("GOLD_NEW_TON", "2026-11")] == pytest.approx(83 * 31.1034768 / 100, abs=1e-4)
 
+    def test_trade_yoy_backfill_from_monthly_total(self):
+        """官方累计仅 2023 起；早期年份用月度 TRADE_TOTAL 年内累加重建累计，同比可回溯。"""
+        rows = [
+            _row("TRADE_TOTAL", "2015-01", 100), _row("TRADE_TOTAL", "2015-02", 110),
+            _row("TRADE_TOTAL", "2016-01", 120), _row("TRADE_TOTAL", "2016-02", 132),
+            _row("TRADE_CUM_TOTAL", "2025-01", 1000),
+            _row("TRADE_CUM_TOTAL", "2026-01", 1150),  # 官方同比 15%
+        ]
+        df = compute_derived(pd.DataFrame(rows))
+        got = df.set_index(["code", "date"])["value"]
+        # 2016 年重建累计：1 月 120、2 月 252；对比 2015 年 100、210
+        assert got[("TRADE_YOY", "2016-01")] == pytest.approx(20.0)
+        assert got[("TRADE_YOY", "2016-02")] == pytest.approx(20.0)
+        # 官方累计优先于重建值
+        assert got[("TRADE_YOY", "2026-01")] == pytest.approx(15.0)
+        # 最早月份无去年同月分母，不产出同比
+        assert ("TRADE_YOY", "2015-01") not in got.index
+
     def test_missing_months_are_skipped(self, macro_df):
         df = compute_derived(macro_df)
         got = df.set_index(["code", "date"])["value"]

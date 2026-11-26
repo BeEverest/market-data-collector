@@ -84,7 +84,7 @@ const postJSON = (url, payload) => api(url, {method:'POST', headers:{'Content-Ty
 /* 全局数据：从真实 API 加载后填充（视图函数读取这些变量） */
 let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows:0, macro_indicators:0,
   etf_rows:0, etf_codes:0, index_rows:0, index_codes:0, trade_rows:0, trade_raw_rows:{},
-  today_new:{}, scheduler:{enabled:true,time:'03:17',run_type:'full',next_run:'-'},
+  today_new:{}, scheduler:{enabled:true,time:'03:17',run_type:'full',macro_lookback_months:2,next_run:'-'},
   running:false, server_time:'', last_trade_date:'' };
 let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
 let LAST = '', WEEK_START = '';
@@ -101,6 +101,15 @@ function shiftMonth(iso, months){
   return d.toISOString().slice(0,10);
 }
 const CURRENT_MONTH = new Date().toISOString().slice(0,7);
+/* 定时调度宏观滚动窗口：当前月往前 lookback 个月（默认 2），返回 YYYY-MM 起止 */
+function macroSchedWindow(){
+  const lb = Number(S.scheduler?.macro_lookback_months ?? 2);
+  const end = CURRENT_MONTH;
+  const [y,mo] = end.split('-').map(Number);
+  const total = y*12 + (mo-1) - Math.max(0,Math.min(lb,12));
+  const start = `${Math.floor(total/12).toString().padStart(4,'0')}-${(total%12+1).toString().padStart(2,'0')}`;
+  return {start, end};
+}
 let MACRO_INDS = [], ETF_ITEMS = [], INDEX_ITEMS = [], TRADE_LATEST = [];
 let MONITOR_DATA = {overview:[],failures:[],health:[],detail:[],stats:[]};
 let MONITOR_RAW = {overview:[],failures:[],health:[],detail:[],stats:[]};
@@ -207,6 +216,7 @@ async function loadStatus(){
     if($('#dpSchedEnabled')) $('#dpSchedEnabled').checked = !!scheduler.enabled;
     if($('#dpSchedTime') && scheduler.time) $('#dpSchedTime').value = scheduler.time;
     if($('#dpSchedRunType') && scheduler.run_type) $('#dpSchedRunType').value = scheduler.run_type;
+    if($('#dpSchedLookback') && scheduler.macro_lookback_months != null) $('#dpSchedLookback').value = scheduler.macro_lookback_months;
     if($('#dpSchedNext')) $('#dpSchedNext').textContent = scheduler.next_run || '-';
     const hdStatus = $('#hdStatus');
     if(hdStatus) hdStatus.textContent = S.running ? '采集中…' : '系统正常';
@@ -536,6 +546,12 @@ function previewCodeOptions(kind){
   if(kind==='trade') return [['exchange','交易所概况'],['margin','两融账户'],['snapshot','全A个股快照'],['breadth','涨跌家数'],['congestion','成交集中度']].map(([v,l])=>({v,l}));
   return [];
 }
+/* 精确采集代码下拉：首项“全部”，其后为具体指标/标的（value=代码） */
+function precCodeOptionsHtml(kind){
+  const opts = previewCodeOptions(kind);
+  return `<option value="">全部（该类别全部）</option>` +
+    opts.map(o=>`<option value="${esc(o.v)}">${esc(o.l)}</option>`).join('');
+}
 const filterBar = (kind='macro') => {
   const st = PREVIEW_STATE[kind] || {code:'',start:'',end:'',size:25,total:0};
   const opts = previewCodeOptions(kind);
@@ -746,7 +762,7 @@ const VIEWS = {
         <div class="ctl-params"><input class="prec-input" type="date" value="${LAST}" style="width:120px"><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:120px"><button class="btn btn-sm" data-act="date-default">默认</button></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-full">立即采集</button></div></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#16855b"><i class="ti ti-target"></i></div><div><b>精确采集</b><small>类别 → 具体口径 + 时间区间</small></div></div><span class="scope-pill scope-part">部分</span>
-        <div class="ctl-params"><select class="form-select" style="width:100px" data-act="prec-cat"><option value="macro">宏观指标</option><option value="etf">ETF 基金</option><option value="index">指数</option><option value="trade">交易（原始）</option></select><span class="hint">→</span><select class="form-select" style="width:100px" data-prec-code><option>M1 同比</option><option>社融增量</option></select><input class="prec-input" type="date" value="2025-01-01" style="width:118px" data-prec-start><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-end></div>
+        <div class="ctl-params"><select class="form-select" style="width:100px" data-act="prec-cat"><option value="macro">宏观指标</option><option value="etf">ETF 基金</option><option value="index">指数</option><option value="trade">交易（原始）</option></select><span class="hint">→</span><select class="form-select" style="width:150px" data-prec-code>${precCodeOptionsHtml('macro')}</select><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-start><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-end></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-prec">采集所选</button></div></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#c2410c"><i class="ti ti-file-import"></i></div><div><b>文件导入</b><small>份额与规模_代码.xlsx</small></div></div><span class="scope-pill scope-ops">ETF数据</span>
         <div class="ctl-params"><input class="prec-input" type="file" style="width:220px;font-size:10px" data-import-file><button class="btn btn-sm" data-act="import">导入数据</button></div>
@@ -838,25 +854,40 @@ const VIEWS = {
   'mon-health':()=>monitorView('health'), 'mon-detail':()=>monitorView('detail'),
   'mon-stats':()=>monitorView('stats'),
 
-  tasksched:()=>head('任务调度','每日定时调度 · 采集完成后自动增量重算')+`<div class="trigger-grid" style="grid-template-columns:1fr">
+  tasksched:()=>{
+    const mw = macroSchedWindow();
+    const lb = Number(S.scheduler?.macro_lookback_months ?? 2);
+    // 各指标/类别的默认采集时间窗口（定时调度口径）
+    const timeRows = [
+      ['宏观指标（全部）', `月度 · 次月发布`, `${mw.start} ~ ${mw.end}`, `当前月往前 ${lb} 个月（共 ${lb+1} 期），幂等 upsert；覆盖刚发布的上月数据`],
+      ['ETF 基金（全部）', `日频 · 每交易日`, `最近 ${Number(ETF_CFG.default_trade_days||1)} 个交易日`, `按 etf.default_trade_days，默认最近 1 个已结束交易日`],
+      ['指数日线（全部）', `日频 · 每交易日`, `最近 1 个交易日`, `两日期留空时取最近已结束交易日`],
+      ['交易原始数据（全部）', `日频 · 每交易日`, `最近 1 个交易日`, `交易所 / 两融 / 快照；快照仅当日不可回溯`],
+    ];
+    (CATALOG.macro||[]).slice(0,12).forEach(x=>timeRows.push([
+      `　└ ${esc(x.name)}`, esc(x.code), esc(x.granularity||'月度'), `${mw.start} ~ ${mw.end}`,
+    ]));
+    return head('任务调度','每日定时调度 · 采集完成后自动增量重算')+`<div class="trigger-grid" style="grid-template-columns:1fr">
     <div class="trigger-card"><div class="tc-head"><h3>⏰ 定时调度 <small>主触发</small></h3><label class="switch-row"><input type="checkbox" id="dpSchedEnabled" checked> 启用</label></div><div class="tc-body">
-      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" id="dpSchedTime" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" id="dpSchedRunType" style="width:160px"><option value="full">全量 full</option><option value="macro">仅宏观 macro（当月）</option><option value="etf">仅 ETF etf</option><option value="index">仅指数 index</option></select><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
+      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" id="dpSchedTime" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" id="dpSchedRunType" style="width:160px"><option value="full">全量 full</option><option value="macro">仅宏观 macro（滚动窗口）</option><option value="etf">仅 ETF etf</option><option value="index">仅指数 index</option></select><label>宏观回溯月数</label><input class="prec-input" type="number" id="dpSchedLookback" min="0" max="12" value="${lb}" style="width:64px"><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
       <div class="tc-row tc-row-foot"><button class="btn btn-primary btn-sm" data-act="save-sched">保存调度配置</button><button class="btn btn-sm" data-act="sched-run-now"><i class="ti ti-player-play"></i> 立即触发一次</button></div>
-      <div class="tc-note">采集完成后自动执行步骤 6/6 增量重算（只算本次变更涉及的指标/月份）· 每天仅触发一次 · 忙时跳过不补跑</div></div></div></div>
+      <div class="tc-note">宏观采集窗口：${mw.start} ~ ${mw.end}（当前月 + 前 ${lb} 月）· 采集完成后自动增量重算 · 每天仅触发一次 · 忙时跳过不补跑</div></div></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
       <li><b>触发条件</b>：服务运行时按本页配置每日到点触发一次，同一天只触发一次；未启用 / 未到点 / 今日已触发 / 任务占用时不执行，日志中给出原因。</li>
       <li><b>步骤 1~5</b>：触发 → 提交采集任务 → 宏观 / ETF / 指数采集 → 写 SQLite 业务表（幂等 upsert）→ 采集完成统计，全程写入实时监控日志。</li>
       <li><b>步骤 6/6 派生增量重算</b>：按本次 <code>run_id</code> 读取写入 <code>macro_observation</code> 的原始 <code>(指标, 月份)</code>，经依赖映射推导受影响的派生行，<b>只重算这些目标行</b>并按 <code>biz_key</code> 幂等 upsert。</li>
       <li><b>手动重算（兜底）</b>：「全部」全量重算并整表替换；「按月」「按指标」按业务键幂等覆盖只影响目标子集，在「数据处理」模块操作。</li>
-      <li><b>宏观当月模式</b>：定时调度中宏观采集锁定 <code>start = end = 当月 YYYY-MM</code>，避免无谓回溯；手动全量采集不受此限制。</li>
+      <li><b>宏观滚动窗口</b>：定时调度宏观采集 <code>${mw.start} ~ ${mw.end}</code>（当前月 + 前 ${lb} 月，可通过上方「宏观回溯月数」调整）。宏观月度数据多在次月发布，只采当月会漏掉刚发布的上月数据；窗口内按业务键幂等 upsert，重复采集不产生冗余。</li>
       <li><b>看板联动</b>：数据看板各图直接读取派生表，重算完成后自动生效。</li>
     </ol></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--blue)"></i> 各指标默认采集时间</h3><span class="sub">定时调度下每类数据的采集口径与窗口</span></div><div class="card-body">${tbl(['数据类别 / 指标','代码 / 频率','默认采集窗口','说明'], timeRows)}</div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-history" style="color:var(--blue)"></i> 最近调度记录</h3></div><div class="card-body">${tbl(['触发时间','运行ID','范围','状态','调用数','耗时'],[
       ['2026-11-26 03:17','20261126_031700_scheduled','全量','<span class="tag success">成功</span>','284','186s'],
       ['2026-11-25 03:17','20261125_031700_scheduled','全量','<span class="tag success">成功</span>','284','191s'],
       ['2026-11-24 03:17','20261124_031700_scheduled','全量','<span class="tag warn">跳过</span>','—','今日已触发'],
       ['2026-11-23 03:17','20261123_031700_scheduled','全量','<span class="tag success">成功</span>','282','188s'],
-    ])}</div></div>`,
+    ])}</div></div>`;
+  },
 };
 
 /* ==========================================================================
@@ -1479,9 +1510,11 @@ function handleAction(act, btn, e){
     case 'collect-prec': {
       const row = btn.closest('.ctl-row');
       const cat = row?.querySelector('[data-act="prec-cat"]')?.value || 'macro';
+      const code = row?.querySelector('[data-prec-code]')?.value || '';
+      const codes = code ? [code] : [];
       const start = row?.querySelector('[data-prec-start]')?.value||'';
       const end = row?.querySelector('[data-prec-end]')?.value||'';
-      submitJob('/api/collect/interface', {category:cat,codes:[],start,end}, `精确采集(${cat})`);
+      submitJob('/api/collect/interface', {category:cat,codes,start,end}, `精确采集(${cat}${code?'·'+code:'·全部'})`);
       break;
     }
     case 'date-default': {
@@ -1523,8 +1556,9 @@ function handleAction(act, btn, e){
       const en = $('#dpSchedEnabled')?.checked ?? true;
       const tm = $('#dpSchedTime')?.value || '03:17';
       const rt = $('#dpSchedRunType')?.value || 'full';
-      postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt})
-        .then(()=>{ toast('调度配置已保存','ok'); loadStatus(); })
+      const lb = Number($('#dpSchedLookback')?.value ?? 2);
+      postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt, macro_lookback_months:lb})
+        .then(()=>{ toast('调度配置已保存','ok'); loadStatus().then(()=>rerenderView('tasksched')); })
         .catch(err=>toast('保存失败：'+err.message,'err'));
       break;
     }
@@ -1812,15 +1846,9 @@ function bindEvents(){
     const t = e.target;
     if(t.matches('[data-act="prec-cat"]')){
       const sel = t.closest('.ctl-row')?.querySelector('[data-prec-code]');
-      const map = {
-        macro:(CATALOG.macro||[]).slice(0,60).map(x=>x.name),
-        etf:(ETF_CFG.items||[]).slice(0,60).map(x=>`${x.code} ${x.name}`),
-        index:(INDEX_CFG.items||[]).map(x=>`${x.code} ${x.name}`),
-        trade:['exchange 交易所概况','margin 两融账户','snapshot 全A快照','breadth 涨跌家数','congestion 成交集中度'],
-      };
-      const opts = map[t.value]||[];
-      if(sel) sel.innerHTML = opts.map(o=>`<option value="${esc(o)}">${esc(o)}</option>`).join('');
-      toast(`类别已切换为「${t.selectedOptions[0]?.text}」，口径已联动（共 ${opts.length} 项）`,'info');
+      if(sel) sel.innerHTML = precCodeOptionsHtml(t.value);
+      const n = previewCodeOptions(t.value).length;
+      toast(`类别已切换为「${t.selectedOptions[0]?.text}」，可选「全部」或单个（共 ${n} 项）`,'info');
     }
     if(t.matches('[data-act="overlay-index"]')) loadDashboard();
     if(t.matches('[data-derived-view-month]')) loadDerived(t.value);

@@ -184,9 +184,11 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     start_date / end_date 为全量采集的日期范围覆盖值；留空时回退到各类别的
     配置默认值。这样一次采集即可让宏观、ETF、指数三类统一按指定范围抓取。
 
-    macro_current_month=True 时宏观固定只采集当月一期（start=end=当月 YYYY-MM），
-    忽略 config 区间与 start_date/end_date；供定时调度每天更新当月数据使用，
-    不写死月份、也不会重复采集历史。ETF/指数不受此参数影响。
+    macro_current_month=True 时宏观按「滚动窗口」采集：end=当月 YYYY-MM，
+    start=往前 lookback 个月（取自 scheduler.macro_lookback_months，默认 2），
+    忽略 config 区间与 start_date/end_date。宏观月度数据多在次月发布，
+    故窗口覆盖最近 2~3 期，避免定时调度漏采刚发布的上月数据；按业务键幂等
+    upsert，重复采集不产生冗余。ETF/指数不受此参数影响。
     """
     macro_df = pd.DataFrame()
     etf_df = pd.DataFrame()
@@ -200,10 +202,16 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
     if not etf_only and not index_only:
         macro_cfg = config.get("macro", {})
         if macro_current_month:
-            # 定时调度：宏观固定只更新当月这一期，忽略 config 区间与外部 start/end，
-            # 避免写死月份过期或重复采集历史数据。
+            # 定时调度：宏观按滚动窗口采集最近 N+1 期（默认当前月 + 前 2 月），
+            # 忽略 config 区间与外部 start/end。月度数据多在次月发布，只采当月
+            # 会漏掉刚发布的上月数据；窗口回溯可覆盖新发布月份，幂等 upsert 不重复。
             macro_month = datetime.now().strftime("%Y-%m")
-            macro_start, macro_end = macro_month, macro_month
+            lookback = int(config.get("scheduler", {}).get("macro_lookback_months", 2) or 0)
+            lookback = max(0, min(lookback, 12))
+            y, mo = (int(x) for x in macro_month.split("-"))
+            total = y * 12 + (mo - 1) - lookback
+            macro_start = f"{total // 12:04d}-{total % 12 + 1:02d}"
+            macro_end = macro_month
         else:
             # 宏观为月度数据，"最近一期"=当前月份；无显式日期且配置留空时动态取当月，
             # 避免 config.json 里写死的月份随时间过期。
@@ -211,7 +219,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
             macro_end = end_date or macro_cfg.get("end_date")
         logger.info("[宏观] 开始采集：区间 %s ~ %s（25 项指标：17 原指标 + 中国GDP + 7 美国指标）%s",
                     macro_start, macro_end or "当前",
-                    "（定时调度·仅当月）" if macro_current_month else "")
+                    "（定时调度·滚动窗口）" if macro_current_month else "")
         macro_df = collect_macro(
             start_date=macro_start,
             end_date=macro_end,

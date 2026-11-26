@@ -1517,7 +1517,7 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
 # 观测表的按口径删除只走 clean_data()，且必须由用户在危险操作中显式确认。
 CLEAR_TABLES = [
     "interface_run", "etf_config", "index_config", "meta", "export_log",
-    "collection_stat",
+    "collection_stat", "new_row_log",
 ]
 
 

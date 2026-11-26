@@ -248,9 +248,9 @@
   },
   "scheduler": {
     "enabled": true,
-    "time": "03:17",
+    "time": "08:30",
     "run_type": "full",
-    "macro_lookback_months": 2,
+    "macro_lookback_months": 1,
     "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",
     "_time_help": "每日采集时刻，24小时制 HH:MM",
     "_run_type_help": "full=全量采集 / macro=仅宏观 / etf=仅 ETF / index=仅指数",

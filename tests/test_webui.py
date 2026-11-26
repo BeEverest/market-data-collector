@@ -605,7 +605,7 @@ class TestWebPage:
         assert page._js_errors == []
 
     def test_trade_config_page_add_remove_sources(self, page):
-        """交易参数配置页：区间默认最近交易日、5类源目录、弹窗新增与删除。"""
+        """交易参数配置页：区间默认最近交易日、6类源目录、弹窗新增与删除。"""
         _switch(page, "tradecfg")
         assert page.locator("#v-tradecfg [data-act=\"trade-add\"]").count() == 1
         assert page.locator("#v-tradecfg [data-act=\"save-trade-config\"]").count() == 1
@@ -614,9 +614,9 @@ class TestWebPage:
         end = page.locator("#v-tradecfg [data-trade-end]").input_value()
         last = page.evaluate("LAST")
         assert start and end and start == end == last
-        # catalog 参考表应有 5 类源（含 breadth/congestion）
+        # catalog 参考表应有 6 类源（含 breadth/congestion/risk_premium）
         cat_text = page.locator("#v-tradecfg").inner_text()
-        for code in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+        for code in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"):
             assert code in cat_text
         initial_rows = page.locator("#v-tradecfg [data-trade-src-table] tbody tr").count()
         # 弹窗填写新增：选择目录预设后代码/名称等自动带出

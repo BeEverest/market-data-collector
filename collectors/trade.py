@@ -1,7 +1,7 @@
 """交易原始数据层采集（口径：每个交易日）。
 
 职责：只调用接口并把原始数据**原样**落库，不换算单位、不计算任何指标。
-计算逻辑统一放在数据处理模块的 processors/trade.py（从原始表派生 10 项指标）。
+计算逻辑统一放在数据处理模块的 processors/trade.py（从原始表派生 11 项指标）。
 
 数据源（三级优先级：交易所 → akshare → 其他渠道）：
   - 交易所每日概况：上交所 stock_sse_deal_daily + 深交所 stock_szse_summary
@@ -9,6 +9,7 @@
   - 两融账户：akshare stock_margin_account_info（二级源，13 列原样，T-1 更新）
   - 全A个股快照：akshare stock_zh_a_spot（二级源兜底，逐股量/额，仅当日快照不可回溯）
     成交集中度与涨跌家数无直采接口，由计算层从该快照派生。
+  - 股债性价比：韭圈儿/投研工作台 api/equity-bond（三级源，沪深300 FED 风险溢价日频直采）
 
 范围：默认最近一个已结束交易日；可用 start_date/end_date 覆盖。
 快照接口只返回当日数据，指定历史区间时只对当日快照落库（历史靠逐日采集积累）。
@@ -32,9 +33,11 @@ SOURCE_EXCHANGE = "上交所/深交所每日概况（akshare 封装）"
 SOURCE_MARGIN = "中国证券金融两融账户（akshare stock_margin_account_info）"
 SOURCE_SNAPSHOT = "新浪财经全A快照（akshare stock_zh_a_spot）"
 SOURCE_BREADTH_SINA = "新浪财经全A快照（MCP失败降级派生）"
+SOURCE_RISK_PREMIUM = "韭圈儿·股债性价比(FED风险溢价差值)"
+FUNDDB_EQUITY_BOND_API = "https://ai2.jiucaishuo.com/api/equity-bond"
 
 RAW_KEYS = ("exchange", "margin", "snapshot")
-SOURCES_KEYS = RAW_KEYS + ("breadth", "congestion")
+SOURCES_KEYS = RAW_KEYS + ("breadth", "congestion", "risk_premium")
 
 
 def catalog() -> list[dict]:
@@ -55,6 +58,9 @@ def catalog() -> list[dict]:
         {"code": "congestion", "name": "成交集中度（前5%）", "iface": "legulegu api/stockdata/ashares-congestion",
          "unit": "%", "granularity": "交易日", "source": "乐咕乐股·大盘拥挤度",
          "fields": "前5%成交额/全部A股成交额/集中度（支持精确采集与历史补数）"},
+        {"code": "risk_premium", "name": "沪深300风险溢价率(FED差值)", "iface": "funddb api/equity-bond",
+         "unit": "%", "granularity": "交易日", "source": SOURCE_RISK_PREMIUM,
+         "fields": "value风险溢价率/ratio股债比/close指数点位/ma70/滚动均值与±1σ±2σ通道（数据源直采，日频全历史）"},
     ]
 
 
@@ -445,6 +451,77 @@ def _collect_congestion(start_date: str, end_date: str, *, monitor,
         return pd.DataFrame()
 
 
+def _collect_risk_premium(start_date: str, end_date: str, *, monitor,
+                          collected_at: str, retries: int = 3,
+                          retry_interval: float = 2.0) -> pd.DataFrame:
+    """直接采集沪深300风险溢价率（韭圈儿/投研工作台 FED 差值口径）。
+
+    接口一次返回全历史日频序列，本函数只按请求区间过滤并原样落库，
+    不在采集层做任何计算；风险溢价率 value 是数据源已计算好的指标。
+    """
+    import requests
+
+    started = time.time()
+    params = {
+        "tab": "fed", "code": "000300.SH", "mode": "diff",
+        "years": "-1", "years2": "5",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+        "Referer": "https://www.funddb.cn/indicators?tab=gap",
+    }
+
+    def fetch() -> pd.DataFrame:
+        resp = requests.get(FUNDDB_EQUITY_BOND_API, params=params,
+                            headers=headers, timeout=60)
+        resp.raise_for_status()
+        payload = resp.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("series"), list):
+            raise RuntimeError(f"股债性价比接口返回异常：{str(payload)[:200]}")
+        if not payload["series"]:
+            raise RuntimeError("股债性价比接口返回空序列")
+        return pd.DataFrame(payload["series"])
+
+    try:
+        source_df = _fetch_with_retry(fetch, retries=retries,
+                                      retry_interval=retry_interval)
+        if source_df.empty:
+            raise RuntimeError("股债性价比接口未返回可用数据")
+        rows = []
+        for _, item in source_df.iterrows():
+            day = str(item.get("date", ""))[:10]
+            if not day or not (start_date <= day <= end_date):
+                continue
+            rows.append({
+                "trade_date": day,
+                "risk_premium": item.get("value"),
+                "ratio": item.get("ratio"),
+                "close": item.get("close"),
+                "ma70": item.get("ma70"),
+                "avg": item.get("avg"),
+                "upper1std": item.get("upper1std"),
+                "lower1std": item.get("lower1std"),
+                "upper2std": item.get("upper2std"),
+                "lower2std": item.get("lower2std"),
+                "source": SOURCE_RISK_PREMIUM,
+                "collected_at": collected_at,
+            })
+        df = pd.DataFrame(rows)
+        _report(monitor, key="trade.risk_premium", name="沪深300风险溢价率(FED差值)",
+                status="success", params={"start": start_date, "end": end_date,
+                                          "tab": "fed", "code": "000300.SH", "mode": "diff"},
+                started=started, attempts=1, rows=len(df))
+        return df
+    except Exception as exc:  # noqa: BLE001 - 外部数据不可用时只记失败
+        reason = describe_failure(exc)
+        _report(monitor, key="trade.risk_premium", name="沪深300风险溢价率(FED差值)",
+                status="failed", params={"start": start_date, "end": end_date},
+                started=started, attempts=retries, rows=0, error=reason)
+        logger.warning("[交易·风险溢价] 采集失败：%s", reason)
+        return pd.DataFrame()
+
+
 def _default_range() -> tuple[str, str]:
     day = last_completed_trade_day()
     return day, day
@@ -454,11 +531,11 @@ def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
                   end_date: str | None = None, *, monitor=None, retries: int = 3,
                   retry_interval: float = 2.0, sources: list[str] | None = None,
                   db_path=None) -> dict[str, pd.DataFrame]:
-    """采集交易原始数据，返回 {exchange/margin/snapshot/breadth/congestion: DataFrame}。
+    """采集交易原始数据，返回 {exchange/margin/snapshot/breadth/congestion/risk_premium: DataFrame}。
 
     codes    : 兼容接口，实际以 sources 选择原始数据源
     start/end: YYYY-MM-DD；留空时默认最近一个已结束交易日（单日）
-    sources  : 要采集的原始源列表，留空采集全部五类
+    sources  : 要采集的原始源列表，留空采集全部六类
     """
     selected = list(sources or codes or SOURCES_KEYS)
     selected = [s for s in selected if s in SOURCES_KEYS]
@@ -493,4 +570,9 @@ def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
     if "congestion" in selected:
         result["congestion"] = _collect_congestion(start_date, end_date, monitor=monitor,
                                                    collected_at=collected_at)
+    if "risk_premium" in selected:
+        result["risk_premium"] = _collect_risk_premium(
+            start_date, end_date, monitor=monitor, collected_at=collected_at,
+            retries=retries, retry_interval=retry_interval,
+        )
     return result

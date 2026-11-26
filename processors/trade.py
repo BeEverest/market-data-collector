@@ -1,6 +1,6 @@
 """交易指标计算层（数据处理模块「交易」子 Tab）。
 
-只读取 5 张交易原始表 + 政策常量，按确认口径派生 10 项指标，写入 trade_observation 宽表。
+只读取 6 张交易原始表 + 政策常量，按确认口径派生 11 项指标，写入 trade_observation 宽表。
 所有规则为纯函数（compute_trade），便于单测；recompute_trade 负责增量/全量重算与幂等落库。
 
 口径（详见技术方案第四篇）：
@@ -10,6 +10,7 @@
   - 融资余额占流通市值比 = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100%
   - 融资买入额占比 = 融资买入额 ÷ 全A成交额 ×100%
   - 涨跌家数 = 快照涨跌幅 >0 / <0 / =0 的股票家数
+  - 沪深300风险溢价率 = 韭圈儿 FED 差值直采（1/PE_TTM − 10Y国债收益率）
   - 融资保证金比例 = 政策阶梯常量（按交易日匹配生效值）
 """
 from __future__ import annotations
@@ -33,6 +34,8 @@ INDICATORS: dict[str, dict] = {
                      "formula": "沪成交金额(亿元) + 深成交金额(元)÷1e8"},
     "CONCENTRATION5": {"name": "成交集中度(前5%)", "group": "A", "unit": "%",
                        "formula": "个股成交额降序前5%之和 ÷ 全A个股成交额之和 ×100%"},
+    "RISK_PREMIUM": {"name": "沪深300风险溢价率", "group": "A", "unit": "%",
+                     "formula": "韭圈儿 FED 差值直采：1/沪深300 PE_TTM − 10年期国债收益率"},
     "MARGIN_RATIO": {"name": "平均维持担保比例", "group": "B", "unit": "%",
                      "formula": "两融账户平均维持担保比例，直取"},
     "MARGIN_FINANCING_RATIO": {"name": "融资保证金比例", "group": "B", "unit": "%",
@@ -68,7 +71,7 @@ DEFAULT_MARGIN_POLICY = [
 
 # compute_trade 输出的宽表列（与 storage.upsert_trade 对齐）
 OUTPUT_COLUMNS = [
-    "trade_date", "total_amount", "concentration5", "margin_ratio",
+    "trade_date", "total_amount", "concentration5", "risk_premium", "margin_ratio",
     "margin_financing_ratio", "margin_balance", "financing_balance",
     "securities_balance", "financing_to_float_mv", "financing_buy_pct",
     "debt_investors", "up_count", "down_count", "flat_count", "source_set",
@@ -89,18 +92,21 @@ def margin_policy_for(policy: list[dict] | None, trade_date: str) -> float | Non
 def compute_trade(exchange_row: dict | None, margin_row: dict | None,
                   snapshot_df: pd.DataFrame | None, policy: list[dict] | None,
                   trade_date: str, breadth_row: dict | None = None,
-                  congestion_row: dict | None = None) -> dict:
-    """纯函数：输入某交易日原始数据 + 政策常量，输出该日 10 指标 + 涨跌家数。
+                  congestion_row: dict | None = None,
+                  risk_row: dict | None = None) -> dict:
+    """纯函数：输入某交易日原始数据 + 政策常量，输出该日 11 指标 + 涨跌家数。
 
     exchange_row / margin_row : 对应原始表的单行 dict（无数据传 None）
     snapshot_df               : 该交易日全A个股快照 DataFrame
     breadth_row               : MCP 市场宽度原始行（快照缺失时兜底涨跌家数）
     congestion_row            : 乐咕大盘拥挤度原始行（快照缺失时兜底成交集中度）
+    risk_row                  : 韭圈儿 FED 风险溢价原始行（数据源直采值）
     """
     ex = exchange_row or {}
     mg = margin_row or {}
     br = breadth_row or {}
     cg = congestion_row or {}
+    rp = risk_row or {}
     snap = snapshot_df if snapshot_df is not None else pd.DataFrame()
 
     def num(v):
@@ -128,6 +134,9 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
     elif cg:
         # 历史快照不可回溯，用乐咕大盘拥挤度原始值兜底（单位：%）
         concentration5 = num(cg.get("concentration5"))
+
+    # 指标11 沪深300风险溢价率：数据源直采，不在计算层二次派生
+    risk_premium = num(rp.get("risk_premium"))
 
     # 指标3/6/7/10 两融直取
     margin_ratio = num(mg.get("margin_ratio"))
@@ -180,11 +189,14 @@ def compute_trade(exchange_row: dict | None, margin_row: dict | None,
         sources.append("breadth")
     if cg and snap.empty:
         sources.append("congestion")
+    if rp:
+        sources.append("risk_premium")
 
     return {
         "trade_date": trade_date,
         "total_amount": total_amount,
         "concentration5": concentration5,
+        "risk_premium": risk_premium,
         "margin_ratio": margin_ratio,
         "margin_financing_ratio": margin_financing_ratio,
         "margin_balance": margin_balance,
@@ -216,9 +228,9 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
     policy = _load_policy(config)
     computed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    # 候选交易日 = 交易所 ∪ 两融 ∪ 市场宽度 ∪ 成交集中度 ∪ 快照
+    # 候选交易日 = 交易所 ∪ 两融 ∪ 市场宽度 ∪ 成交集中度 ∪ 风险溢价 ∪ 快照
     dates: set[str] = set()
-    for t in ("exchange", "margin", "breadth", "congestion"):
+    for t in ("exchange", "margin", "breadth", "congestion", "risk_premium"):
         dates.update(storage.trade_raw_dates(db_path, t))
     snap_dates = storage.trade_raw_dates(db_path, "snapshot")
     dates.update(snap_dates)
@@ -232,7 +244,8 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
                 " SELECT trade_date, run_id FROM trade_margin_raw UNION ALL"
                 " SELECT trade_date, run_id FROM trade_snapshot_raw UNION ALL"
                 " SELECT trade_date, run_id FROM trade_breadth_raw UNION ALL"
-                " SELECT trade_date, run_id FROM trade_congestion_raw"
+                " SELECT trade_date, run_id FROM trade_congestion_raw UNION ALL"
+                " SELECT trade_date, run_id FROM trade_risk_premium_raw"
                 ") WHERE run_id=?", (run_id,)
             ).fetchall()
         run_dates = {str(r["trade_date"])[:10] for r in rows}
@@ -250,11 +263,13 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
         snap_df = storage.read_trade_raw(db_path, "snapshot", day, day)
         br_df = storage.read_trade_raw(db_path, "breadth", day, day)
         cg_df = storage.read_trade_raw(db_path, "congestion", day, day)
+        rp_df = storage.read_trade_raw(db_path, "risk_premium", day, day)
         ex_row = ex_df.iloc[0].to_dict() if not ex_df.empty else None
         mg_row = mg_df.iloc[0].to_dict() if not mg_df.empty else None
         br_row = br_df.iloc[0].to_dict() if not br_df.empty else None
         cg_row = cg_df.iloc[0].to_dict() if not cg_df.empty else None
-        rec = compute_trade(ex_row, mg_row, snap_df, policy, day, br_row, cg_row)
+        rp_row = rp_df.iloc[0].to_dict() if not rp_df.empty else None
+        rec = compute_trade(ex_row, mg_row, snap_df, policy, day, br_row, cg_row, rp_row)
         rec["computed_at"] = computed_at
         results.append(rec)
 
@@ -268,7 +283,7 @@ def recompute_trade(db_path: str, config: dict | None = None, run_id: str | None
 
 
 def latest_snapshot(db_path: str) -> dict:
-    """数据处理交易 Tab 展示：10 指标最新值 + 原始数据覆盖概况。"""
+    """数据处理交易 Tab 展示：11 指标最新值 + 原始数据覆盖概况。"""
     df = storage.read_trade(db_path)
     latest = df.iloc[-1].to_dict() if not df.empty else {}
     # FastAPI 的 json 不接受 NaN/Inf，统一转 None
@@ -284,6 +299,7 @@ def latest_snapshot(db_path: str) -> dict:
         "raw_snapshot": len(storage.read_trade_raw(db_path, "snapshot")),
         "raw_breadth": len(storage.read_trade_raw(db_path, "breadth")),
         "raw_congestion": len(storage.read_trade_raw(db_path, "congestion")),
+        "raw_risk_premium": len(storage.read_trade_raw(db_path, "risk_premium")),
     }
     return {"latest": latest, "coverage": coverage,
             "indicators": [{"code": c, **m} for c, m in INDICATORS.items()]}

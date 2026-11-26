@@ -94,6 +94,15 @@ TRADE_RAW_COLUMNS_CN = {
     "top5_amount_yi": "前5%成交额(万亿)",
     "total_amount_yi": "全A成交额(万亿)",
     "concentration5": "成交集中度前5%(%)",
+    "risk_premium": "沪深300风险溢价率(%)",
+    "ratio": "股债比",
+    "close": "沪深300收盘",
+    "ma70": "70日均线",
+    "avg": "滚动均值",
+    "upper1std": "+1σ",
+    "lower1std": "-1σ",
+    "upper2std": "+2σ",
+    "lower2std": "-2σ",
     "source": "数据来源",
     "collected_at": "采集时间",
 }
@@ -453,7 +462,7 @@ def _recompute_derived(config: dict, trigger: str = "手动",
 
 def _recompute_trade(config: dict, trigger: str = "手动", run_id: str | None = None,
                      trade_date: str | None = None, full: bool = False) -> int:
-    """从交易原始表重算 10 指标写入 trade_observation。
+    """从交易原始表重算 11 指标写入 trade_observation。
 
     - run_id 给定（定时调度）：增量重算本次写入的交易日
     - trade_date 指定（手动按日）：只重算该交易日（upsert 覆盖）
@@ -468,10 +477,16 @@ def _recompute_trade(config: dict, trigger: str = "手动", run_id: str | None =
         ex = storage.read_trade_raw(db, "exchange", trade_date, trade_date)
         mg = storage.read_trade_raw(db, "margin", trade_date, trade_date)
         snap = storage.read_trade_raw(db, "snapshot", trade_date, trade_date)
+        br = storage.read_trade_raw(db, "breadth", trade_date, trade_date)
+        cg = storage.read_trade_raw(db, "congestion", trade_date, trade_date)
+        rp = storage.read_trade_raw(db, "risk_premium", trade_date, trade_date)
         rec = trade_calc.compute_trade(
             ex.iloc[0].to_dict() if not ex.empty else None,
             mg.iloc[0].to_dict() if not mg.empty else None,
             snap, trade_calc._load_policy(config), trade_date,
+            br.iloc[0].to_dict() if not br.empty else None,
+            cg.iloc[0].to_dict() if not cg.empty else None,
+            rp.iloc[0].to_dict() if not rp.empty else None,
         )
         rec["computed_at"] = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
         n = storage.upsert_trade(db, pd.DataFrame([rec]), "")
@@ -551,7 +566,8 @@ def _do_collect_trade(sources: list[str] | None = None, start: str | None = None
     failed = sum(1 for r in monitor.records if r["status"] == "failed")
     summary = (f"交易原始落库：交易所 {written.get('exchange', 0)} / 两融 {written.get('margin', 0)} / "
                f"快照 {written.get('snapshot', 0)} / 涨跌家数 {written.get('breadth', 0)} / "
-               f"成交集中度 {written.get('congestion', 0)} 行，接口失败 {failed} 次。请到数据处理·交易 Tab 计算。")
+               f"成交集中度 {written.get('congestion', 0)} / 风险溢价 {written.get('risk_premium', 0)} 行，"
+               f"接口失败 {failed} 次。请到数据处理·交易 Tab 计算。")
     logger.info("%s交易采集完成：%s", tag, summary)
     return summary
 
@@ -937,7 +953,7 @@ def api_data_index(code: str | None = None, start: str | None = None,
 def api_data_trade(code: str | None = None, start: str | None = None,
                    end: str | None = None, page: int = 1, page_size: int = 25,
                    order: str = "desc"):
-    """采集数据·日交易 Tab：分页预览 5 张交易原始表（code 选表）。
+    """采集数据·日交易 Tab：分页预览 6 张交易原始表（code 选表）。
 
     金额字段统一换算为万亿、保留两位小数；其它字段原样。表头中文化，隐藏 run_id。
     """
@@ -945,7 +961,7 @@ def api_data_trade(code: str | None = None, start: str | None = None,
     page_size = min(max(1, page_size), 100)
     date_order = "asc" if str(order).lower() == "asc" else "desc"
     table = (code or "exchange").strip().lower()
-    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"):
         table = "exchange"
     db_path = _db_path(_cfg())
     if not db_path:
@@ -1051,11 +1067,11 @@ def api_derived_export(month: str | None = None):
 @app.get("/api/trade/raw")
 def api_trade_raw(table: str = "exchange", start: str | None = None,
                   end: str | None = None, limit: int = 200):
-    """采集系统·日交易预览 Tab：预览 5 张交易原始表的落库数据（含原始单位）。"""
+    """采集系统·日交易预览 Tab：预览 6 张交易原始表的落库数据（含原始单位）。"""
     cfg = _cfg()
     db = _require_db(cfg)
-    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion"):
-        raise HTTPException(status_code=400, detail="table 应为 exchange/margin/snapshot/breadth/congestion")
+    if table not in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"):
+        raise HTTPException(status_code=400, detail="table 应为 exchange/margin/snapshot/breadth/congestion/risk_premium")
     df = storage.read_trade_raw(db, table, start, end)
     total = len(df)
     return {"table": table, "total": total,
@@ -1064,7 +1080,7 @@ def api_trade_raw(table: str = "exchange", start: str | None = None,
 
 @app.get("/api/trade/latest")
 def api_trade_latest():
-    """数据处理·交易 Tab：10 指标最新值 + 原始数据覆盖概况 + 指标定义。"""
+    """数据处理·交易 Tab：11 指标最新值 + 原始数据覆盖概况 + 指标定义。"""
     cfg = _cfg()
     db = _require_db(cfg)
     return trade_calc.latest_snapshot(db)
@@ -1102,7 +1118,7 @@ def api_collect_trade(payload: dict | None = None):
     if isinstance(sources, str):
         sources = [s.strip() for s in sources.split(",") if s.strip()]
     if sources:
-        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion")]
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium")]
     start = (payload.get("start") or "").strip() or None
     end = (payload.get("end") or "").strip() or None
     job_id = _submit("collect", lambda: _do_collect_trade(sources, start, end))
@@ -1841,7 +1857,7 @@ def api_collect_interface(payload: dict):
         sources = payload.get("codes") or payload.get("sources") or []
         if isinstance(sources, str):
             sources = [s.strip() for s in sources.split(",") if s.strip()]
-        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion")]
+        sources = [s for s in sources if s in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium")]
         start = (payload.get("start") or "").strip() or None
         end = (payload.get("end") or "").strip() or None
         job_id = _submit("interface", lambda: _do_collect_trade(sources or None, start, end))

@@ -628,7 +628,7 @@ async function loadPreview(kind, opts={}){
       etf:['交易日期','基金代码','基金简称','份额(亿份)','单位净值(元)','净流入(亿元)','采集时间'],
       index:['交易日期','指数代码','指数名称','开盘价','最高价','最低价','收盘价','涨跌幅(%)','采集时间'],
     };
-    // 日交易 5 张原始表列集合不同：按接口实际返回字段动态渲染，不能沿用 exchange 固定列。
+    // 日交易 6 张原始表列集合不同：按接口实际返回字段动态渲染，不能沿用 exchange 固定列。
     // 业务键是内部主键，不进入预览；首列保持交易日期以兼容日期排序入口。
     const tradeColsFallback = {
       exchange:['交易日期','沪市成交额(万亿)','沪市成交量(手)','沪市流通市值(万亿)','沪市总市值(万亿)','深市成交额(万亿)','深市流通市值(万亿)','深市总市值(万亿)','数据来源','采集时间'],
@@ -636,6 +636,7 @@ async function loadPreview(kind, opts={}){
       snapshot:['交易日期','代码','名称','涨跌幅(%)','成交量(手)','成交额(百万)','最新价','数据来源','采集时间'],
       breadth:['交易日期','上涨家数','下跌家数','平盘家数','数据来源','采集时间'],
       congestion:['交易日期','收盘价','前5%成交额(万亿)','全A成交额(万亿)','成交集中度前5%(%)','数据来源','采集时间'],
+      risk_premium:['交易日期','沪深300风险溢价率(%)','股债比','沪深300收盘','70日均线','滚动均值','+1σ','-1σ','+2σ','-2σ','数据来源','采集时间'],
     };
     let cols;
     if(kind==='trade'){
@@ -736,7 +737,7 @@ const statCardWide = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-4">
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
 /* 分类汇总卡片：标题 + 宏观/指数/ETF/交易 四类小计 */
 const CATS4 = [['macro','宏观','ic-blue','t-blue'],['index','指数','ic-purple','t-blue'],['etf','ETF','ic-green','t-green'],['trade','交易','ic-orange','t-orange']];
-/* 交易采集数量：5 张交易原始表行数之和（与宏观/指数/ETF 观测表行数同口径） */
+/* 交易采集数量：6 张交易原始表行数之和（与宏观/指数/ETF 观测表行数同口径） */
 function tradeRawTotal(){
   const r = S.trade_raw_rows||{};
   return Object.values(r).reduce((a,b)=>a+(Number(b)||0),0);
@@ -792,7 +793,7 @@ function previewCodeOptions(kind){
   if(kind==='macro') return (CATALOG.macro||[]).map(x=>({v:x.code, l:`${x.name}（${x.code}）`}));
   if(kind==='etf') return (ETF_CFG.items||[]).map(x=>({v:x.code, l:`${x.code} ${x.name||''}`.trim()}));
   if(kind==='index') return (INDEX_CFG.items||[]).map(x=>({v:x.code, l:`${x.code} ${x.name||''}`.trim()}));
-  if(kind==='trade') return [['exchange','交易所概况'],['margin','两融账户'],['snapshot','全A个股快照'],['breadth','涨跌家数'],['congestion','成交集中度']].map(([v,l])=>({v,l}));
+  if(kind==='trade') return [['exchange','交易所概况'],['margin','两融账户'],['snapshot','全A个股快照'],['breadth','涨跌家数'],['congestion','成交集中度'],['risk_premium','沪深300风险溢价率']].map(([v,l])=>({v,l}));
   return [];
 }
 /* 精确采集代码下拉：首项“全部”，其后为具体指标/标的（value=代码） */
@@ -1049,7 +1050,7 @@ function dashShell(grp){
   return head(`数据看板 · ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}`,
       grp==='macro'?'8 张图 · 统一日期联动':grp==='etf'?'4 张图 · 汇金 / 黄金 · 日期联动':'2 张图 · 图1图2各一行 · 两融双 grid 联动')
     + `<div class="card"><div class="card-header"><h3><i class="ti ti-chart-line" style="color:var(--blue)"></i> ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}</h3>
-      <div style="flex:1"></div><button class="btn btn-sm" data-act="dash-refresh"><i class="ti ti-refresh"></i> 刷新图表</button><span class="hint" data-dash-meta>宏观 8 图 · ETF 4 图 · 交易 2 图</span></div>
+      <div style="flex:1"></div><button class="btn btn-sm" data-act="dash-refresh"><i class="ti ti-refresh"></i> 刷新图表</button><span class="hint" data-dash-meta>宏观 8 图 · ETF 4 图 · 交易 3 图</span></div>
     <div class="card-body"><div class="ctl-params" style="margin-bottom:12px">${ctl}</div>
       <div class="grid-2 ${grp==='trade'?'one-col':''}" data-dash-charts></div></div></div>`;
 }
@@ -1128,10 +1129,10 @@ const VIEWS = {
             : [['—','尚未配置交易源，请从上方下拉添加','—','—','—','—']])}</div>
         <div class="ctl-params" style="margin-top:12px"><label class="prec-field">采集区间 <input class="prec-input" type="date" value="${esc(TRADE_CFG.start_date||LAST)}" style="width:125px" data-trade-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(TRADE_CFG.end_date||LAST)}" style="width:125px" data-trade-end><button class="btn btn-primary btn-sm" data-act="save-trade-config">保存配置</button><span class="hint">默认最近一个交易日；留空 = 动态取最近已结束交易日</span></div>
       </div></div>`
-      + `<div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 交易源目录（参考）</h3><span class="sub">采集层原始数据源 · 计算层据此派生 10 项交易指标</span></div><div class="card-body">
+      + `<div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 交易源目录（参考）</h3><span class="sub">采集层原始数据源 · 计算层据此派生 11 项交易指标</span></div><div class="card-body">
         <div class="table-responsive">${tbl(['代码','数据源名称','接口','单位','粒度','字段说明','来源'],
           cat.map(x=>[esc(x.code), esc(x.name), esc(x.iface), esc(x.unit), esc(x.granularity), esc(x.fields||'—'), esc(x.source||'—')]))}</div>
-        <div class="formula-note" style="margin-top:10px">交易原始表（exchange / margin / snapshot / breadth / congestion）为权威数据，**永不清理**；派生指标由计算层从原始表重算。</div>
+        <div class="formula-note" style="margin-top:10px">交易原始表（exchange / margin / snapshot / breadth / congestion / risk_premium）为权威数据，**永不清理**；派生指标由计算层从原始表重算。</div>
       </div></div>`;
   },
 
@@ -1174,15 +1175,15 @@ const VIEWS = {
     <div data-etfcalc-shares-summary></div>
     <div data-etfcalc-shares-body><div class="hint">加载中…</div></div><div data-etfcalc-pager="shares"></div></div></div>`,
 
-  tradecalc:()=>head('交易计算','从 5 张原始表派生 10 项指标')+`<div class="trigger-grid">
+  tradecalc:()=>head('交易计算','从 6 张原始表派生 11 项指标')+`<div class="trigger-grid">
     <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
       <div class="tc-row"><button class="btn btn-primary btn-sm" data-act="trade-recalc-all">重新计算全部</button><label class="prec-field">按交易日 <input class="prec-input" type="date" value="${LAST}" style="width:130px" data-trade-recalc-date></label><button class="btn btn-sm" data-act="trade-recalc-date">重算该日</button></div>
       <div class="tc-note">全量重算整表替换；按日重算只覆盖该交易日。差分/占比分母始终基于原始值计算。</div></div></div>
     <div class="trigger-card"><div class="tc-head"><h3>📊 原始数据覆盖</h3></div><div class="tc-body">
       <div class="tc-row"><span class="hint">交易所概况 / 两融账户 / 全A个股快照 · 共 ${fmt(S.trade_rows)} 交易日</span></div>
-      <div class="tc-note">快照仅当日不可回溯，集中度与涨跌家数自采集日起累计。五类原始表：exchange / margin / snapshot / breadth / congestion。</div></div></div></div>
-    <div class="formula-note"><div><b>全A成交额</b> = 沪成交金额(亿元) + 深成交金额(元)÷1e8</div><div><b>成交集中度(前5%)</b> = 个股成交额降序前 5% 之和 ÷ 全A成交额 ×100% · <b>两融余额</b> = 融资余额 + 融券余额</div><div><b>融资余额占流通市值比</b> = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100% · <b>融资买入额占比</b> = 融资买入额 ÷ 全A成交额 ×100%</div><div><b>融资保证金比例</b> 为政策阶梯常量（当前 100%），按交易日匹配生效值 · <b>涨跌家数</b> 由快照涨跌幅统计</div></div>
-    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 10 项指标最新值</h3><span class="sub">${LAST}</span></div><div class="card-body">${tbl(['指标代码','指标名称','最新值','单位','数据来源'],TRADE_LATEST)}</div></div>`,
+      <div class="tc-note">快照仅当日不可回溯，集中度与涨跌家数自采集日起累计。六类原始表：exchange / margin / snapshot / breadth / congestion / risk_premium。</div></div></div></div>
+    <div class="formula-note"><div><b>全A成交额</b> = 沪成交金额(亿元) + 深成交金额(元)÷1e8</div><div><b>成交集中度(前5%)</b> = 个股成交额降序前 5% 之和 ÷ 全A成交额 ×100% · <b>两融余额</b> = 融资余额 + 融券余额</div><div><b>融资余额占流通市值比</b> = 融资余额 ÷（沪流通市值 + 深流通市值÷1e8）×100% · <b>融资买入额占比</b> = 融资买入额 ÷ 全A成交额 ×100%</div><div><b>融资保证金比例</b> 为政策阶梯常量（当前 100%），按交易日匹配生效值 · <b>涨跌家数</b> 由快照涨跌幅统计</div><div><b>沪深300风险溢价率</b> = 韭圈儿/股债性价比 FED 差值直采（1/沪深300 PE_TTM − 10年期国债收益率），单位 %，数值越高代表股票性价比越高</div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 11 项指标最新值</h3><span class="sub">${LAST}</span></div><div class="card-body">${tbl(['指标代码','指标名称','最新值','单位','数据来源'],TRADE_LATEST)}</div></div>`,
 
   /* ---------------- 数据看板 ---------------- */
   dashmacro:()=>dashShell('macro'), dashetf:()=>dashShell('etf'), dashtrade:()=>dashShell('trade'),
@@ -1711,7 +1712,7 @@ function renderDash(){
   };
   box.innerHTML = list.map(cardHtml).join('');
   const meta = view.querySelector('[data-dash-meta]');
-  if(meta) meta.textContent = `宏观 8 图 · ETF 4 图 · 交易 2 图 · 已渲染 ${list.length} 图`;
+  if(meta) meta.textContent = `宏观 8 图 · ETF 4 图 · 交易 3 图 · 已渲染 ${list.length} 图`;
   setTimeout(()=>{
     list.forEach((c,idx)=>{
       const card = box.querySelector(`[data-chart-card="${c.id}"]`);

@@ -16,10 +16,11 @@
 | 日交易原始数据 | `trade_snapshot_raw` | 全A个股快照原始表，任何清理范围都不得包含 |
 | 日交易原始数据 | `trade_breadth_raw` | 涨跌家数原始表，任何清理范围都不得包含 |
 | 日交易原始数据 | `trade_congestion_raw` | 成交集中度原始表，任何清理范围都不得包含 |
+| 日交易原始数据 | `trade_risk_premium_raw` | 沪深300风险溢价率原始表，任何清理范围都不得包含 |
 
 硬约束：
 
-1. `storage.IMMUTABLE_RAW_TABLES` 中的 5 张交易原始表不得进入 `CLEAN_TARGETS` 或 `CLEAR_TABLES`。
+1. `storage.IMMUTABLE_RAW_TABLES` 中的 6 张交易原始表不得进入 `CLEAN_TARGETS` 或 `CLEAR_TABLES`。
 2. `storage.COLLECTED_DATA_TABLES` 中的所有采集数据表不得进入 `CLEAR_TABLES`；`clear_all()` 只清理监控、配置、元信息、导出记录和采集统计。
 3. 观测表 `macro_observation` / `etf_observation` / `index_observation` 的按口径删除，只允许通过 Web「数据清理」在用户明确选择范围并二次确认后调用 `clean_data()`；AI 代理不得主动调用。
 4. 排查预览、看板、图表、指标异常时，优先检查前端列映射、查询条件、计算口径与索引；**不得通过清空原表、删除历史数据或重建采集数据来“修复”展示问题**。

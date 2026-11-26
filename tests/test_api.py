@@ -208,18 +208,18 @@ class TestReadOnlyApis:
         cfg = client.get("/api/trade/config").json()
         assert set(cfg["sources"]) == {"exchange", "margin", "snapshot"}
         assert {it["code"] for it in cfg["catalog"]} == {
-            "exchange", "margin", "snapshot", "breadth", "congestion"}
+            "exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"}
 
         saved = client.post("/api/trade/config", json={
-            "sources": ["exchange", "breadth", "congestion", "exchange"],
+            "sources": ["exchange", "breadth", "congestion", "risk_premium", "exchange"],
             "start_date": "2026-11-01", "end_date": "2026-11-25",
         })
         assert saved.status_code == 200
         c = saved.json()["config"]
-        assert c["sources"] == ["exchange", "breadth", "congestion"]  # 去重保序
+        assert c["sources"] == ["exchange", "breadth", "congestion", "risk_premium"]  # 去重保序
         assert c["start_date"] == "2026-11-01"
         again = client.get("/api/trade/config").json()
-        assert again["sources"] == ["exchange", "breadth", "congestion"]
+        assert again["sources"] == ["exchange", "breadth", "congestion", "risk_premium"]
 
         bad = client.post("/api/trade/config", json={"sources": ["no_such_source"]})
         assert bad.status_code == 400
@@ -346,9 +346,9 @@ class TestRetryTaskApi:
 
 
 class TestTradeRawApi:
-    """采集系统·日交易预览：5 张交易原始表均可预览，非法表名被拒。"""
+    """采集系统·日交易预览：6 张交易原始表均可预览，非法表名被拒。"""
 
-    def test_all_five_tables_supported(self, client, db_path):
+    def test_all_six_tables_supported(self, client, db_path):
         import pandas as pd
         d = "2026-11-24"
         storage.upsert_trade_exchange(db_path, pd.DataFrame([
@@ -361,7 +361,9 @@ class TestTradeRawApi:
             {"trade_date": d, "up_count": 3000, "down_count": 2000, "flat_count": 100}]), "t")
         storage.upsert_trade_congestion(db_path, pd.DataFrame([
             {"trade_date": d, "concentration5": 47.64, "close_price": 3548.37}]), "t")
-        for table in ("exchange", "margin", "snapshot", "breadth", "congestion"):
+        storage.upsert_trade_risk_premium(db_path, pd.DataFrame([
+            {"trade_date": d, "risk_premium": 5.8757, "ratio": 4.6926}]), "t")
+        for table in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"):
             r = client.get(f"/api/trade/raw?table={table}")
             assert r.status_code == 200, table
             assert r.json()["total"] >= 1, table
@@ -370,6 +372,8 @@ class TestTradeRawApi:
         assert breadth["up_count"] == 3000
         cong = client.get("/api/trade/raw?table=congestion").json()["rows"][0]
         assert cong["concentration5"] == 47.64
+        risk = client.get("/api/trade/raw?table=risk_premium").json()["rows"][0]
+        assert risk["risk_premium"] == 5.8757
 
     def test_invalid_table_rejected(self, client):
         r = client.get("/api/trade/raw?table=not_a_table")

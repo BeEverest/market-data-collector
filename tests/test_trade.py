@@ -113,6 +113,12 @@ class TestComputeTrade:
         assert r["concentration5"] == pytest.approx(41.88)
         assert r["source_set"] == "congestion"
 
+    def test_risk_premium_is_source_value(self):
+        r = compute_trade(None, None, None, None, "2026-11-26",
+                          risk_row={"risk_premium": 5.8757, "ratio": 4.6926})
+        assert r["risk_premium"] == pytest.approx(5.8757)
+        assert "risk_premium" in r["source_set"].split("+")
+
 
 class TestTradeStorage:
     def test_raw_upsert_idempotent(self, db_path):
@@ -139,6 +145,33 @@ class TestTradeStorage:
         assert got.iloc[0]["concentration5"] == pytest.approx(41.88)
         assert got.iloc[0]["run_id"] == "run2"
 
+    def test_risk_premium_raw_upsert_idempotent(self, db_path):
+        rp = pd.DataFrame([{
+            "trade_date": "2026-11-26", "risk_premium": 5.8757, "ratio": 4.6926,
+            "close": 3900.55, "ma70": 5.7692, "avg": 5.722,
+            "upper1std": 6.2953, "lower1std": 5.1487,
+            "upper2std": 6.8686, "lower2std": 4.5754,
+            "source": "funddb", "collected_at": "now",
+        }])
+        assert storage.upsert_trade_risk_premium(db_path, rp, "run1") == 1
+        assert storage.upsert_trade_risk_premium(db_path, rp, "run2") == 1
+        got = storage.read_trade_raw(db_path, "risk_premium")
+        assert len(got) == 1
+        assert got.iloc[0]["risk_premium"] == pytest.approx(5.8757)
+        assert got.iloc[0]["ratio"] == pytest.approx(4.6926)
+        assert got.iloc[0]["run_id"] == "run2"
+
+    def test_recompute_uses_risk_premium(self, db_path):
+        storage.upsert_trade_risk_premium(db_path, pd.DataFrame([{
+            "trade_date": "2026-11-26", "risk_premium": 5.8757,
+            "source": "funddb", "collected_at": "now",
+        }]), "run1")
+        n = recompute_trade(db_path, config={}, full=True)
+        assert n == 1
+        df = storage.read_trade(db_path)
+        assert df.iloc[0]["risk_premium"] == pytest.approx(5.8757)
+        assert "risk_premium" in df.iloc[0]["source_set"].split("+")
+
     def test_recompute_and_read(self, db_path):
         storage.upsert_trade_exchange(db_path, pd.DataFrame([{
             "trade_date": "2026-11-24", "sse_amount": 7000.0, "szse_amount": 7e11,
@@ -155,7 +188,7 @@ class TestTradeStorage:
         assert df.iloc[0]["concentration5"] > 0
         snap = latest_snapshot(db_path)
         assert snap["coverage"]["trade_days"] == 1
-        assert len(snap["indicators"]) == 10
+        assert len(snap["indicators"]) == 11
 
     def test_recompute_uses_congestion_fallback(self, db_path):
         storage.upsert_trade_exchange(db_path, pd.DataFrame([{
@@ -181,12 +214,13 @@ class TestTradeStorage:
 
         monkeypatch.setattr(trade_collector, "_collect_breadth", fake("breadth"))
         monkeypatch.setattr(trade_collector, "_collect_congestion", fake("congestion"))
+        monkeypatch.setattr(trade_collector, "_collect_risk_premium", fake("risk_premium"))
         raw = trade_collector.collect_trade(
-            sources=["breadth", "congestion"], start_date="2026-11-25",
-            end_date="2026-11-25", monitor=None,
+            sources=["breadth", "congestion", "risk_premium"],
+            start_date="2026-11-25", end_date="2026-11-25", monitor=None,
         )
-        assert set(raw) == {"breadth", "congestion"}
-        assert calls == ["breadth", "congestion"]
+        assert set(raw) == {"breadth", "congestion", "risk_premium"}
+        assert calls == ["breadth", "congestion", "risk_premium"]
 
     def test_mcp_quota_message_is_business_error(self):
         """MCP 返回 message 但无 data 时必须抛错，不能被解析成空数据。"""
@@ -337,6 +371,84 @@ class TestTradeStorage:
         assert all(table not in storage.CLEAR_TABLES for table in storage.COLLECTED_DATA_TABLES)
 
 
+class TestRiskPremiumCollector:
+    """沪深300风险溢价率直采测试（funddb / 韭圈儿同源接口）。"""
+
+    @staticmethod
+    def _series_payload():
+        return {"tab": "fed", "name": "沪深300", "series": [
+            {"date": "2026-11-24", "value": 5.7221, "ratio": 4.60, "close": 3963.82,
+             "ma70": 5.70, "avg": 5.71, "upper1std": 6.29, "lower1std": 5.14,
+             "upper2std": 6.86, "lower2std": 4.57},
+            {"date": "2026-11-25", "value": 5.8757, "ratio": 4.6926, "close": 3898.24,
+             "ma70": 5.7692, "avg": 5.722, "upper1std": 6.2953, "lower1std": 5.1487,
+             "upper2std": 6.8686, "lower2std": 4.5754},
+            {"date": "2026-11-26", "value": 5.9, "ratio": 4.7, "close": 3900.55},
+        ]}
+
+    def test_collect_filters_range_and_keeps_source_fields(self, monkeypatch):
+        import requests
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._series_payload()
+
+        # 绑定实例方法供 monkeypatch 使用
+        FakeResp._series_payload = staticmethod(self._series_payload)
+        monkeypatch.setattr(requests, "get", lambda *a, **kw: FakeResp())
+
+        mon = _FakeMonitor()
+        df = trade_collector._collect_risk_premium(
+            "2026-11-25", "2026-11-25", monitor=mon,
+            collected_at="2026-11-26 23:00:00", retries=1, retry_interval=0,
+        )
+        assert len(df) == 1
+        row = df.iloc[0]
+        assert row["trade_date"] == "2026-11-25"
+        assert row["risk_premium"] == pytest.approx(5.8757)
+        assert row["ratio"] == pytest.approx(4.6926)
+        assert row["close"] == pytest.approx(3898.24)
+        assert row["ma70"] == pytest.approx(5.7692)
+        assert row["avg"] == pytest.approx(5.722)
+        assert row["upper1std"] == pytest.approx(6.2953)
+        assert row["lower1std"] == pytest.approx(5.1487)
+        assert row["upper2std"] == pytest.approx(6.8686)
+        assert row["lower2std"] == pytest.approx(4.5754)
+        assert "韭圈儿" in row["source"]
+        assert len(mon.records) == 1
+        assert mon.records[0]["status"] == "success"
+        assert mon.records[0]["interface_key"] == "trade.risk_premium"
+        assert mon.records[0]["rows"] == 1
+
+    def test_collect_failure_recorded_as_failed(self, monkeypatch):
+        import requests
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("funddb unavailable")
+
+        monkeypatch.setattr(requests, "get", boom)
+        mon = _FakeMonitor()
+        df = trade_collector._collect_risk_premium(
+            "2026-11-25", "2026-11-25", monitor=mon,
+            collected_at="2026-11-26 23:00:00", retries=1, retry_interval=0,
+        )
+        assert df.empty
+        assert len(mon.records) == 1
+        assert mon.records[0]["status"] == "failed"
+        assert "funddb unavailable" in mon.records[0]["error"]
+
+    def test_catalog_exposes_direct_source(self):
+        codes = {it["code"] for it in trade_collector.catalog()}
+        assert "risk_premium" in codes
+        item = next(it for it in trade_collector.catalog() if it["code"] == "risk_premium")
+        assert item["unit"] == "%"
+        assert item["granularity"] == "交易日"
+        assert "equity-bond" in item["iface"]
+
+
 class TestTradeCharts:
     def test_build_two_charts(self):
         df = pd.DataFrame([{
@@ -345,7 +457,7 @@ class TestTradeCharts:
             "down_count": 3498, "debt_investors": 1968001.0,
         }])
         charts = build_trade_charts(df)
-        assert [c["id"] for c in charts] == ["trade_market", "trade_margin"]
+        assert [c["id"] for c in charts] == ["trade_market", "trade_margin", "trade_risk"]
         # _chart 会过滤无数据的序列：图1 四序列中成交额/集中度/涨跌家数均有值
         assert {s["name"] for s in charts[0]["series"]} == {
             "全A成交额", "成交集中度(前5%)", "上涨家数", "下跌家数"}
@@ -356,9 +468,19 @@ class TestTradeCharts:
         assert charts[0]["series"][0]["data"] == [["2026-11-24", 1.4]]
         assert charts[0]["layout"] == "trade_market_split"
 
+    def test_risk_premium_chart_reads_wide_table(self):
+        df = pd.DataFrame([{
+            "trade_date": "2026-11-26", "risk_premium": 5.8757,
+        }])
+        charts = build_trade_charts(df)
+        risk = next(c for c in charts if c["id"] == "trade_risk")
+        assert risk["layout"] == "trade_risk"
+        assert risk["series"][0]["name"] == "沪深300风险溢价率"
+        assert risk["series"][0]["data"] == [["2026-11-26", 5.8757]]
+
     def test_empty_df(self):
         charts = build_trade_charts(pd.DataFrame())
-        assert len(charts) == 2 and all(c["series"] == [] for c in charts)
+        assert len(charts) == 3 and all(c["series"] == [] for c in charts)
 
 
 def test_indicator_codes():
@@ -366,4 +488,5 @@ def test_indicator_codes():
         "TOTAL_AMOUNT", "CONCENTRATION5", "MARGIN_RATIO", "MARGIN_FINANCING_RATIO",
         "MARGIN_BALANCE", "FINANCING_BALANCE", "SECURITIES_BALANCE",
         "FINANCING_TO_FLOAT_MV", "FINANCING_BUY_PCT", "DEBT_INVESTORS",
+        "RISK_PREMIUM",
     }

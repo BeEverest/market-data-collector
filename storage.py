@@ -58,6 +58,13 @@ def connect(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    """为旧库补列；表名/列名均为本模块内部常量，不接受外部输入。"""
+    cols = {str(r["name"]) for r in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in cols:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_schema(path: str | Path) -> None:
     with connect(path) as conn:
         conn.executescript(
@@ -264,11 +271,32 @@ def init_schema(path: str | Path) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_tcongestion_date ON trade_congestion_raw(trade_date DESC);
 
+            -- 沪深300风险溢价率：韭圈儿/投研工作台 FED 差值口径，数据源已计算好指标。
+            -- 采集层原样落库，不在本项目二次计算。
+            CREATE TABLE IF NOT EXISTS trade_risk_premium_raw (
+                biz_key TEXT PRIMARY KEY,
+                trade_date TEXT NOT NULL,
+                risk_premium REAL,
+                ratio REAL,
+                close REAL,
+                ma70 REAL,
+                avg REAL,
+                upper1std REAL,
+                lower1std REAL,
+                upper2std REAL,
+                lower2std REAL,
+                source TEXT,
+                collected_at TEXT,
+                run_id TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_trisk_date ON trade_risk_premium_raw(trade_date DESC);
+
             CREATE TABLE IF NOT EXISTS trade_observation (
                 biz_key TEXT PRIMARY KEY,
                 trade_date TEXT NOT NULL,
                 total_amount REAL,
                 concentration5 REAL,
+                risk_premium REAL,
                 margin_ratio REAL,
                 margin_financing_ratio REAL,
                 margin_balance REAL,
@@ -329,8 +357,17 @@ def init_schema(path: str | Path) -> None:
                 INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
                 VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'congestion', NEW.collected_at);
             END;
+            CREATE TRIGGER IF NOT EXISTS trg_trisk_new_row AFTER INSERT ON trade_risk_premium_raw BEGIN
+                INSERT INTO new_row_log(run_id, run_date, category, code, collected_at)
+                VALUES (NEW.run_id, COALESCE(NULLIF(substr(NEW.collected_at,1,10),''), date('now')), '交易', 'risk_premium', NEW.collected_at);
+            END;
             """
         )
+        # 旧库在线升级：只补列，不重建/不清理任何采集原数据。
+        _ensure_column(conn, "trade_observation", "risk_premium", "REAL")
+        for _col in ("risk_premium", "ratio", "close", "ma70", "avg",
+                     "upper1std", "lower1std", "upper2std", "lower2std"):
+            _ensure_column(conn, "trade_risk_premium_raw", _col, "REAL")
         conn.execute(
             "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
             (SCHEMA_VERSION,),
@@ -759,13 +796,50 @@ def upsert_trade_congestion(path: str | Path, df: pd.DataFrame, run_id: str = ""
     return len(records)
 
 
+def upsert_trade_risk_premium(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
+    """幂等写入沪深300风险溢价率原始表（韭圈儿 FED 差值，数据源直采值原样落库）。"""
+    if df is None or df.empty:
+        return 0
+    init_schema(path)
+    records = []
+    for _, r in df.iterrows():
+        date = str(r.get("trade_date", ""))[:10]
+        if not date:
+            continue
+        records.append((
+            trade_raw_biz_key("RP", date), date,
+            _clean(r.get("risk_premium")), _clean(r.get("ratio")), _clean(r.get("close")),
+            _clean(r.get("ma70")), _clean(r.get("avg")),
+            _clean(r.get("upper1std")), _clean(r.get("lower1std")),
+            _clean(r.get("upper2std")), _clean(r.get("lower2std")),
+            str(r.get("source", "") or ""), str(r.get("collected_at", "") or ""), run_id,
+        ))
+    with connect(path) as conn:
+        conn.executemany(
+            """INSERT INTO trade_risk_premium_raw(
+                biz_key, trade_date, risk_premium, ratio, close, ma70, avg,
+                upper1std, lower1std, upper2std, lower2std,
+                source, collected_at, run_id
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(biz_key) DO UPDATE SET
+                risk_premium=excluded.risk_premium, ratio=excluded.ratio,
+                close=excluded.close, ma70=excluded.ma70, avg=excluded.avg,
+                upper1std=excluded.upper1std, lower1std=excluded.lower1std,
+                upper2std=excluded.upper2std, lower2std=excluded.lower2std,
+                source=excluded.source, collected_at=excluded.collected_at,
+                run_id=excluded.run_id""",
+            records,
+        )
+    return len(records)
+
+
 def read_trade_raw(path: str | Path, table: str, start: str | None = None,
                    end: str | None = None) -> pd.DataFrame:
-    """读取交易原始表（table: exchange/margin/snapshot/breadth/congestion），可按日期范围过滤。"""
+    """读取交易原始表（含 risk_premium），可按日期范围过滤。"""
     init_schema(path)
     allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
                "snapshot": "trade_snapshot_raw", "breadth": "trade_breadth_raw",
-               "congestion": "trade_congestion_raw"}
+               "congestion": "trade_congestion_raw", "risk_premium": "trade_risk_premium_raw"}
     if table not in allowed:
         return pd.DataFrame()
     sql = f"SELECT * FROM {allowed[table]}"
@@ -788,7 +862,7 @@ def trade_raw_dates(path: str | Path, table: str) -> list[str]:
     init_schema(path)
     allowed = {"exchange": "trade_exchange_raw", "margin": "trade_margin_raw",
                "snapshot": "trade_snapshot_raw", "breadth": "trade_breadth_raw",
-               "congestion": "trade_congestion_raw"}
+               "congestion": "trade_congestion_raw", "risk_premium": "trade_risk_premium_raw"}
     if table not in allowed:
         return []
     with connect(path) as conn:
@@ -800,7 +874,7 @@ def trade_raw_dates(path: str | Path, table: str) -> list[str]:
 
 # ---------- 交易计算宽表 ----------
 def upsert_trade(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
-    """幂等写入交易计算宽表；df 每行为一交易日的 10 指标 + 涨跌家数。"""
+    """幂等写入交易计算宽表；df 每行为一交易日的 11 指标 + 涨跌家数。"""
     if df is None or df.empty:
         return 0
     init_schema(path)
@@ -812,6 +886,7 @@ def upsert_trade(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
         records.append((
             trade_biz_key(date), date,
             _clean(r.get("total_amount")), _clean(r.get("concentration5")),
+            _clean(r.get("risk_premium")),
             _clean(r.get("margin_ratio")), _clean(r.get("margin_financing_ratio")),
             _clean(r.get("margin_balance")), _clean(r.get("financing_balance")),
             _clean(r.get("securities_balance")), _clean(r.get("financing_to_float_mv")),
@@ -822,14 +897,15 @@ def upsert_trade(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
     with connect(path) as conn:
         conn.executemany(
             """INSERT INTO trade_observation(
-                biz_key, trade_date, total_amount, concentration5, margin_ratio,
+                biz_key, trade_date, total_amount, concentration5, risk_premium, margin_ratio,
                 margin_financing_ratio, margin_balance, financing_balance,
                 securities_balance, financing_to_float_mv, financing_buy_pct,
                 debt_investors, up_count, down_count, flat_count,
                 source_set, computed_at, run_id
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(biz_key) DO UPDATE SET
                 total_amount=excluded.total_amount, concentration5=excluded.concentration5,
+                risk_premium=excluded.risk_premium,
                 margin_ratio=excluded.margin_ratio,
                 margin_financing_ratio=excluded.margin_financing_ratio,
                 margin_balance=excluded.margin_balance,
@@ -1215,7 +1291,8 @@ def status_counts(path: str | Path) -> dict:
         raw_rows = {}
         for tname, tkey in [("exchange", "trade_exchange_raw"), ("margin", "trade_margin_raw"),
                             ("snapshot", "trade_snapshot_raw"), ("breadth", "trade_breadth_raw"),
-                            ("congestion", "trade_congestion_raw")]:
+                            ("congestion", "trade_congestion_raw"),
+                            ("risk_premium", "trade_risk_premium_raw")]:
             raw_rows[tname] = int(conn.execute(
                 f"SELECT COUNT(*) AS n FROM {tkey}"
             ).fetchone()["n"])
@@ -1357,10 +1434,10 @@ CLEAN_TARGETS = {
 }
 
 # 系统硬规则：采集原数据是权威资产，不得进入任何自动/批量清理范围。
-# 交易 5 张 *_raw 表尤其不可删除；观测表只能在用户显式确认后按口径清理。
+# 交易 6 张 *_raw 表尤其不可删除；观测表只能在用户显式确认后按口径清理。
 IMMUTABLE_RAW_TABLES = (
     "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw",
-    "trade_breadth_raw", "trade_congestion_raw",
+    "trade_breadth_raw", "trade_congestion_raw", "trade_risk_premium_raw",
 )
 COLLECTED_DATA_TABLES = IMMUTABLE_RAW_TABLES + tuple(
     spec["table"] for spec in CLEAN_TARGETS.values()
@@ -1525,7 +1602,7 @@ def clear_all(path: str | Path) -> dict[str, int]:
     """清空可清理数据，仅保留表结构；采集原数据永不删除。
 
     清空范围仅限监控、配置、元信息、导出记录与采集统计。
-    `macro_observation` / `etf_observation` / `index_observation` 与 5 张交易
+    `macro_observation` / `etf_observation` / `index_observation` 与 6 张交易
     `*_raw` 表属于采集原数据，任何自动或批量清理都不得触碰。
     config.json 作为配置镜像/回滚基线不在此清除（其 etf/index 段仍作为默认配置来源）。
     """

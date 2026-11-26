@@ -496,7 +496,7 @@ class TestTradeDashboardLayout:
 
     def test_two_charts_with_margin_split_layout(self):
         charts = build_trade_charts(self.df, days=60)
-        assert [c["id"] for c in charts] == ["trade_market", "trade_margin"]
+        assert [c["id"] for c in charts] == ["trade_market", "trade_margin", "trade_risk"]
         assert charts[0]["layout"] == "trade_market_split"
         assert charts[1]["layout"] == "trade_margin_split"
         # 图1成交额按万亿元、两位小数展示：1000 亿元 -> 0.1 万亿元。
@@ -523,7 +523,7 @@ class TestTradeDashboardLayout:
 
     def test_empty_df_still_returns_two_charts(self):
         charts = build_trade_charts(pd.DataFrame(), days=60)
-        assert len(charts) == 2
+        assert len(charts) == 3
         assert charts[1]["layout"] == "trade_margin_split"
         assert charts[0]["series"] == []
 

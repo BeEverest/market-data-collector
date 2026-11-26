@@ -379,6 +379,71 @@ class TestWebPage:
         assert cells[3] == "2024-05-10"
         assert page._js_errors == []
 
+    def test_macro_config_add_uses_modal_form(self, page):
+        """宏观指标配置：新增改为弹窗表单填写。"""
+        _switch(page, "maccfg")
+        before = page.locator('#v-maccfg tbody tr').count()
+        # 旧的 inline 输入已移除，改为按钮
+        assert page.locator('#v-maccfg [data-macro-code]').count() == 0
+        page.locator('#v-maccfg [data-act="macro-add"]').click()
+        page.wait_for_selector('#modalRoot .etf-add-form')
+        page.locator('#modalRoot [data-m-code]').fill("TEST_YOY")
+        page.locator('#modalRoot [data-m-name]').fill("测试同比")
+        page.locator('#modalRoot [data-m-cat]').fill("测试类")
+        page.locator('#modalRoot [data-m-src]').fill("手工")
+        page.locator('#modalRoot [data-m-freq]').fill("月")
+        page.locator('#modalRoot [data-act="modal-ok"]').click()
+        page.wait_for_timeout(400)
+        rows = page.locator('#v-maccfg tbody tr')
+        assert rows.count() == before + 1
+        added = rows.last.inner_text()
+        assert "TEST_YOY" in added and "测试同比" in added
+        assert page._js_errors == []
+
+    def test_index_config_chips_removed_and_modal_add(self, page):
+        """指数配置：删除 chips 行，新增改为弹窗表单。"""
+        _switch(page, "idxcfg")
+        assert page.locator('#v-idxcfg [data-chips="idx"]').count() == 0
+        before = page.locator('#v-idxcfg tbody tr').count()
+        page.locator('#v-idxcfg [data-act="idx-add"]').click()
+        page.wait_for_selector('#modalRoot .etf-add-form')
+        # 用预设下拉快速填充
+        page.locator('#modalRoot [data-idx-preset]').select_option("000688|科创50")
+        preset_code = page.locator('#modalRoot [data-i-code]').input_value()
+        assert preset_code == "000688"
+        page.locator('#modalRoot [data-act="modal-ok"]').click()
+        page.wait_for_timeout(600)
+        rows = page.locator('#v-idxcfg tbody tr')
+        assert rows.count() == before + 1
+        assert any("000688" in t for t in rows.all_inner_texts())
+        assert page._js_errors == []
+
+    def test_etf_config_pagination_and_query(self, page):
+        """ETF 配置：分页展示 + 代码/名称关键字与标签多条件查询。"""
+        page.evaluate("() => { ETF_CFG_STATE.keyword=''; ETF_CFG_STATE.tag=''; ETF_CFG_STATE.page=1; }")
+        _switch(page, "etfcfg")
+        page.wait_for_selector('#v-etfcfg [data-etfcfg-table] tbody tr')
+        total = page.evaluate("(ETF_CFG.items||[]).length")
+        # 默认展示：size=10 时全部标的在一页内
+        assert page.locator('#v-etfcfg [data-etfcfg-table] tbody tr').count() == min(total, 10)
+        assert page.locator('#v-etfcfg [data-etfcfg-pager] [data-pager]').count() == 1
+        # 关键字查询：510050
+        page.locator('#v-etfcfg [data-etfcfg-kw]').fill("510050")
+        page.locator('#v-etfcfg [data-act="etfcfg-filter"]').click()
+        page.wait_for_timeout(200)
+        rows = page.locator('#v-etfcfg [data-etfcfg-table] tbody tr')
+        assert rows.count() == 1
+        assert "510050" in rows.first.inner_text()
+        # 重置后按标签「黄金」查询（159915 为黄金）
+        page.locator('#v-etfcfg [data-act="etfcfg-reset"]').click()
+        page.locator('#v-etfcfg [data-etfcfg-tag]').select_option("黄金")
+        page.locator('#v-etfcfg [data-act="etfcfg-filter"]').click()
+        page.wait_for_timeout(200)
+        rows = page.locator('#v-etfcfg [data-etfcfg-table] tbody tr')
+        assert rows.count() == 1
+        assert "159915" in rows.first.inner_text()
+        assert page._js_errors == []
+
     def test_preview_filter_applies_code_and_date(self, page):
         """数据预览筛选按代码/日期重载表格。"""
         _switch(page, "prev-macro")

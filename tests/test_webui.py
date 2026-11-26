@@ -332,6 +332,29 @@ class TestWebPage:
         assert detail["chartHeight"] >= 500
         assert page._js_errors == []
 
+    def test_etf_tag_config_modal_multi_select(self, page):
+        """ETF 配置：无重复 chips 行；配置弹窗多选取代旧的编辑标签。"""
+        _switch(page, "etfcfg")
+        # 旧的重复 chips 行已删除
+        assert page.locator('#v-etfcfg [data-chips="etf"]').count() == 0
+        # 每行都有「配置标签」入口
+        edit_btns = page.locator('#v-etfcfg [data-act="etf-tag-edit"]')
+        assert edit_btns.count() == 2
+
+        edit_btns.first.click()
+        page.wait_for_selector('#modalRoot .etf-tag-picker input[type="checkbox"]')
+        opts = page.locator('#modalRoot .etf-tag-picker input[type="checkbox"]')
+        values = opts.evaluate_all("els => els.map(e => e.value)")
+        assert values == ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金"]
+        # 多选：保留已勾选的汇金，再勾沪深300
+        page.locator('#modalRoot .etf-tag-picker input[value="沪深300"]').check()
+        page.locator('#modalRoot [data-act="modal-ok"]').click()
+        page.wait_for_timeout(600)
+
+        first_row_tags = page.locator('#v-etfcfg tbody tr').first.locator("td").nth(2).inner_text()
+        assert "汇金" in first_row_tags and "沪深300" in first_row_tags
+        assert page._js_errors == []
+
     def test_preview_filter_applies_code_and_date(self, page):
         """数据预览筛选按代码/日期重载表格。"""
         _switch(page, "prev-macro")

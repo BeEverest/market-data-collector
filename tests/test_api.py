@@ -92,18 +92,23 @@ class TestReadOnlyApis:
 
     def test_etf_tags_and_change_columns(self, client):
         cfg = client.get("/api/etf/config").json()
-        assert cfg["tag_options"] == ["宽基", "汇金", "黄金"]
+        # 标签枚举按 8 项配置，支持多选；旧「宽基」保留兼容但不在选项内
+        assert cfg["tag_options"] == [
+            "汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金",
+        ]
+        assert "宽基" not in cfg["tag_options"]
         code = cfg["codes"][0]
-        saved = client.post("/api/etf/config", json={"tags": {code: ["黄金", "宽基"]}})
+        saved = client.post("/api/etf/config", json={"tags": {code: ["黄金", "沪深300", "汇金", "宽基"]}})
         assert saved.status_code == 200
         item = next(x for x in saved.json()["config"]["items"] if x["code"] == code)
-        assert item["tags"] == ["宽基", "黄金"]  # 按选项顺序归一
+        # 按选项顺序归一，历史标签「宽基」保留在末尾
+        assert item["tags"] == ["汇金", "沪深300", "黄金", "宽基"]
         bad = client.post("/api/etf/config", json={"tags": {code: ["未知标签"]}})
         assert bad.status_code == 400
 
         data = client.get("/api/data/etf", params={"code": "510050", "page_size": 100}).json()
         row = next(r for r in data["rows"] if r["交易日期"] == "2026-10-20")
-        assert row["标签"] == "宽基、黄金"
+        assert row["标签"] == "汇金、沪深300、黄金、宽基"
         assert row["份额变化(亿份)"] == pytest.approx(2.0)
         assert row["份额变化率(%)"] == pytest.approx(2 / 98 * 100, abs=1e-3)
         assert row["规模变化(亿元)"] == pytest.approx(8.96)

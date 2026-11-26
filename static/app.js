@@ -150,6 +150,34 @@ function modal(title, body, onOk, okText='确认'){
 }
 function closeModal(){ byId('modalRoot').innerHTML = ''; }
 
+/* ETF 分组标签：可多选枚举（与后端 /api/etf/config 的 tag_options 保持一致，作为回退） */
+const ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金"];
+let ETF_TAG_EDIT_PICK = [];
+function openEtfTagEditor(idx){
+  const item = (ETF_CFG.items||[])[idx]; if(!item) return;
+  const opts = ETF_CFG.tag_options||ETF_TAG_OPTIONS;
+  const cur = item.tags||[];
+  const curSet = new Set(cur);
+  // 历史标签（如「宽基」）不在新枚举内时也一并展示，避免取消勾选时静默丢失
+  const extra = cur.filter(t=>!opts.includes(t));
+  const all = [...opts, ...extra];
+  ETF_TAG_EDIT_PICK = cur.slice();
+  const body = `<div class="etf-tag-picker" style="display:flex;flex-wrap:wrap;gap:9px 16px;padding:4px 0">
+    ${all.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" value="${esc(t)}" ${curSet.has(t)?'checked':''} style="width:auto"> ${esc(t)}${extra.includes(t)?' <small style="color:#8fa6c4">(历史)</small>':''}</label>`).join('')}
+  </div><p class="hint" style="margin-top:10px">可多选，保存后立即写入配置；看板「汇金」「黄金」维度按此标签归类。</p>`;
+  modal(`配置标签 · ${item.code}${item.name?' '+item.name:''}`, body, ()=>{
+    item.tags = ETF_TAG_EDIT_PICK.slice();
+    saveEtfConfigUI(byId('v-etfcfg'), true).then(ok=>{
+      if(ok){ rerenderView('etfcfg'); toast(`已更新 ${item.code} 的标签`,'ok'); }
+    });
+  }, '保存标签');
+  byId('modalRoot').querySelectorAll('.etf-tag-picker input').forEach(el=>{
+    el.addEventListener('change', ()=>{
+      ETF_TAG_EDIT_PICK = [...byId('modalRoot').querySelectorAll('.etf-tag-picker input:checked')].map(x=>x.value);
+    });
+  });
+}
+
 /* ---------------- 实时监控日志（真实 /api/live-logs + /api/jobs） ---------------- */
 function appendLog(text, level='INFO'){
   const body = byId('logBody'); if(!body) return;
@@ -805,11 +833,16 @@ const VIEWS = {
     <div class="ctl-params"><label class="prec-field">采集区间 <input class="prec-input" type="date" value="${esc(INDEX_CFG.start_date||LAST)}" style="width:125px" data-idx-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(INDEX_CFG.end_date||LAST)}" style="width:125px" data-idx-end><label class="prec-field">回看 <input class="prec-input" type="number" value="${Number(INDEX_CFG.lookback_days||1)}" style="width:60px" data-idx-lookback></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认最近一个交易日</span></div>
     <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称'],INDEX_ITEMS.map(x=>[x[0],x[1]]),{action:'idx-row-remove',actionLabel:'删除'})}</div></div></div>`,
 
-  etfcfg:()=>head('ETF 采集配置','26 只标的 · 分组标签与上市日期缓存')+`<div class="card"><div class="card-header"><h3><i class="ti ti-coins" style="color:var(--ok)"></i> ETF 标的配置</h3><span class="sub">宽基 / 汇金 / 黄金 · 自动解析上市日</span></div><div class="card-body">
-    <div class="ctl-params"><input class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" style="width:150px" data-etf-new><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 添加</button></div>
-    <div class="chips" data-chips="etf">${ETF_ITEMS.slice(0,6).map(x=>`<span class="chip"><i class="ti ti-coins"></i> ${x[0]} ${x[1]} <span class="mini_tag">${x[2].split('/')[0]}</span><span class="x" data-act="chip-remove">×</span></span>`).join('')}</div>
+  etfcfg:()=>head('ETF 采集配置','26 只标的 · 分组标签与上市日期缓存')+`<div class="card"><div class="card-header"><h3><i class="ti ti-coins" style="color:var(--ok)"></i> ETF 标的配置</h3><span class="sub">分组标签可多选 · 自动解析上市日</span></div><div class="card-body">
+    <div class="ctl-params"><input class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" style="width:150px" data-etf-new><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 添加</button><span class="hint" style="margin-left:8px">标签枚举：${esc((ETF_CFG.tag_options||ETF_TAG_OPTIONS).join('、'))}（可多选）</span></div>
     <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(ETF_CFG.start_date||LAST)}" style="width:125px" data-etf-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(ETF_CFG.end_date||LAST)}" style="width:125px" data-etf-end><label class="prec-field">最近 <input class="prec-input" type="number" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:60px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认最近一个交易日</span></div>
-    <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称','标签','上市日期'],ETF_ITEMS.map(x=>[x[0],x[1],x[2],x[3]]),{action:'etf-row-remove',actionLabel:'删除'})}</div></div></div>`,
+    <div class="table-responsive" style="margin-top:12px"><table class="table table-hover"><thead><tr><th>代码</th><th>名称</th><th>标签</th><th>上市日期</th><th style="width:150px">操作</th></tr></thead><tbody>${(ETF_CFG.items||[]).map((x,i)=>`<tr>
+      <td><div class="cell-clip">${esc(x.code)}</div></td>
+      <td><div class="cell-clip">${esc(x.name||'')}</div></td>
+      <td><div class="cell-clip">${esc((x.tags||[]).join('、')||'—')}</div></td>
+      <td><div class="cell-clip">${esc(x.listing_date||'—')}</div></td>
+      <td><button class="btn btn-sm" data-act="etf-tag-edit" data-i="${i}"><i class="ti ti-tags"></i> 配置标签</button> <button class="btn btn-sm" data-act="etf-row-remove" data-i="${i}">删除</button></td>
+    </tr>`).join('')}</tbody></table></div></div></div>`,
 
   /* ---------------- 数据采集：预览 ---------------- */
   'prev-macro':()=>previewView('macro'), 'prev-etf':()=>previewView('etf'),
@@ -1649,7 +1682,10 @@ function handleAction(act, btn, e){
         const label=inp?.tagName==='SELECT'?inp.selectedOptions[0].text:val;
         chip.innerHTML=`<i class="ti ti-${isIdx?'chart-dots':'coins'}"></i> ${esc(label)}<span class="x" data-act="chip-remove">×</span>`;
         wrap.appendChild(chip); }
-      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>toast(`已添加${isIdx?'指数':'ETF'}：${val}`,'ok'));
+      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>{
+        if(!isIdx) rerenderView('etfcfg');
+        toast(`已添加${isIdx?'指数':'ETF'}：${val}`,'ok');
+      });
       break;
     }
     case 'chip-remove': {
@@ -1668,13 +1704,22 @@ function handleAction(act, btn, e){
       toast(`已加入配置表：${name}`,'ok'); break;
     }
     case 'macro-remove': btn.closest('tr')?.remove(); toast('已从配置表删除宏观指标','info'); break;
+    case 'etf-tag-edit': {
+      openEtfTagEditor(Number(btn?.dataset?.i||0));
+      break;
+    }
     case 'idx-row-remove': case 'etf-row-remove': {
-      const row=btn.closest('tr'); const code=row?.querySelector('td')?.textContent?.trim();
       const isIdx=act==='idx-row-remove';
       const cfg=isIdx?INDEX_CFG:ETF_CFG;
+      const row=btn.closest('tr');
+      const code = (btn.dataset.i!=null && cfg.items[Number(btn.dataset.i)])
+        ? cfg.items[Number(btn.dataset.i)].code
+        : row?.querySelector('td')?.textContent?.trim();
       cfg.items=cfg.items.filter(x=>x.code!==code);
-      row?.remove();
-      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>toast(`已删除标的 ${code}`,'ok'));
+      (isIdx?saveIndexConfigUI:saveEtfConfigUI)(view, true).then(()=>{
+        if(act==='etf-row-remove') rerenderView('etfcfg');
+        toast(`已删除标的 ${code}`,'ok');
+      });
       break;
     }
     /* 预览 */

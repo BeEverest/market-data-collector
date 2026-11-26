@@ -1306,12 +1306,24 @@ CLEAN_TARGETS = {
     "index": {"table": "index_observation", "date_col": "trade_date", "date_len": 10, "zfill": 6},
 }
 
+# 系统硬规则：采集原数据是权威资产，不得进入任何自动/批量清理范围。
+# 交易 5 张 *_raw 表尤其不可删除；观测表只能在用户显式确认后按口径清理。
+IMMUTABLE_RAW_TABLES = (
+    "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw",
+    "trade_breadth_raw", "trade_congestion_raw",
+)
+COLLECTED_DATA_TABLES = IMMUTABLE_RAW_TABLES + tuple(
+    spec["table"] for spec in CLEAN_TARGETS.values()
+)
+
 
 def _clean_scope(category: str, code: str | None, start: str | None,
                  end: str | None) -> tuple[str, str, list]:
     if category not in CLEAN_TARGETS:
         raise ValueError(f"category 应为 {', '.join(CLEAN_TARGETS)}")
     spec = CLEAN_TARGETS[category]
+    if spec["table"] in IMMUTABLE_RAW_TABLES:
+        raise ValueError(f"系统规则禁止清理采集原数据表：{spec['table']}")
     clauses: list[str] = []
     args: list = []
     if code:
@@ -1450,22 +1462,27 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
     return result
 
 
-# ---------- 全量清空（按需调用，服务启动不会触发） ----------
+# ---------- 可清理数据（按需调用，服务启动不会触发） ----------
+# 采集原数据（观测表 + 交易 *_raw 表）永不进入 clear_all；
+# 观测表的按口径删除只走 clean_data()，且必须由用户在危险操作中显式确认。
 CLEAR_TABLES = [
-    "macro_observation", "etf_observation", "index_observation",
-    "trade_exchange_raw", "trade_margin_raw", "trade_snapshot_raw", "trade_breadth_raw",
-    "trade_congestion_raw",
     "interface_run", "etf_config", "index_config", "meta", "export_log",
     "collection_stat",
 ]
 
 
 def clear_all(path: str | Path) -> dict[str, int]:
-    """清空全部业务数据，仅保留表结构。返回各表删除行数。
+    """清空可清理数据，仅保留表结构；采集原数据永不删除。
 
-    用于「每次启动服务清空数据」：把 SQLite 恢复到全新的空库状态。
+    清空范围仅限监控、配置、元信息、导出记录与采集统计。
+    `macro_observation` / `etf_observation` / `index_observation` 与 5 张交易
+    `*_raw` 表属于采集原数据，任何自动或批量清理都不得触碰。
     config.json 作为配置镜像/回滚基线不在此清除（其 etf/index 段仍作为默认配置来源）。
     """
+    conflict = set(CLEAR_TABLES) & set(COLLECTED_DATA_TABLES)
+    if conflict:
+        raise RuntimeError(f"系统规则冲突：采集原数据不得进入清理范围：{sorted(conflict)}")
+
     init_schema(path)
     removed: dict[str, int] = {}
     with connect(path) as conn:
@@ -1477,5 +1494,5 @@ def clear_all(path: str | Path) -> dict[str, int]:
         conn.execute(
             "DELETE FROM sqlite_sequence WHERE name IN ('export_log')"
         )
-    logger.info("已清空 SQLite 全部数据：%s", removed)
+    logger.info("已清空 SQLite 可清理数据（采集原数据已保护）：%s", removed)
     return removed

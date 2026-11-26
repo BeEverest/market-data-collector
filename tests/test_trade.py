@@ -149,10 +149,11 @@ class TestTradeStorage:
         assert df.iloc[0]["concentration5"] == pytest.approx(41.88)
         assert "congestion" in df.iloc[0]["source_set"].split("+")
 
-    def test_clear_tables_include_raw_not_derived(self):
-        assert "trade_exchange_raw" in storage.CLEAR_TABLES
-        assert "trade_congestion_raw" in storage.CLEAR_TABLES
+    def test_clear_tables_protect_raw_not_derived(self):
+        assert "trade_exchange_raw" not in storage.CLEAR_TABLES
+        assert "trade_congestion_raw" not in storage.CLEAR_TABLES
         assert "trade_observation" not in storage.CLEAR_TABLES  # 计算表不随清理删除
+        assert all(table not in storage.CLEAR_TABLES for table in storage.COLLECTED_DATA_TABLES)
 
 
 class TestTradeCharts:

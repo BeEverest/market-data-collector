@@ -120,7 +120,7 @@ const PREVIEW_STATE = Object.fromEntries(['macro','etf','index','trade','files']
 let DATA_TABS = {macro:[['日期','指标代码','指标名称','数值','单位','数据源','采集时间'],[]],
   etf:[['交易日期','基金代码','基金简称','份额(亿份)','单位净值(元)','净流入(亿元)','采集时间'],[]],
   index:[['交易日期','指数代码','指数名称','开盘价','最高价','最低价','收盘价','涨跌幅(%)','采集时间'],[]],
-  trade:[['交易日期','沪市成交额(万亿)','深市成交额(万亿)','沪市流通市值(万亿)','深市流通市值(万亿)','采集时间'],[]],
+  trade:[[],[]],
   files:[['文件名','大小(KB)','修改时间','操作'],[]]};
 let CATALOG = {macro:[],etf:[],index:[]};
 let ETF_CFG = {codes:[],items:[]}, INDEX_CFG = {codes:[],items:[],start_date:'',end_date:'',lookback_days:1};
@@ -411,14 +411,28 @@ async function loadPreview(kind, opts={}){
       page:res.page||1, pages:res.pages||1, total:res.total||0, page_size:res.page_size||PREVIEW_STATE[kind].size,
       code:opts.code||'', start:opts.start||'', end:opts.end||'', order:opts.order||PREVIEW_STATE[kind].order,
     });
-    const rows = (res.rows||[]).map(r=>Object.values(r).map(v=>v==null?'—':v));
     const colsMap = {
       macro:['日期','指标代码','指标名称','数值','单位','数据源','采集时间'],
       etf:['交易日期','基金代码','基金简称','份额(亿份)','单位净值(元)','净流入(亿元)','采集时间'],
       index:['交易日期','指数代码','指数名称','开盘价','最高价','最低价','收盘价','涨跌幅(%)','采集时间'],
-      trade:['交易日期','沪市成交额(万亿)','深市成交额(万亿)','沪市流通市值(万亿)','深市流通市值(万亿)','采集时间'],
     };
-    const cols = colsMap[kind] || Object.keys(res.rows?.[0]||{});
+    // 日交易 5 张原始表列集合不同：按接口实际返回字段动态渲染，不能沿用 exchange 固定列。
+    // 业务键是内部主键，不进入预览；首列保持交易日期以兼容日期排序入口。
+    const tradeColsFallback = {
+      exchange:['交易日期','沪市成交额(万亿)','沪市成交量(手)','沪市流通市值(万亿)','沪市总市值(万亿)','深市成交额(万亿)','深市流通市值(万亿)','深市总市值(万亿)','数据来源','采集时间'],
+      margin:['交易日期','融资余额(万亿)','融券余额(万亿)','融资买入额(万亿)','融券卖出额(万亿)','平均维持担保比例(%)','有负债投资者数(人)','担保物总价值(万亿)','参与交易投资者数(人)','个人投资者数(人)','机构投资者数(人)','证券公司数(家)','营业部数(家)','数据来源','采集时间'],
+      snapshot:['交易日期','代码','名称','涨跌幅(%)','成交量(手)','成交额(百万)','最新价','数据来源','采集时间'],
+      breadth:['交易日期','上涨家数','下跌家数','平盘家数','数据来源','采集时间'],
+      congestion:['交易日期','收盘价','前5%成交额(万亿)','全A成交额(万亿)','成交集中度前5%(%)','数据来源','采集时间'],
+    };
+    let cols;
+    if(kind==='trade'){
+      const table = String(opts.code||'exchange').toLowerCase();
+      const actual = Object.keys(res.rows?.[0]||{}).filter(k=>k!=='业务键');
+      cols = actual.length ? actual : (tradeColsFallback[table]||tradeColsFallback.exchange);
+    } else {
+      cols = colsMap[kind] || Object.keys(res.rows?.[0]||{});
+    }
     const cellFmt = v => (typeof v==='number' ? (Number.isInteger(v)?fmt(v):v.toLocaleString('zh-CN',{maximumFractionDigits:2})) : (v==null||v===''?'—':v));
     const picked = (res.rows||[]).map(r=>cols.map(k=>cellFmt(r[k])));
     DATA_TABS[kind] = [cols, picked];

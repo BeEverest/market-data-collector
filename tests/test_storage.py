@@ -184,10 +184,14 @@ class TestEtfConfigAndExportLog:
 
 
 class TestClearAll:
-    def test_clear_all_empties_every_table_but_keeps_schema(self, db_path, macro_df, etf_df, run_records):
+    def test_clear_all_protects_collected_data_but_keeps_schema(self, db_path, macro_df, etf_df, run_records):
         storage.init_schema(db_path)
         storage.upsert_macro(db_path, macro_df, "run1")
         storage.upsert_etf(db_path, etf_df, "run1")
+        storage.upsert_trade_breadth(db_path, pd.DataFrame([
+            {"trade_date": "2026-11-24", "up_count": 3000,
+             "down_count": 2000, "flat_count": 100}
+        ]), "run1")
         storage.append_interface_runs(db_path, run_records)
         storage.save_etf_config(db_path, {"codes": ["510050"]})
         storage.save_index_config(db_path, {"codes": ["000001"]})
@@ -196,16 +200,19 @@ class TestClearAll:
 
         removed = storage.clear_all(db_path)
 
-        assert removed["macro_observation"] == 3
-        assert removed["etf_observation"] == 3
+        # 采集原数据全部保留
+        assert "macro_observation" not in removed
+        assert "etf_observation" not in removed
+        assert all(table not in removed for table in storage.COLLECTED_DATA_TABLES)
+        assert storage.read_macro(db_path)[0] == 3
+        assert storage.read_etf(db_path)[0] == 3
+        assert len(storage.read_trade_raw(db_path, "breadth")) == 1
+
+        # 可清理范围正常清空，表结构仍在
         assert removed["interface_run"] == len(run_records)
         assert removed["etf_config"] == 1
         assert removed["index_config"] == 1
         assert removed["export_log"] == 1
-        # 表结构仍在，查询返回空且不报错
-        assert storage.read_macro(db_path)[0] == 0
-        assert storage.read_etf(db_path)[0] == 0
-        assert storage.read_index(db_path)[0] == 0
         assert storage.read_interface_runs(db_path).empty
         # 幂等：再次清空不报错
         storage.clear_all(db_path)
@@ -216,6 +223,12 @@ class TestClearAll:
         # init_schema 会在 meta 写入 schema_version=1 行，其余业务表应为空
         assert removed["meta"] == 1
         assert all(v == 0 for k, v in removed.items() if k != "meta")
+
+    def test_collected_tables_never_in_clear_scope(self):
+        assert not set(storage.COLLECTED_DATA_TABLES) & set(storage.CLEAR_TABLES)
+        assert not set(storage.IMMUTABLE_RAW_TABLES) & {
+            spec["table"] for spec in storage.CLEAN_TARGETS.values()
+        }
 
 
 class TestCollectionStat:

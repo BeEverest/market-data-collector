@@ -312,10 +312,19 @@ python3 web_app.py --port 9000     # 覆盖端口
 ## 十、单元测试
 
 ```bash
-python3.11 -m pytest          # 或 pytest
+python3.11 -m pytest                  # 全部测试（含 Web UI）
+python3.11 -m pytest -m webui         # 只跑浏览器端 Web 页面测试
+python3.11 -m pytest -m "not webui"   # 只跑非浏览器测试
 ```
 
-共 **272 个用例**（23 个测试文件，含派生指标口径与**增量重算** 13 个、看板装配 17 个、API 端到端 20 个、存储幂等 25 个、口径化清理 27 个、指数 23 个、监控 20 个、采集范围 7 个、定时调度 7 个等），全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。用例数随功能迭代变化，以 `python3.11 -m pytest` 实际结果为准。
+用例覆盖派生指标口径与**增量重算**、看板装配、API 端到端、存储幂等、口径化清理、指数、监控、采集范围、定时调度，以及前端 Web 页面。全部使用 `tmp_path` 临时目录与临时 SQLite，运行时不会污染真实 `output/` 数据，也不依赖外网接口。用例数随功能迭代变化，以 `python3.11 -m pytest` 实际结果为准。
+
+Web UI 测试基于 Playwright + Chromium，覆盖视图渲染、图1多序列 X 轴并集（2026-10 缺失回归）、看板日期区间联动、数据预览筛选与监控失败筛选。缺少 Playwright 或 Chromium 时自动跳过；需要启用时执行：
+
+```bash
+pip3 install -r requirements-dev.txt
+playwright install chromium        # 或使用系统已有 Chromium
+```
 
 | 测试文件 | 覆盖范围 |
 | --- | --- |
@@ -329,5 +338,6 @@ python3.11 -m pytest          # 或 pytest
 | `tests/test_derived.py` | 14 项派生指标口径（官方累计/余额差分/二阶差分/黄金换算）、按月/按指标过滤、`compute_derived` 幂等存储；**增量重算**：依赖传播、差分/同比分母不丢失、upsert 不删旧行、按 run_id 读取变更、空表回退全量、无写入跳过、调度传参 |
 | `tests/test_scheduler.py` | 定时调度 run_type 合法取值与持久化、启用/时刻往返；定时采集完成后以增量模式触发派生重算并传入 run_id，手动/普通采集不触发 |
 | `tests/test_dashboard.py` | 宏观 8 图（GDP 次轴、贷款当月新增）、ETF 汇金/黄金/细分/累计图、叠加上证等指数切换、按天明细、精确日期范围与图表网格线口径 |
+| `tests/test_webui.py` | 真实浏览器 Web 页面测试：23 视图渲染与 JS 异常、图1季度/月度多序列 X 轴并集（2026-10 回归）、看板日期区间联动、数据预览筛选、运维监控失败筛选 |
 
 测试过程中发现并修复了 `exporter._notes_for()` 的表头过滤缺陷：此前表头行被分类条件误过滤，导致导出口径说明的 CSV/Excel 首行数据被当作列名且丢失第一条说明；现已固定使用 `_NOTES[0]` 作为列名。

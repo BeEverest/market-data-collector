@@ -497,8 +497,12 @@ class TestTradeDashboardLayout:
     def test_two_charts_with_margin_split_layout(self):
         charts = build_trade_charts(self.df, days=60)
         assert [c["id"] for c in charts] == ["trade_market", "trade_margin"]
-        assert charts[0].get("layout") is None
+        assert charts[0]["layout"] == "trade_market_split"
         assert charts[1]["layout"] == "trade_margin_split"
+        # 图1成交额按万亿元、两位小数展示：1000 亿元 -> 0.1 万亿元。
+        amount = charts[0]["series"][0]
+        assert amount["data"][0] == ["2026-11-10", 0.1]
+        assert charts[0]["y_axes"][0]["name"] == "成交额 (万亿元)"
         names = {s["name"] for s in charts[1]["series"]}
         assert {"两融余额", "有负债投资者数", "平均维持担保比例", "融资买入额占比"} <= names
 

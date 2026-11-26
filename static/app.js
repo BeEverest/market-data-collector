@@ -1088,6 +1088,43 @@ function renderMarginSplitNode(node, chart, months){
   },{notMerge:true});
   return ins;
 }
+/* 市场成交与集中度：2 grid / 3 Y轴 / 2 X轴 / 2 dataZoom / 联动滚动。
+   上图=全A成交额(万亿元)+集中度(%)，下图=涨跌家数(家)。 */
+function renderTradeMarketSplitNode(node, chart, months){
+  if(!node) return;
+  const ins = initChart(node);
+  const categories = filteredData(chart, months);
+  const upper = (chart.series||[]).filter(s=>s.y_axis_index===0 || s.y_axis_index===1);
+  const lower = (chart.series||[]).filter(s=>s.y_axis_index===2);
+  const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
+  const item = (s,i,gi,yi)=>({
+    name:s.name, type:s.type||'line', xAxisIndex:gi, yAxisIndex:yi, data:dataOf(s),
+    smooth:s.type!=='bar', showSymbol:false, symbolSize:5, connectNulls:true,
+    barMaxWidth:22, barGap:'20%',
+    lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
+  });
+  ins.setOption({animation:false,color:CLR,
+    grid:[{left:62,right:158,top:54,height:'27%'},{left:62,right:158,top:'50%',bottom:96}],
+    axisPointer:{link:[{xAxisIndex:'all'}]},
+    legend:{top:4,type:'scroll',textStyle:{fontSize:10}},
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true},
+    xAxis:[
+      {type:'category',gridIndex:0,data:categories,axisLabel:{show:false},axisTick:{show:false},splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}}},
+      {type:'category',gridIndex:1,data:categories,splitLine:{show:true,lineStyle:{color:'#eef1f6',type:'dashed'}},axisLabel:{fontSize:10,hideOverlap:true,rotate:categories.length>18?30:0,margin:14}},
+    ],
+    yAxis:[
+      {type:'value',name:'成交额 (万亿元)',position:'left',gridIndex:0,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9,formatter:v=>Number(v).toFixed(2)},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},
+      {type:'value',name:'集中度 (%)',position:'right',gridIndex:0,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:false}},
+      {type:'value',name:'涨跌家数 (家)',position:'left',gridIndex:1,nameTextStyle:{fontSize:9},axisLabel:{fontSize:9},splitLine:{show:true,lineStyle:{color:'#e6eaf0'}}},
+    ],
+    dataZoom:[{type:'inside',xAxisIndex:[0,1]},{type:'slider',xAxisIndex:[0,1],height:20,bottom:8,brushSelect:false,showDetail:true,handleSize:'110%',dataBackground:{lineStyle:{opacity:.3},areaStyle:{opacity:.1}}}],
+    series:[
+      ...upper.map((s,i)=>item(s,i,0,s.y_axis_index)),
+      ...lower.map((s,i)=>item(s,i+upper.length,1,2)),
+    ],
+  },{notMerge:true});
+  return ins;
+}
 /* ==========================================================================
  * ETF 维度图表（1:1 复刻生产）：
  *  - etf_overlay：上下双 grid（上=指数折线，下=份额/净流入柱），联动 dataZoom
@@ -1326,8 +1363,8 @@ function renderDash(){
   const renderMonths = hasRange ? null : months;
   // ETF 图1（叠指数的汇金图）与图2 各自的明细卡片：按卡片类型占满一行
   const cardHtml = (c)=>{
-    const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split');
-    const tall = c.layout==='trade_margin_split' || c.layout==='etf_rank';
+    const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split' || c.layout==='trade_market_split');
+    const tall = c.layout==='trade_margin_split' || c.layout==='trade_market_split' || c.layout==='etf_rank';
     const extra = c.layout==='etf_overlay' ? `<div class="card extra-detail-card" data-extra="daily">
         <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 按天流通份额 / 申赎净流入明细</h3><span class="hint" style="margin-left:auto">点击某天展开当日各 ETF 明细</span></div>
         <div class="card-body"><div class="etf-daily-total" id="etfDailyTotal"></div><div class="table-wrap" id="etfDailyTable"><div class="hint">加载中…</div></div></div></div>
@@ -1349,6 +1386,7 @@ function renderDash(){
       let ins;
       if(grp==='etf') ins = renderEtfChartNode(target,c,renderMonths);
       else if(c.layout==='trade_margin_split') ins = renderMarginSplitNode(target,c,renderMonths);
+      else if(c.layout==='trade_market_split') ins = renderTradeMarketSplitNode(target,c,renderMonths);
       else ins = renderChartNode(target,c,renderMonths);
       if(c.layout==='etf_rank' && ins){
         target.style.cursor='pointer'; target.title='点击任意 ETF 柱子，展开该 ETF 每日明细';

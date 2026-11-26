@@ -557,11 +557,12 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
 TRADE_CHART_SPECS = [
     {
         "id": "trade_market", "title": "图1：市场成交与集中度",
-        "note": "全A成交额（左轴亿元）、成交集中度前5%（右轴%）、涨跌家数（第三轴家）",
+        "note": "上下两图联动滚动：上图 全A成交额(万亿元, 两位小数)/成交集中度前5%(%)；下图 涨跌家数(家)",
+        "layout": "trade_market_split",
         "y_axes": [
-            {"name": "成交额 (亿元)", "position": "left"},
+            {"name": "成交额 (万亿元)", "position": "left"},
             {"name": "集中度 (%)", "position": "right", "offset": 0},
-            {"name": "涨跌家数 (家)", "position": "right", "offset": 52},
+            {"name": "涨跌家数 (家)", "position": "left"},
         ],
     },
     {
@@ -599,22 +600,24 @@ def build_trade_charts(trade_df: pd.DataFrame, days: int | None = None,
     else:
         df, _, _, _ = _date_window(df, months, None, None, "trade_date")
 
-    def pairs(col: str) -> list[list]:
+    def pairs(col: str, transform=None) -> list[list]:
         out = []
         for _, r in df.iterrows():
             v = r.get(col)
             if v is None or pd.isna(v):
                 continue
-            out.append([str(r["trade_date"]), float(v)])
+            num = float(v)
+            out.append([str(r["trade_date"]), round(transform(num), 2) if transform else num])
         return out
 
-    def series(name: str, col: str, axis: int, chart_type: str = "line"):
-        return {"name": name, "data": pairs(col),
+    def series(name: str, col: str, axis: int, chart_type: str = "line", transform=None):
+        return {"name": name, "data": pairs(col, transform),
                 "y_axis_index": axis, "type": chart_type}
 
     grouped = {
         "trade_market": [
-            series("全A成交额", "total_amount", 0, "bar"),
+            # total_amount 存量为亿元；看板按万亿元展示并固定两位小数。
+            series("全A成交额", "total_amount", 0, "bar", lambda v: v / 1e4),
             series("成交集中度(前5%)", "concentration5", 1),
             series("上涨家数", "up_count", 2),
             series("下跌家数", "down_count", 2),

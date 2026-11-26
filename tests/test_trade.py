@@ -190,7 +190,9 @@ class TestTradeCharts:
         # 图2 仅有值的三序列保留（维持担保比例/两融余额/有负债投资者数）
         assert {s["name"] for s in charts[1]["series"]} == {
             "平均维持担保比例", "两融余额", "有负债投资者数"}
-        assert charts[0]["series"][0]["data"] == [["2026-11-24", 14000.0]]
+        # 成交额从亿元换算为万亿元并保留两位小数：14000 亿元 -> 1.4 万亿元。
+        assert charts[0]["series"][0]["data"] == [["2026-11-24", 1.4]]
+        assert charts[0]["layout"] == "trade_market_split"
 
     def test_empty_df(self):
         charts = build_trade_charts(pd.DataFrame())

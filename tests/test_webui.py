@@ -290,6 +290,35 @@ class TestWebPage:
         assert LATEST_MONTH in chart["categories"]
         assert page._js_errors == []
 
+    def test_trade_market_chart_uses_linked_scroll_and_wan_yi(self, page):
+        """交易图1为上下双轴联动滚动，成交额按万亿元两位小数展示。"""
+        _switch(page, "dashtrade")
+        _chart(page, "trade_market")
+        detail = page.evaluate(
+            """id => {
+              const card = document.querySelector(`[data-chart-card="${id}"]`);
+              const dom = card.querySelector('.chart-box');
+              const opt = echarts.getInstanceByDom(dom).getOption();
+              return {
+                xAxisCount: (opt.xAxis || []).length,
+                dataZoomCount: (opt.dataZoom || []).length,
+                zoomAxes: (opt.dataZoom || []).map(z => z.xAxisIndex),
+                linked: (Array.isArray(opt.axisPointer) ? opt.axisPointer : [opt.axisPointer])
+                  .some(p => p && p.link && p.link.length),
+                amountAxis: (opt.yAxis || [])[0] && (opt.yAxis || [])[0].name,
+                amountValues: ((opt.series || [])[0] || {}).data || [],
+              };
+            }""",
+            arg="trade_market",
+        )
+        assert detail["xAxisCount"] == 2
+        assert detail["dataZoomCount"] == 2
+        assert detail["zoomAxes"] == [[0, 1], [0, 1]]
+        assert detail["linked"] is True
+        assert "万亿元" in detail["amountAxis"]
+        assert all(v is None or round(float(v), 2) == float(v) for v in detail["amountValues"])
+        assert page._js_errors == []
+
     def test_preview_filter_applies_code_and_date(self, page):
         """数据预览筛选按代码/日期重载表格。"""
         _switch(page, "prev-macro")

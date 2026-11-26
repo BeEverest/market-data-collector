@@ -325,6 +325,7 @@ def collect_trade_raw(config: dict, monitor: Monitor, *, start_date=None, end_da
         monitor=monitor,
         retries=fetch_cfg.get("retry", 3),
         retry_interval=fetch_cfg.get("retry_interval_sec", 2),
+        db_path=_db_path(config),
     )
     return raw
 

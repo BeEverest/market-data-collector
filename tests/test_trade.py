@@ -24,6 +24,26 @@ def _snapshot(n=100):
     return pd.DataFrame(rows)
 
 
+class _FakeMonitor:
+    """采集测试用的轻量监控，只记录调用参数。"""
+
+    def __init__(self):
+        self.records = []
+
+    def record(self, **kw):
+        self.records.append(kw)
+
+
+def _force_mcp_error(monkeypatch, message="你的积分已用完～请购买套餐包"):
+    """让涨跌家数的 MCP 主链路稳定失败，以便验证降级路径。"""
+    import tools.backfill_trade_eastmoney as eastmoney
+
+    def boom(*args, **kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(eastmoney, "mcp_call", boom)
+
+
 class TestMarginPolicy:
     def test_policy_by_date(self):
         # 用权威阶梯（与 DEFAULT_MARGIN_POLICY/config.json 一致）验证五段生效日
@@ -176,10 +196,12 @@ class TestTradeStorage:
             _check_mcp_payload({"message": "你的积分已用完～请购买套餐包"})
         assert _check_mcp_payload({"data": []}) == {"data": []}
 
-    def test_breadth_mcp_error_recorded_as_failed(self, monkeypatch):
+    def test_breadth_mcp_error_recorded_as_failed(self, monkeypatch, db_path):
         """涨跌家数采集遇到 MCP 业务错误时，监控记为失败并保留原因。"""
         import importlib
         import json as json_mod
+
+        import akshare as ak
 
         mcp_mod = importlib.import_module("tools.backfill_trade_eastmoney")
 
@@ -201,22 +223,111 @@ class TestTradeStorage:
 
         # 保留真实 mcp_call，只替换底层 HTTP 响应，验证业务错误识别链路
         monkeypatch.setattr(mcp_mod.requests.Session, "post", fake_post)
+        # 降级路径也不允许访问真实行情，保证断言稳定
+        monkeypatch.setattr(ak, "stock_zh_a_spot", lambda: (_ for _ in ()).throw(
+            RuntimeError("新浪快照不可用")))
 
-        class FakeMonitor:
-            def __init__(self):
-                self.records = []
-
-            def record(self, **kw):
-                self.records.append(kw)
-
-        mon = FakeMonitor()
+        mon = _FakeMonitor()
         df = trade_collector._collect_breadth(
             "2026-11-25", "2026-11-25", monitor=mon,
-            collected_at="2026-11-26 21:18:36",
+            collected_at="2026-11-26 21:18:36", db_path=db_path,
         )
         assert df.empty
         assert len(mon.records) == 1
         assert mon.records[0]["status"] == "failed"
+        assert "积分已用完" in mon.records[0]["error"]
+
+    def test_breadth_fallback_uses_stored_snapshot_and_logs_degrade(self, monkeypatch, db_path):
+        """MCP 失败时优先从已落库快照派生涨跌家数，并保留降级证据。"""
+        day = "2026-11-25"
+        snap = _snapshot(100).assign(trade_date=day, source="test", collected_at="now")
+        assert storage.upsert_trade_snapshot(db_path, snap, "run1") == 100
+        _force_mcp_error(monkeypatch)
+
+        mon = _FakeMonitor()
+        df = trade_collector._collect_breadth(
+            day, day, monitor=mon, collected_at="2026-11-26 21:30:00", db_path=db_path,
+        )
+        assert len(df) == 1
+        assert df.iloc[0]["trade_date"] == day
+        assert df.iloc[0]["up_count"] == 40
+        assert df.iloc[0]["down_count"] == 50
+        assert df.iloc[0]["flat_count"] == 10
+        assert "MCP失败降级派生" in df.iloc[0]["source"]
+        assert len(mon.records) == 1
+        rec = mon.records[0]
+        assert rec["status"] == "success"
+        assert rec["interface_name"] == "涨跌家数(新浪降级)"
+        assert rec["params"]["degraded_from"] == "mx_comprehensive_finance_data"
+        assert rec["rows"] == 1
+        assert "积分已用完" in rec["error"]
+
+    def test_breadth_fallback_does_not_overwrite_existing_raw(self, monkeypatch, db_path):
+        """已落库的涨跌家数原数据不被降级结果覆盖。"""
+        day = "2026-11-25"
+        snap = _snapshot(100).assign(trade_date=day, source="test", collected_at="now")
+        storage.upsert_trade_snapshot(db_path, snap, "run1")
+        original = pd.DataFrame([{
+            "trade_date": day, "up_count": 1, "down_count": 2, "flat_count": 3,
+            "source": "eastmoney", "collected_at": "old",
+        }])
+        assert storage.upsert_trade_breadth(db_path, original, "run1") == 1
+        _force_mcp_error(monkeypatch)
+
+        mon = _FakeMonitor()
+        df = trade_collector._collect_breadth(
+            day, day, monitor=mon, collected_at="2026-11-26 21:30:00", db_path=db_path,
+        )
+        assert df.empty
+        got = storage.read_trade_raw(db_path, "breadth", start=day, end=day)
+        assert len(got) == 1
+        assert got.iloc[0]["up_count"] == 1
+        assert got.iloc[0]["down_count"] == 2
+        assert got.iloc[0]["flat_count"] == 3
+        assert got.iloc[0]["source"] == "eastmoney"
+        assert mon.records[0]["status"] == "success"
+        assert mon.records[0]["interface_name"] == "涨跌家数(已存在跳过)"
+
+    def test_breadth_fallback_realtime_rejects_history(self, monkeypatch, db_path):
+        """实时新浪快照只能降级当日，不得跨日补历史。"""
+        import akshare as ak
+
+        _force_mcp_error(monkeypatch)
+        monkeypatch.setattr(ak, "stock_zh_a_spot", lambda: pd.DataFrame({
+            "涨跌幅": [1.0, -1.0, 0.0],
+        }))
+        monkeypatch.setattr(trade_collector, "_sina_snapshot_trade_date", lambda: "2026-11-26")
+
+        mon = _FakeMonitor()
+        df = trade_collector._collect_breadth(
+            "2020-01-02", "2020-01-02", monitor=mon,
+            collected_at="2026-11-26 21:30:00", db_path=db_path,
+        )
+        assert df.empty
+        assert mon.records[0]["status"] == "failed"
+        assert "历史日期禁止跨日降级" in mon.records[0]["error"]
+
+    def test_breadth_fallback_realtime_accepts_current_range(self, monkeypatch, db_path):
+        """请求区间包含实时快照交易日时，允许从新浪快照派生。"""
+        import akshare as ak
+
+        _force_mcp_error(monkeypatch)
+        monkeypatch.setattr(ak, "stock_zh_a_spot", lambda: pd.DataFrame({
+            "涨跌幅": [1.0, -1.0, 0.0],
+        }))
+        monkeypatch.setattr(trade_collector, "_sina_snapshot_trade_date", lambda: "2026-11-26")
+
+        mon = _FakeMonitor()
+        df = trade_collector._collect_breadth(
+            "2026-11-26", "2026-11-26", monitor=mon,
+            collected_at="2026-11-26 21:30:00", db_path=db_path,
+        )
+        assert len(df) == 1
+        assert df.iloc[0]["up_count"] == 1
+        assert df.iloc[0]["down_count"] == 1
+        assert df.iloc[0]["flat_count"] == 1
+        assert mon.records[0]["status"] == "success"
+        assert mon.records[0]["interface_name"] == "涨跌家数(新浪降级)"
         assert "积分已用完" in mon.records[0]["error"]
 
     def test_clear_tables_protect_raw_not_derived(self):

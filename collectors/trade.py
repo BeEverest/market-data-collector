@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 
 import pandas as pd
 
+import storage
 from collectors.trade_calendar import last_completed_trade_day
 from monitor import describe_failure
 
@@ -30,6 +31,7 @@ logger = logging.getLogger(__name__)
 SOURCE_EXCHANGE = "上交所/深交所每日概况（akshare 封装）"
 SOURCE_MARGIN = "中国证券金融两融账户（akshare stock_margin_account_info）"
 SOURCE_SNAPSHOT = "新浪财经全A快照（akshare stock_zh_a_spot）"
+SOURCE_BREADTH_SINA = "新浪财经全A快照（MCP失败降级派生）"
 
 RAW_KEYS = ("exchange", "margin", "snapshot")
 SOURCES_KEYS = RAW_KEYS + ("breadth", "congestion")
@@ -281,9 +283,85 @@ def _collect_snapshot(start_date: str, end_date: str, *, retries: int,
     return out
 
 
+def _sina_snapshot_trade_date() -> str:
+    """推断新浪快照对应的交易日：收盘后取当日（含当日），否则取最近已结束交易日。"""
+    now = datetime.now()
+    ref = now.date() + timedelta(days=1) if now.hour >= 15 else now.date()
+    return last_completed_trade_day(ref)
+
+
+def _breadth_from_snapshot(start_date: str, end_date: str, *, db_path,
+                           collected_at: str) -> pd.DataFrame:
+    """MCP 失败时从快照派生涨跌家数：优先已落库快照，其次实时新浪（仅当日）。"""
+    have = set()
+    if db_path:
+        existing = storage.read_trade_raw(db_path, "breadth", start=start_date, end=end_date)
+        if not existing.empty:
+            have = {str(d)[:10] for d in existing["trade_date"]}
+    requested = {d.strftime("%Y-%m-%d") for d in pd.date_range(start_date, end_date)
+                 if d.weekday() < 5}
+    missing_days = sorted(requested - have)
+    if not missing_days:
+        return pd.DataFrame()
+
+    rows = []
+    if db_path:
+        snap = storage.read_trade_raw(db_path, "snapshot", start=start_date, end=end_date)
+        if not snap.empty:
+            for day, group in snap.groupby("trade_date"):
+                day = str(day)[:10]
+                if day in have:  # 已有原数据不覆盖
+                    continue
+                pct = pd.to_numeric(group.get("pct_change"), errors="coerce")
+                rows.append({
+                    "trade_date": day,
+                    "up_count": int((pct > 0).sum()),
+                    "down_count": int((pct < 0).sum()),
+                    "flat_count": int((pct == 0).sum() + pct.isna().sum()),
+                    "source": SOURCE_BREADTH_SINA,
+                    "collected_at": collected_at,
+                })
+    if rows:
+        return pd.DataFrame(rows)
+
+    # 已落库快照无覆盖时才走实时新浪；快照只有当日，不能补历史
+    import akshare as ak
+
+    snap = ak.stock_zh_a_spot()
+    day = _sina_snapshot_trade_date()
+    if not (start_date <= day <= end_date):
+        raise RuntimeError(
+            f"新浪快照仅覆盖 {day}，不在请求区间 {start_date}~{end_date}；历史日期禁止跨日降级"
+        )
+    if day in have:
+        return pd.DataFrame()
+    pct = pd.to_numeric(snap.get("涨跌幅"), errors="coerce")
+    return pd.DataFrame([{
+        "trade_date": day,
+        "up_count": int((pct > 0).sum()),
+        "down_count": int((pct < 0).sum()),
+        "flat_count": int((pct == 0).sum() + pct.isna().sum()),
+        "source": SOURCE_BREADTH_SINA,
+        "collected_at": collected_at,
+    }])
+
+
+def _breadth_all_present(db_path, start_date: str, end_date: str) -> bool:
+    """请求区间内的工作日涨跌家数是否均已落库，避免已有时误报失败。"""
+    if not db_path:
+        return False
+    requested = {d.strftime("%Y-%m-%d") for d in pd.date_range(start_date, end_date)
+                 if d.weekday() < 5}
+    if not requested:
+        return False
+    existing = storage.read_trade_raw(db_path, "breadth", start=start_date, end=end_date)
+    have = {str(d)[:10] for d in existing["trade_date"]} if not existing.empty else set()
+    return requested <= have
+
+
 def _collect_breadth(start_date: str, end_date: str, *, monitor,
-                     collected_at: str) -> pd.DataFrame:
-    """按明确区间采集涨跌家数（东方财富 MCP），失败仅留痕不影响其它源。"""
+                     collected_at: str, db_path=None) -> pd.DataFrame:
+    """按明确区间采集涨跌家数（东财 MCP），失败降级新浪快照并留痕。"""
     started = time.time()
     try:
         from tools.backfill_trade_breadth import SOURCE, parse_breadth
@@ -302,11 +380,37 @@ def _collect_breadth(start_date: str, end_date: str, *, monitor,
                 status="success", params={"start": start_date, "end": end_date},
                 started=started, attempts=1, rows=len(df))
         return df
-    except Exception as exc:  # noqa: BLE001 - 外部数据不可用时只记失败
+    except Exception as exc:  # noqa: BLE001 - 外部数据不可用时降级新浪
+        fallback_error = ""
+        try:
+            df = _breadth_from_snapshot(start_date, end_date, db_path=db_path,
+                                        collected_at=collected_at)
+            if not df.empty:
+                _report(monitor, key="trade.market_breadth", name="涨跌家数(新浪降级)",
+                        status="success",
+                        params={"start": start_date, "end": end_date,
+                                "degraded_from": "mx_comprehensive_finance_data"},
+                        started=started, attempts=1, rows=len(df),
+                        error=describe_failure(exc))
+                logger.warning("[交易·涨跌家数] MCP 失败，已降级新浪快照派生 %d 日：%s",
+                               len(df), exc)
+                return df
+            if _breadth_all_present(db_path, start_date, end_date):
+                _report(monitor, key="trade.market_breadth", name="涨跌家数(已存在跳过)",
+                        status="success",
+                        params={"start": start_date, "end": end_date,
+                                "skipped_existing": True},
+                        started=started, attempts=1, rows=0,
+                        error=describe_failure(exc))
+                logger.info("[交易·涨跌家数] MCP 失败，但请求区间原始数据已存在，跳过降级：%s", exc)
+                return df
+        except Exception as fb_exc:  # noqa: BLE001
+            fallback_error = f"；新浪降级失败：{describe_failure(fb_exc)}"
+        reason = describe_failure(exc) + fallback_error
         _report(monitor, key="trade.market_breadth", name="涨跌家数",
                 status="failed", params={"start": start_date, "end": end_date},
-                started=started, attempts=1, rows=0, error=describe_failure(exc))
-        logger.warning("[交易·涨跌家数] 采集失败：%s", exc)
+                started=started, attempts=1, rows=0, error=reason)
+        logger.warning("[交易·涨跌家数] 采集失败：%s", reason)
         return pd.DataFrame()
 
 
@@ -348,7 +452,8 @@ def _default_range() -> tuple[str, str]:
 
 def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
                   end_date: str | None = None, *, monitor=None, retries: int = 3,
-                  retry_interval: float = 2.0, sources: list[str] | None = None) -> dict[str, pd.DataFrame]:
+                  retry_interval: float = 2.0, sources: list[str] | None = None,
+                  db_path=None) -> dict[str, pd.DataFrame]:
     """采集交易原始数据，返回 {exchange/margin/snapshot/breadth/congestion: DataFrame}。
 
     codes    : 兼容接口，实际以 sources 选择原始数据源
@@ -384,7 +489,7 @@ def collect_trade(codes: list[str] | None = None, start_date: str | None = None,
                                                collected_at=collected_at)
     if "breadth" in selected:
         result["breadth"] = _collect_breadth(start_date, end_date, monitor=monitor,
-                                             collected_at=collected_at)
+                                             collected_at=collected_at, db_path=db_path)
     if "congestion" in selected:
         result["congestion"] = _collect_congestion(start_date, end_date, monitor=monitor,
                                                    collected_at=collected_at)

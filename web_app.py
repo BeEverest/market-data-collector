@@ -1406,6 +1406,46 @@ async def api_import_etf(files: list[UploadFile] = File(...)):
     }
 
 
+@app.get("/api/macro/config")
+def api_macro_config_get():
+    """返回当前宏观采集配置（月度区间）。"""
+    macro = _cfg().get("macro", {})
+    return {
+        "start_date": macro.get("start_date", ""),
+        "end_date": macro.get("end_date", ""),
+    }
+
+
+@app.post("/api/macro/config")
+def api_macro_config_set(payload: dict):
+    """更新宏观采集默认区间；保留 YYYY-MM / YYYY-MM-DD 两种输入。"""
+    cfg = _cfg()
+    macro = cfg.setdefault("macro", {})
+    updated = False
+    for key in ("start_date", "end_date"):
+        if key not in payload:
+            continue
+        val = str(payload[key] or "").strip()
+        if val:
+            try:
+                datetime.strptime(val[:7], "%Y-%m")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"{key} 格式应为 YYYY-MM 或 YYYY-MM-DD") from exc
+        macro[key] = val
+        updated = True
+    if not updated:
+        raise HTTPException(status_code=400, detail="无有效配置项")
+    cfg["macro"] = macro
+    _save_config(cfg)
+    return {
+        "ok": True,
+        "config": {
+            "start_date": macro.get("start_date", ""),
+            "end_date": macro.get("end_date", ""),
+        },
+    }
+
+
 @app.get("/api/etf/config")
 def api_etf_config_get():
     """返回当前 ETF 标的配置（代码、名称、上市日期、区间）。"""

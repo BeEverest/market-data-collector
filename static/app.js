@@ -205,6 +205,9 @@ async function loadCatalog(){
 }
 async function loadConfigs(){
   try {
+    MACRO_CFG = await api('/api/macro/config');
+  } catch(e){ console.warn('macro cfg', e); }
+  try {
     ETF_CFG = await api('/api/etf/config');
     ETF_ITEMS = (ETF_CFG.items||[]).map(x=>[x.code, x.name, (x.tags||[]).join('/')||'—', x.listing_date||'—', '—']);
   } catch(e){ console.warn('etf cfg', e); }
@@ -275,6 +278,57 @@ async function loadDerived(month){
       box.dataset.filled='1';
     }
   } catch(e){ console.warn('loadDerived', e); }
+}
+function etfCalcParams(view){
+  const label = view?.querySelector('[data-etfcalc-range]')?.value || '近一年';
+  const months = ({'近半年':6,'近一年':12,'近3年':36,'近5年':60,'全部':999}[label] || 12);
+  const start = view?.querySelector('[data-etfcalc-start]')?.value?.trim() || '';
+  const end = view?.querySelector('[data-etfcalc-end]')?.value?.trim() || '';
+  return {months:String(months), start, end};
+}
+let ETF_CALC_SEQ = 0;
+async function loadEtfCalc(){
+  const seq = ++ETF_CALC_SEQ;
+  const view = activeView();
+  if(!view || curView!=='etfcalc') return;
+  const body = view.querySelector('[data-etfcalc-body]');
+  if(!body) return;
+  const p = etfCalcParams(view);
+  const rangeParams = {months:p.months};
+  if(p.start) rangeParams.start = p.start;
+  if(p.end) rangeParams.end = p.end;
+  body.innerHTML = '<div class="hint">加载中…</div>';
+  try{
+    const qs = new URLSearchParams(rangeParams);
+    const res = await apiRetry('/api/dashboard/etf-daily?'+qs.toString());
+    if(seq!==ETF_CALC_SEQ || curView!=='etfcalc') return;
+    const box = activeView()?.querySelector('[data-etfcalc-body]') || body;
+    const count = activeView()?.querySelector('[data-etfcalc-count]');
+    const summary = activeView()?.querySelector('[data-etfcalc-summary]');
+    const rows = res.rows||[], t = res.total||{};
+    if(count) count.textContent = `共 ${fmtNum(rows.length)} 个交易日 · ${res.range||''}`;
+    if(summary) summary.innerHTML = `汇金合计净流入 ${signed(t.net??0,'亿元')} · 份额变化 ${signed(t.share??0,'亿份')} · 规模变化 ${signed(t.cap??0,'亿元')}`;
+    box.innerHTML = `<table><thead><tr><th>交易日期</th><th>汇金份额变化(亿份)</th><th>规模变化(亿元)</th><th>申赎净流入(亿元)</th><th>ETF数</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r.date)}</td>
+        <td class="num">${signed(r.share??0,'')}</td>
+        <td class="num">${signed(r.cap??0,'')}</td>
+        <td class="num">${r.net==null?'<span class="muted-inline">折算日</span>':signed(r.net,'')}</td>
+        <td class="num">${r.count}</td></tr>`).join('')}</tbody></table>`;
+  }catch(e){
+    const box = activeView()?.querySelector('[data-etfcalc-body]') || body;
+    box.innerHTML = `<div class="hint">加载失败：${esc(e.message||e)}</div>`;
+  }
+  try{
+    const totalQs = new URLSearchParams({...rangeParams, view:'total'});
+    const res2 = await apiRetry('/api/dashboard/etf-daily?'+totalQs.toString());
+    if(seq!==ETF_CALC_SEQ || curView!=='etfcalc') return;
+    const sumBox = activeView()?.querySelector('[data-etfcalc-shares-summary]');
+    const tableBox = activeView()?.querySelector('[data-etfcalc-shares-body]');
+    if(sumBox && tableBox) etfRenderSharesBlock(sumBox, tableBox, res2, rangeParams);
+  }catch(e){
+    const tableBox = activeView()?.querySelector('[data-etfcalc-shares-body]');
+    if(tableBox) tableBox.innerHTML = `<div class="hint">总份额明细加载失败：${esc(e.message||e)}</div>`;
+  }
 }
 async function loadPreview(kind, opts={}){
   try {
@@ -643,20 +697,20 @@ const VIEWS = {
       <input class="prec-input" placeholder="数据源" style="width:88px" data-macro-src>
       <input class="prec-input" placeholder="频率" style="width:60px" data-macro-freq>
       <button class="btn btn-primary btn-sm" data-act="macro-add"><i class="ti ti-plus"></i> 新增</button></div>
-    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="2025-01-01" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint" data-config-hint>勾选启用项后保存</span></div>
+    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(MACRO_CFG.start_date||'')}" style="width:125px" data-macro-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(MACRO_CFG.end_date||'')}" style="width:125px" data-macro-end><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint" data-config-hint>留空 = 动态取最近一期；保存后写入宏观采集默认区间</span></div>
     <div class="table-responsive" data-macro-table>${tbl(['启用','指标代码','名称','类别','数据源','频率'],MACRO_INDS.map(r=>[
       `<label class="switch-row"><input type="checkbox" checked data-macro-enable></label>`,...r]),{action:'macro-remove',actionLabel:'删除'})}</div></div></div>`,
 
   idxcfg:()=>head('指数采集配置','4 个指数 · 日线采集')+`<div class="card"><div class="card-header"><h3><i class="ti ti-chart-dots" style="color:var(--blue)"></i> 指数标的配置</h3><span class="sub">灵活增删 · 自定义区间</span></div><div class="card-body">
     <div class="ctl-params"><select class="form-select" style="width:170px" data-idx-new><option>000001 上证指数</option><option>000300 沪深300</option><option>000688 科创50</option><option>399006 创业板指</option></select><button class="btn btn-sm" data-act="idx-add"><i class="ti ti-plus"></i> 添加</button></div>
     <div class="chips" data-chips="idx">${INDEX_ITEMS.map(x=>`<span class="chip"><i class="ti ti-chart-dots"></i> ${x[0]} ${x[1]}<span class="x" data-act="chip-remove">×</span></span>`).join('')}</div>
-    <div class="ctl-params"><label class="prec-field">采集区间 <input class="prec-input" type="date" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><label class="prec-field">回看 <input class="prec-input" type="number" value="1" style="width:60px"> 天</label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
+    <div class="ctl-params"><label class="prec-field">采集区间 <input class="prec-input" type="date" value="${esc(INDEX_CFG.start_date||'')}" style="width:125px" data-idx-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(INDEX_CFG.end_date||'')}" style="width:125px" data-idx-end><label class="prec-field">回看 <input class="prec-input" type="number" value="${Number(INDEX_CFG.lookback_days||1)}" style="width:60px" data-idx-lookback></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
     <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称'],INDEX_ITEMS.map(x=>[x[0],x[1]]),{action:'idx-row-remove',actionLabel:'删除'})}</div></div></div>`,
 
   etfcfg:()=>head('ETF 采集配置','26 只标的 · 分组标签与上市日期缓存')+`<div class="card"><div class="card-header"><h3><i class="ti ti-coins" style="color:var(--ok)"></i> ETF 标的配置</h3><span class="sub">宽基 / 汇金 / 黄金 · 自动解析上市日</span></div><div class="card-body">
     <div class="ctl-params"><input class="prec-input" placeholder="输入 6 位基金代码" maxlength="6" style="width:150px" data-etf-new><button class="btn btn-sm" data-act="etf-add"><i class="ti ti-plus"></i> 添加</button></div>
     <div class="chips" data-chips="etf">${ETF_ITEMS.slice(0,6).map(x=>`<span class="chip"><i class="ti ti-coins"></i> ${x[0]} ${x[1]} <span class="mini_tag">${x[2].split('/')[0]}</span><span class="x" data-act="chip-remove">×</span></span>`).join('')}</div>
-    <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" style="width:125px"></label><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:125px"><label class="prec-field">最近 <input class="prec-input" type="number" value="60" style="width:60px"> 个交易日</label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
+    <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(ETF_CFG.start_date||'')}" style="width:125px" data-etf-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(ETF_CFG.end_date||'')}" style="width:125px" data-etf-end><label class="prec-field">最近 <input class="prec-input" type="number" value="${Number(ETF_CFG.default_trade_days||60)}" style="width:60px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button></div>
     <div class="table-responsive" style="margin-top:12px">${tbl(['代码','名称','标签','上市日期'],ETF_ITEMS.map(x=>[x[0],x[1],x[2],x[3]]),{action:'etf-row-remove',actionLabel:'删除'})}</div></div></div>`,
 
   /* ---------------- 数据采集：预览 ---------------- */
@@ -676,10 +730,10 @@ const VIEWS = {
   macrocalc:()=>head('宏观计算 · 派生指标','14 项指标 · 手动重算兜底 · 定时调度见「运维监控 · 任务调度」')+`<div class="trigger-grid" style="grid-template-columns:1fr">
     <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
       <div class="tc-row"><button class="btn btn-primary btn-sm" data-act="recalc-all">重新计算全部</button><button class="btn btn-sm" data-act="export" data-k="derived">导出 CSV</button></div>
-      <div class="tc-row"><label class="prec-field">按月 <input class="prec-input" type="month" value="2026-10" style="width:110px"></label><button class="btn btn-sm" data-act="recalc-month">重算该月</button></div>
+      <div class="tc-row"><label class="prec-field">按月 <input class="prec-input" type="month" value="${esc(DERIVED_MONTH||'')}" style="width:110px" data-derived-recalc-month></label><button class="btn btn-sm" data-act="recalc-month">重算该月</button></div>
       <div class="tc-row"><label class="prec-field">按指标 <select class="form-select" style="width:150px"><option>M1 同比</option><option>社融增量</option><option>CPI-PPI 剪刀差</option></select></label><button class="btn btn-sm" data-act="recalc-code">重算该指标</button></div>
       <div class="tc-note">局部重算按业务键幂等覆盖；全量重算才整表替换清理陈旧口径行</div></div></div></div>
-    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 指标口径</h3><label class="prec-field" style="margin-left:auto">查看月份 <input class="prec-input" type="month" value="2026-10" style="width:110px"></label></div><div class="card-body" data-derived-body></div></div>
+    <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 指标口径</h3><label class="prec-field" style="margin-left:auto">查看月份 <input class="prec-input" type="month" value="${esc(DERIVED_MONTH||'')}" style="width:110px" data-derived-view-month></label></div><div class="card-body" data-derived-body></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
       <li><b>触发条件</b>：服务运行时按「运维监控 · 任务调度」中的配置每日到点触发一次，同一天只触发一次；未启用/未到点/今日已触发/任务占用时不执行。</li>
       <li><b>步骤 1~5</b>：触发 → 提交采集 → 宏观/ETF/指数采集 → 写 SQLite 业务表（幂等 upsert）→ 采集完成统计，全程写入监控日志。</li>
@@ -689,16 +743,14 @@ const VIEWS = {
       <li><b>看板联动</b>：看板各派生指标图直接读取 <code>derived_indicator</code>，重算后自动生效；宏观与 ETF 日期口径一致。</li>
     </ol></div></div>`,
 
-  etfcalc:()=>head('ETF 计算','流通份额变化 / 申赎净流入 · 汇金维度')+`<div class="card"><div class="card-header"><h3><i class="ti ti-calculator" style="color:var(--blue)"></i> ETF 计算</h3><span class="sub">数据来自 etf_observation 全量历史</span></div><div class="card-body">
+  etfcalc:()=>head('ETF 计算','流通份额变化 / 申赎净流入 · 汇金维度')+`<div class="card"><div class="card-header"><h3><i class="ti ti-calculator" style="color:var(--blue)"></i> ETF 计算</h3><span class="sub">数据来自 etf_observation 全量历史 · 日期范围真实参与计算</span></div><div class="card-body">
     <div class="formula-note"><div><b>流通份额变化</b> = 当日份额 − 上一交易日份额（亿份）</div><div><b>申赎净流入</b> = 份额变化 × 当日单位净值（亿元），剔除价格涨跌的市值波动；净值单日涨跌超 ±20% 视为份额折算，净流入置空</div></div>
-    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">查看范围 <select class="form-select" style="width:100px"><option>近半年</option><option selected>近一年</option><option>近3年</option><option>近5年</option><option>全部</option></select></label><label class="prec-field">起始 <input class="prec-input" type="date" style="width:125px"></label><label class="prec-field">结束 <input class="prec-input" type="date" value="${LAST}" style="width:125px"></label><button class="btn btn-sm" data-act="etfcalc-refresh"><i class="ti ti-refresh"></i> 刷新</button><button class="btn btn-sm" data-act="export" data-k="etfcalc"><i class="ti ti-file-export"></i> 导出 CSV</button><span class="hint">共 23 条</span></div>
-    <div class="mini_tag" style="display:inline-block;margin-bottom:8px">汇金合计净流入 +38.6 亿元</div>
-    ${tbl(['日期','代码','名称','份额变化(亿份)','净流入(亿元)','单位净值'],[
-      [LAST,'510300','沪深300ETF','+3.2','+12.4','4.02'],[LAST,'510050','上证50ETF','-0.8','-3.1','3.28'],
-      [LAST,'518880','黄金ETF','+1.4','+2.7','9.16'],['2026-11-21','510300','沪深300ETF','+2.1','+8.2','3.98']])}
-    <div class="card-header" style="margin:16px -14px 10px;padding:10px 14px"><h3>汇金维度 · 每个交易日总份额</h3><span class="sub">23 只汇金 ETF 份额合计 · 点击展开明细</span></div>
-    ${tbl(['日期','汇金总份额(亿份)','较上日','明细'],[
-      [LAST,'8,642.5','+18.3','展开 ▸'],['2026-11-21','8,624.2','+6.8','展开 ▸'],['2026-11-20','8,617.4','-2.1','展开 ▸']],{action:'etf-share-detail',actionLabel:'展开 ▸'})}</div></div>`,
+    <div class="ctl-params" style="margin-bottom:12px"><label class="prec-field">查看范围 <select class="form-select" style="width:100px" data-etfcalc-range><option>近半年</option><option selected>近一年</option><option>近3年</option><option>近5年</option><option>全部</option></select></label><label class="prec-field">起始 <input class="prec-input" type="date" style="width:125px" data-etfcalc-start></label><label class="prec-field">结束 <input class="prec-input" type="date" style="width:125px" data-etfcalc-end></label><button class="btn btn-sm" data-act="etfcalc-refresh"><i class="ti ti-refresh"></i> 刷新</button><button class="btn btn-sm" data-act="export" data-k="etfcalc"><i class="ti ti-file-export"></i> 导出 CSV</button><span class="hint" data-etfcalc-count>加载中…</span></div>
+    <div class="mini_tag" style="display:inline-block;margin-bottom:8px" data-etfcalc-summary>汇金合计净流入统计中…</div>
+    <div data-etfcalc-body><div class="hint">加载中…</div></div>
+    <div class="card-header" style="margin:16px -14px 10px;padding:10px 14px"><h3>汇金维度 · 每个交易日总份额</h3><span class="sub">按当前日期范围统计 · 点击展开明细</span></div>
+    <div data-etfcalc-shares-summary></div>
+    <div data-etfcalc-shares-body><div class="hint">加载中…</div></div></div></div>`,
 
   tradecalc:()=>head('交易计算','从 5 张原始表派生 10 项指标')+`<div class="trigger-grid">
     <div class="trigger-card"><div class="tc-head"><h3>🔁 手动重算 <small>兜底</small></h3><span class="badge bg-blue-lt">已就绪</span></div><div class="tc-body">
@@ -767,6 +819,7 @@ function switchView(id){
   if(id.startsWith('dash')) setTimeout(()=>{ loadDashboard(); }, 30);
   if(id==='ovCollect') setTimeout(renderOverview, 60);
   if(id==='macrocalc') setTimeout(()=>loadDerived(), 30);
+  if(id==='etfcalc') setTimeout(()=>loadEtfCalc(), 30);
   if(id.startsWith('prev-')) setTimeout(()=>loadPreview(id.replace('prev-','')).then(()=>rerenderView(id)), 30);
   if(id.startsWith('mon-')) setTimeout(()=>loadMonitor().then(()=>rerenderView(id)), 30);
   window.scrollTo({top:0,behavior:'smooth'});
@@ -1397,7 +1450,7 @@ function handleAction(act, btn, e){
     case 'save-config': {
       if(curView==='etfcfg') { saveEtfConfigUI(view); }
       else if(curView==='idxcfg') { saveIndexConfigUI(view); }
-      else if(curView==='maccfg') { toast('宏观配置已保存','ok'); }
+      else if(curView==='maccfg') { saveMacroConfigUI(view); }
       else toast('配置已保存','ok');
       break;
     }
@@ -1597,12 +1650,12 @@ function handleAction(act, btn, e){
       submitJob('/api/derived/recompute', {month:'', code:''}, '派生指标全量重算'); break;
     }
     case 'recalc-month': case 'recalc-code': {
-      const m = view?.querySelector('input[type="month"]')?.value||DERIVED_MONTH;
+      const m = view?.querySelector('[data-derived-recalc-month]')?.value||DERIVED_MONTH;
       const code = view?.querySelector('select')?.value||'';
       submitJob('/api/derived/recompute', {month:act==='recalc-month'?m:'', code:act==='recalc-code'?code:''}, act==='recalc-month'?'派生指标按月重算':'派生指标按指标重算');
       break;
     }
-    case 'etfcalc-refresh': toast('ETF 计算数据来自 etf_observation，已为最新','ok'); break;
+    case 'etfcalc-refresh': loadEtfCalc().then(()=>toast('ETF 计算已按当前日期范围刷新','ok')); break;
     case 'trade-recalc-all': submitJob('/api/trade/recompute', {}, '交易指标全量重算'); break;
     case 'trade-recalc-date': {
       const d = view?.querySelector('[data-trade-recalc-date]')?.value||LAST;
@@ -1635,14 +1688,37 @@ function monitorCleanPayload(view){
   if(sels[2]) p.category=(sels[2].value||'').includes('宏观')?'macro':(sels[2].value||'').includes('ETF')?'etf':'';
   return p;
 }
+async function saveMacroConfigUI(view, quiet){
+  const valOr = (sel, fallback) => { const el=view?.querySelector(sel); return el ? el.value.trim() : (fallback||''); };
+  const payload = {start_date:valOr('[data-macro-start]', MACRO_CFG.start_date), end_date:valOr('[data-macro-end]', MACRO_CFG.end_date)};
+  try {
+    const res = await postJSON('/api/macro/config', payload);
+    if(res.config) MACRO_CFG = res.config;
+    if(!quiet) toast('宏观采集默认区间已保存','ok');
+    return true;
+  } catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
+}
 async function saveEtfConfigUI(view, quiet){
-  const payload = {codes:(ETF_CFG.items||[]).map(x=>x.code), tags:{}, start_date:'', end_date:'', default_trade_days:60};
+  const valOr = (sel, fallback) => { const el=view?.querySelector(sel); return el ? el.value.trim() : (fallback||''); };
+  const payload = {
+    codes:(ETF_CFG.items||[]).map(x=>x.code),
+    tags:{},
+    start_date:valOr('[data-etf-start]', ETF_CFG.start_date),
+    end_date:valOr('[data-etf-end]', ETF_CFG.end_date),
+    default_trade_days:Number(valOr('[data-etf-days]', ETF_CFG.default_trade_days)) || Number(ETF_CFG.default_trade_days||60),
+  };
   (ETF_CFG.items||[]).forEach(x=>{ if(x.tags?.length) payload.tags[x.code]=x.tags; });
   try { const res=await postJSON('/api/etf/config', payload); if(res.config) ETF_CFG=res.config; loadCatalog(); if(!quiet)toast('ETF 配置已保存','ok'); return true; }
   catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
 }
 async function saveIndexConfigUI(view, quiet){
-  const payload = {codes:(INDEX_CFG.items||[]).map(x=>x.code), start_date:INDEX_CFG.start_date||'', end_date:INDEX_CFG.end_date||'', lookback_days:INDEX_CFG.lookback_days||1};
+  const valOr = (sel, fallback) => { const el=view?.querySelector(sel); return el ? el.value.trim() : (fallback||''); };
+  const payload = {
+    codes:(INDEX_CFG.items||[]).map(x=>x.code),
+    start_date:valOr('[data-idx-start]', INDEX_CFG.start_date),
+    end_date:valOr('[data-idx-end]', INDEX_CFG.end_date),
+    lookback_days:Number(valOr('[data-idx-lookback]', INDEX_CFG.lookback_days)) || Number(INDEX_CFG.lookback_days||1),
+  };
   try { const res=await postJSON('/api/index/config', payload); if(res.config) INDEX_CFG=res.config; loadCatalog(); if(!quiet)toast('指数配置已保存','ok'); return true; }
   catch(e){ if(!quiet)toast('保存失败：'+e.message,'err'); return false; }
 }
@@ -1671,6 +1747,8 @@ function bindEvents(){
     }
     if(t.matches('[data-act="dash-macro-range"]')) renderDash();
     if(t.matches('[data-act="overlay-index"]')) loadDashboard();
+    if(t.matches('[data-derived-view-month]')) loadDerived(t.value);
+    if(t.matches('[data-etfcalc-range],[data-etfcalc-start],[data-etfcalc-end]')) loadEtfCalc();
     if(t.matches('[data-range-start],[data-range-end]')){
       const view=activeView();
       $$('.seg-btn[data-months]',view).forEach(x=>x.classList.remove('active'));

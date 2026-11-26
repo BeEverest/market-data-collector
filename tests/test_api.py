@@ -76,6 +76,20 @@ class TestReadOnlyApis:
         assert client.post("/api/derived/recompute", json={"month": "bad"}).status_code == 400
         assert client.post("/api/derived/recompute", json={"code": "NOPE"}).status_code == 400
 
+    def test_macro_config_roundtrip(self, client):
+        """宏观配置日期区间可真实读写，非法月份被拒绝。"""
+        cfg = client.get("/api/macro/config").json()
+        assert cfg["start_date"] == "2024-01"
+        saved = client.post("/api/macro/config", json={
+            "start_date": "2025-03-01", "end_date": "2025-06-30",
+        })
+        assert saved.status_code == 200
+        after = client.get("/api/macro/config").json()
+        assert after["start_date"] == "2025-03-01"
+        assert after["end_date"] == "2025-06-30"
+        bad = client.post("/api/macro/config", json={"start_date": "not-month"})
+        assert bad.status_code == 400
+
     def test_etf_tags_and_change_columns(self, client):
         cfg = client.get("/api/etf/config").json()
         assert cfg["tag_options"] == ["宽基", "汇金", "黄金"]

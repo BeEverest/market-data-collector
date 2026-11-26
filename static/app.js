@@ -130,6 +130,7 @@ const ETF_CFG_STATE = {page:1, size:10, keyword:'', tag:''};
 let MACRO_CFG = {start:'',end:''};
 let DERIVED_ROWS = [], DERIVED_MONTH = CURRENT_MONTH;
 let liveLogSeq = 0;
+const LIVE_DOM_LIMIT = 10000;
 const num = v => (v==null || v==='' ? '—' : (typeof v === 'number' ? (Number.isInteger(v)?fmt(v):v.toLocaleString('zh-CN',{maximumFractionDigits:2})) : v));
 
 /* ---------------- 反馈组件 ---------------- */
@@ -353,6 +354,13 @@ function appendLog(text, level='INFO'){
   const strip = byId('logMarquee'); if(strip){ strip.className = level; strip.textContent = text; }
   const wrap = byId('logBodyWrap'); if(wrap && byId('logAutoScroll')?.checked) wrap.scrollTop = wrap.scrollHeight;
 }
+/* 前端面板最多保留 10000 行，与后端文件/缓冲上限一致 */
+function trimLogBody(){
+  const body = byId('logBody'); if(!body) return;
+  const lines = body.querySelectorAll('.log-line');
+  const excess = lines.length - LIVE_DOM_LIMIT;
+  for(let i=0; i<excess; i++) lines[i].remove();
+}
 function setBusy(busy, label){
   const badge = $('#hdStatus'); if(!badge) return;
   badge.textContent = busy ? '采集中…' : '系统正常';
@@ -363,11 +371,14 @@ async function pollLiveOnce(){
   try {
     const res = await api('/api/live-logs?after=' + liveLogSeq);
     const lines = res.logs || [];
-    lines.forEach(l=>{
-      liveLogSeq = l.seq || liveLogSeq;
+    // 服务重启后可能一次取回上万行，只渲染最近 500 行，序号仍推进到最新
+    const render = lines.length > 500 ? lines.slice(-500) : lines;
+    render.forEach(l=>{
       const lv = String(l.level||'INFO').toUpperCase();
       appendLog(l.text || l.message || '', ['INFO','OK','WARN','ERROR'].includes(lv)?lv:'INFO');
     });
+    if(lines.length) liveLogSeq = lines[lines.length-1].seq || liveLogSeq;
+    trimLogBody();
   } catch {}
 }
 /* 提交任务并轮询 job 直到完成 */
@@ -1071,7 +1082,7 @@ const VIEWS = {
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#c2410c"><i class="ti ti-file-import"></i></div><div><b>文件导入</b><small>份额与规模_代码.xlsx</small></div></div><span class="scope-pill scope-ops">ETF数据</span>
         <div class="ctl-params"><input class="prec-input" type="file" style="width:220px;font-size:10px" data-import-file><button class="btn btn-sm" data-act="import">导入数据</button></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><span class="hint" style="font-size:10px">≤10 文件</span></div></div>
-      <div class="log-panel" style="margin-top:12px;display:block"><div class="log-head"><span>实时监控 · 实时日志</span><span class="log-scope">全部线程 · 最近5000行</span><div class="log-tools"><label><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label><button class="log-tool" data-act="log-bottom" title="回到底部">↓</button><button class="log-tool" data-act="log-toggle">展开</button><span class="log-dot"></span></div></div>
+      <div class="log-panel" style="margin-top:12px;display:block"><div class="log-head"><span>实时监控 · 实时日志</span><span class="log-scope">全部线程 · 最近10000行 · 落盘15M滚动</span><div class="log-tools"><label><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label><button class="log-tool" data-act="log-bottom" title="回到底部">↓</button><button class="log-tool" data-act="log-toggle">展开</button><span class="log-dot"></span></div></div>
         <div class="log-strip" data-act="log-toggle"><span class="log-strip-label">最新</span><span id="logMarquee" class="INFO">正在加载实时日志…</span></div>
         <div class="log-body-wrap" id="logBodyWrap"><div id="logBody"></div></div></div></div></div>`,
 

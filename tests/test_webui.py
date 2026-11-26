@@ -479,6 +479,19 @@ class TestWebPage:
         assert rows.count() == 2
         assert page._js_errors == []
 
+    def test_live_log_panel_scope_and_dom_limit(self, page):
+        """实时日志面板：标注 10000 行/15M 落盘滚动，前端最多保留 10000 行。"""
+        _switch(page, "console")
+        assert "最近10000行" in page.locator("#v-console .log-scope").inner_text()
+        assert "落盘15M滚动" in page.locator("#v-console .log-scope").inner_text()
+        page.evaluate("""() => {
+          const b = document.getElementById('logBody');
+          b.innerHTML = Array.from({length:10005},(_,i)=>`<div class="log-line">line-${i}</div>`).join('');
+          trimLogBody();
+        }""")
+        assert page.locator("#logBody .log-line").count() == 10000
+        assert page._js_errors == []
+
     def test_console_shows_two_category_summary_cards(self, page):
         """采集控制台展示两张分类汇总卡片：存量汇总 / 当日净新增，各含宏观/指数/ETF/交易。"""
         _switch(page, "console")

@@ -465,3 +465,66 @@ class TestTradeDataPreview:
         assert "/static/style.css?v=" in resp.text
         assert "/static/app.js?v=" in resp.text
         assert resp.headers["cache-control"] == "no-store"
+
+
+class TestLiveLogs:
+    def test_file_persist_rotate_and_resume(self, tmp_path, monkeypatch):
+        """实时日志落文件：超阈值滚动、只留最近行、重启后续接序号。"""
+        import itertools
+        import json
+        import logging
+        from collections import deque
+        from fastapi.testclient import TestClient
+
+        log_file = tmp_path / "live_monitor.log"
+        monkeypatch.setattr(web_app, "LIVE_LOG_FILE", log_file)
+        monkeypatch.setattr(web_app, "LIVE_LOG_MAX_BYTES", 1200)
+        monkeypatch.setattr(web_app, "LIVE_LOG_LIMIT", 20)
+        monkeypatch.setattr(web_app, "_live_logs", deque(maxlen=20))
+        monkeypatch.setattr(web_app, "_live_seq", itertools.count(1))
+        monkeypatch.setattr(web_app, "_live_loaded", False)
+
+        lg = logging.getLogger("test.live.log")
+        lg.setLevel(logging.INFO)
+        for i in range(30):
+            lg.info("line-%02d", i)
+
+        assert log_file.exists()
+        lines = [ln for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert 0 < len(lines) <= 20
+        assert "line-29" in lines[-1]
+        entries = [json.loads(ln) for ln in lines]
+        assert entries[-1]["seq"] >= 30
+        assert log_file.stat().st_size <= 1200
+
+        # 模拟服务重启：清空内存缓冲后从文件恢复
+        monkeypatch.setattr(web_app, "_live_logs", deque(maxlen=20))
+        monkeypatch.setattr(web_app, "_live_loaded", False)
+        with TestClient(web_app.app) as c:
+            res = c.get("/api/live-logs?after=0").json()
+        assert res["limit"] == 20
+        assert res["logs"][-1]["message"] == "line-29"
+
+    def test_file_rolls_by_line_count(self, tmp_path, monkeypatch):
+        """即使远未到 15M，行数超过 10000 上限也必须滚动清理。"""
+        import itertools
+        import logging
+        from collections import deque
+
+        log_file = tmp_path / "live_monitor.log"
+        monkeypatch.setattr(web_app, "LIVE_LOG_FILE", log_file)
+        monkeypatch.setattr(web_app, "LIVE_LOG_MAX_BYTES", 10 * 1024 * 1024)
+        monkeypatch.setattr(web_app, "LIVE_LOG_LIMIT", 20)
+        monkeypatch.setattr(web_app, "_live_logs", deque(maxlen=20))
+        monkeypatch.setattr(web_app, "_live_seq", itertools.count(1))
+        monkeypatch.setattr(web_app, "_live_loaded", False)
+        monkeypatch.setattr(web_app, "_live_file_lines", 0)
+
+        lg = logging.getLogger("test.live.lines")
+        lg.setLevel(logging.INFO)
+        for i in range(30):
+            lg.info("row-%02d", i)
+
+        lines = [ln for ln in log_file.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        assert len(lines) == 20
+        assert "row-29" in lines[-1]

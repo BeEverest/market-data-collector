@@ -123,30 +123,104 @@ logger = logging.getLogger("market_data.web")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                     datefmt="%H:%M:%S")
 
-# 全局实时日志环形缓冲：承接所有线程（含定时调度器/后台采集）的日志，供「实时监控」常驻轮询。
-# 与 per-job 日志（JobLogHandler，任务结束即固定）互补：这里跨任务保留最近 5000 行。
-LIVE_LOG_LIMIT = 5000
+# 全局实时日志：内存环形缓冲 + 文件持久化，供「实时监控」常驻轮询。
+# 与 per-job 日志（JobLogHandler，任务结束即固定）互补：跨任务保留最近 10000 行，
+# 落盘文件超过 15M 时滚动清理，只留最近 10000 行（仍超限则继续剔除最旧行）。
+LIVE_LOG_LIMIT = 10000
+LIVE_LOG_MAX_BYTES = 15 * 1024 * 1024
+LIVE_LOG_FILE = BASE_DIR / "output" / "live_monitor.log"
 _live_logs: deque[dict] = deque(maxlen=LIVE_LOG_LIMIT)
 _live_seq = itertools.count(1)
-_live_lock = threading.Lock()
+_live_lock = threading.RLock()
+_live_loaded = False
+_live_file_lines = 0
+
+
+def _live_log_path() -> Path:
+    p = Path(LIVE_LOG_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _load_live_logs() -> None:
+    """首次使用时从文件恢复最近日志并续接序号；调用方需持有 _live_lock。"""
+    global _live_loaded, _live_seq, _live_file_lines
+    if _live_loaded:
+        return
+    p = _live_log_path()
+    entries: list[dict] = []
+    if p.exists():
+        try:
+            with p.open("r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        entries.append(json.loads(line))
+        except Exception:
+            entries = []
+        _live_file_lines = len(entries)
+        entries = entries[-LIVE_LOG_LIMIT:]
+        _live_logs.extend(entries)
+    max_seq = max((int(e.get("seq", 0) or 0) for e in entries), default=0)
+    _live_seq = itertools.count(max_seq + 1)
+    _live_loaded = True
+
+
+def _rotate_live_log(p: Path) -> None:
+    """超过 10000 行或 15M 后重写为最近 10000 行；若仍超限，继续从最旧行剔除。"""
+    global _live_file_lines
+    try:
+        with p.open("r", encoding="utf-8", errors="replace") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()][-LIVE_LOG_LIMIT:]
+        sizes = [len(ln.encode("utf-8")) + 1 for ln in lines]
+        total = sum(sizes)
+        drop = 0
+        while total > LIVE_LOG_MAX_BYTES and drop < len(lines):
+            total -= sizes[drop]
+            drop += 1
+        lines = lines[drop:]
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+        os.replace(tmp, p)
+        _live_file_lines = len(lines)
+    except Exception:
+        pass  # 日志滚动失败不影响采集主流程
+
+
+def _append_live_log(entry: dict) -> None:
+    global _live_file_lines
+    with _live_lock:
+        _load_live_logs()
+        _live_logs.append(entry)
+        p = _live_log_path()
+        try:
+            with p.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _live_file_lines += 1
+            if _live_file_lines > LIVE_LOG_LIMIT or p.stat().st_size > LIVE_LOG_MAX_BYTES:
+                _rotate_live_log(p)
+        except Exception:
+            pass  # 日志落盘失败不影响采集主流程
 
 
 class LiveLogHandler(logging.Handler):
-    """常驻 root 的 handler：把任意 logger/线程的记录写入全局缓冲。"""
+    """常驻 root 的 handler：把任意 logger/线程的记录写入缓冲与文件。"""
 
     def emit(self, record: logging.LogRecord):
         try:
             msg = record.getMessage()
         except Exception:
             msg = str(record.msg)
-        entry = {
-            "seq": next(_live_seq),
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "level": record.levelname,
-            "message": msg,
-        }
+        # 必须先加载文件恢复序号，再取 seq；否则首次写入会被随后的重置覆盖。
         with _live_lock:
-            _live_logs.append(entry)
+            _load_live_logs()
+            entry = {
+                "seq": next(_live_seq),
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "level": record.levelname,
+                "message": msg,
+            }
+            _append_live_log(entry)
 
 
 # 挂载一次到 root：所有子 logger 默认向 root 传播，覆盖 JobLogHandler 捕获不到的调度器日志。
@@ -1233,8 +1307,9 @@ def api_jobs():
 
 @app.get("/api/live-logs")
 def api_live_logs(after: int = 0):
-    """实时监控日志：返回序号大于 after 的全局日志（含定时调度），跨任务保留最近 5000 行。"""
+    """实时监控日志：返回序号大于 after 的全局日志（含定时调度），跨任务保留最近 10000 行。"""
     with _live_lock:
+        _load_live_logs()
         logs = [dict(e) for e in _live_logs if e["seq"] > after]
         latest = _live_logs[-1]["seq"] if _live_logs else 0
         total = len(_live_logs)

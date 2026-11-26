@@ -810,6 +810,43 @@ function filteredData(chart, months){
     return isNaN(d.getTime()) || c >= lo;
   });
 }
+/* 从当前看板视图读取绝对日期区间（日期框优先；快捷范围会写入日期框，天然覆盖） */
+function chartRange(view){
+  const s = view?.querySelector('[data-range-start]')?.value || '';
+  const e = view?.querySelector('[data-range-end]')?.value || '';
+  return { start:s, end:e };
+}
+/* 判断某个数据点日期是否落在区间内（兼容 YYYY-MM 与 YYYY-MM-DD） */
+function inChartRange(date, range){
+  if(!range || (!range.start && !range.end)) return true;
+  const d = String(date||'');
+  if(!d) return false;
+  if(range.start && d < range.start) return false;
+  // end 可能是 YYYY-MM-DD，宏观用 YYYY-MM，比较时补齐
+  if(range.end){
+    const hi = range.end.length===7 ? range.end+'-31' : range.end;
+    if(d > hi) return false;
+  }
+  return true;
+}
+/* 按日期区间生成过滤后的图表副本，供各渲染函数直接使用，避免漏过滤。
+   ETF 净流入排名（etf_rank）x 轴是 ETF 名称，series 不过滤，但更新明细区间。 */
+function rangeChart(chart, range, months){
+  if(!chart) return chart;
+  const copy = {...chart};
+  const isNameAxis = chart.layout==='etf_rank';
+  if(!isNameAxis && Array.isArray(chart.series)){
+    copy.series = chart.series.map(s=>({...s, data:(s.data||[]).filter(p=>inChartRange(p?.[0], range))}));
+  }
+  if(Array.isArray(chart.index_data)){
+    copy.index_data = chart.index_data.filter(p=>inChartRange(p?.[0], range));
+  }
+  if(isNameAxis && range){
+    if(range.start) copy.detail_start = range.start;
+    if(range.end) copy.detail_end = range.end;
+  }
+  return copy;
+}
 function axisOpt(ax,i){
   return {type:'value',name:ax?.name||'',position:ax?.position||'left',offset:ax?.offset||0,
     nameTextStyle:{fontSize:9,color:'#8a97ac'},axisLabel:{fontSize:9,color:'#8a97ac'},
@@ -950,7 +987,9 @@ function renderEtfChartNode(node, chart, months){
 /* ---- ETF 明细交互（按天 / 单 ETF / 总份额） ---- */
 let etfDetailState = {code:'', page:1, start:'', end:''};
 
+let _etfDailySeq = 0;
 async function etfLoadDailyDetail(){
+  const seq = ++_etfDailySeq;
   let tableBox = byId('etfDailyTable'), totalBox = byId('etfDailyTotal');
   if(!tableBox||!totalBox) return;
   const p = ETF_RANGE();
@@ -958,6 +997,7 @@ async function etfLoadDailyDetail(){
   if(p.start) qs.set('start',p.start); if(p.end) qs.set('end',p.end);
   try{
     const res = await apiRetry('/api/dashboard/etf-daily?'+qs.toString());
+    if(seq !== _etfDailySeq) return;  // 已有更新的加载请求，丢弃本次结果
     // DOM 可能在 await 期间被重建，重新取当前文档中的节点
     totalBox = byId('etfDailyTotal') || totalBox;
     tableBox = byId('etfDailyTable') || tableBox;
@@ -1041,7 +1081,9 @@ function etfRenderSharesBlock(totalBox, tableBox, res, rangeParams){
   tableBox.querySelectorAll('.etf-shares-toggle').forEach(b=>b.addEventListener('click',()=>etfToggleSharesDayDetail(b.dataset.date,tableBox,rangeParams)));
   return {asc,cum};
 }
+let _etfSharesSeq = 0;
 async function etfLoadSharesDetail(){
+  const seq = ++_etfSharesSeq;
   let tableBox=byId('etfSharesTable'), totalBox=byId('etfSharesTotal');
   if(!tableBox||!totalBox) return;
   const p=ETF_RANGE(); const rangeParams={months:p.months||12};
@@ -1049,6 +1091,7 @@ async function etfLoadSharesDetail(){
   try{
     const qs=new URLSearchParams({...rangeParams,view:'total'});
     const res=await apiRetry('/api/dashboard/etf-daily?'+qs.toString());
+    if(seq !== _etfSharesSeq) return;  // 已有更新的加载请求，丢弃本次结果
     // DOM 可能在 await 期间被重建，重新取当前文档中的节点
     totalBox = byId('etfSharesTotal') || totalBox;
     tableBox = byId('etfSharesTable') || tableBox;
@@ -1100,11 +1143,16 @@ function renderDash(){
   if(!DB[grp]) return;
   const view = $('.view.active'); if(!view) return;
   const box = view.querySelector('[data-dash-charts]'); if(!box) return;
-  const list = DB[grp].charts;
   const macroSel = view.querySelector('[data-act="dash-macro-range"]');
   const months = grp==='macro'
     ? ({'近一年':12,'近6个月':6,'近3年':36,'近5年':60,'全部':999}[macroSel?.value]||12)
     : readQuickMonths(view, 12);
+  // ETF/交易：用日期框的绝对区间过滤（快捷范围会写入日期框）；宏观仍用下拉月数
+  const range = grp==='macro' ? null : chartRange(view);
+  const hasRange = range && (range.start || range.end);
+  const list = DB[grp].charts.map(c=>hasRange ? rangeChart(c, range, months) : c);
+  // 有绝对区间时不再让渲染函数按 months 二次裁剪
+  const renderMonths = hasRange ? null : months;
   // ETF 图1（叠指数的汇金图）与图2 各自的明细卡片：按卡片类型占满一行
   const cardHtml = (c)=>{
     const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split');
@@ -1128,9 +1176,9 @@ function renderDash(){
       const target = card?.querySelector('.chart-box');
       if(!target) return;
       let ins;
-      if(grp==='etf') ins = renderEtfChartNode(target,c,months);
-      else if(c.layout==='trade_margin_split') ins = renderMarginSplitNode(target,c,months);
-      else ins = renderChartNode(target,c,months);
+      if(grp==='etf') ins = renderEtfChartNode(target,c,renderMonths);
+      else if(c.layout==='trade_margin_split') ins = renderMarginSplitNode(target,c,renderMonths);
+      else ins = renderChartNode(target,c,renderMonths);
       if(c.layout==='etf_rank' && ins){
         target.style.cursor='pointer'; target.title='点击任意 ETF 柱子，展开该 ETF 每日明细';
         ins.off('click');
@@ -1141,12 +1189,18 @@ function renderDash(){
         });
       }
     });
-    // ETF 明细数据加载
-    if(grp==='etf'){
-      if(byId('etfDailyTable')) etfLoadDailyDetail();
-      if(byId('etfSharesTable')) etfLoadSharesDetail();
-    }
+    // ETF 明细数据加载（防抖：快速切换/连续筛选时合并为一次，避免请求风暴）
+    if(grp==='etf') scheduleEtfDetailLoad();
   },40);
+}
+let _etfDetailTimer = null;
+function scheduleEtfDetailLoad(){
+  clearTimeout(_etfDetailTimer);
+  _etfDetailTimer = setTimeout(()=>{
+    if(curView!=='dashetf') return;
+    if(byId('etfDailyTable')) etfLoadDailyDetail();
+    if(byId('etfSharesTable')) etfLoadSharesDetail();
+  }, 180);
 }
 function renderOverview(){
   const node = byId('ovAssetChart'); if(!node) return;

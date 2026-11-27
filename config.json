@@ -271,9 +271,16 @@
     "retry_interval_sec": 2,
     "timeout_sec": 15,
     "min_interval_sec": 1.2,
-    "min_interval_sec_help": "相邻外部接口请求的最小间隔（秒）。交易所接口（尤其深交所）对密集请求会断连，1.2s+抖动可显著降低失败率；设为 0 关闭节流",
+    "min_interval_sec_help": "通用外部接口请求的最小间隔（秒）；设为 0 关闭节流",
     "jitter_sec": 0.5,
-    "jitter_sec_help": "在最小间隔之上叠加的随机抖动上限（秒），避免机械固定节律被反爬识别"
+    "jitter_sec_help": "通用接口在最小间隔之上叠加的随机抖动上限（秒），避免机械固定节律被反爬识别",
+    "szse_min_interval_sec": 5,
+    "szse_min_interval_sec_help": "深交所 fund.szse.cn 专用最小请求间隔（秒）；连续请求会被 RemoteDisconnected，故独立于通用接口降频",
+    "szse_jitter_sec": 2,
+    "szse_jitter_sec_help": "深交所专用随机抖动上限（秒），与 5 秒最小间隔叠加后实际间隔约 5~7 秒",
+    "szse_retry": 4,
+    "szse_retry_interval_sec": 6,
+    "szse_retry_interval_sec_help": "深交所专用重试退避基数（秒），按 2 的幂递增；沿用已落库兜底，不覆盖原数据"
   },
   "monitor": {
     "history_file": "output/monitor/interface_runs.jsonl",
@@ -282,7 +289,7 @@
   },
   "scheduler": {
     "enabled": true,
-    "time": "11:16",
+    "time": "12:53",
     "run_type": "full",
     "macro_lookback_months": 1,
     "_enabled_help": "定时采集开关；开启后系统按 time 每日自动采集一次（同一天只触发一次）",

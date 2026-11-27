@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 
+from collectors import rate_limit
 from collectors.rate_limit import RateLimiter
 
 
@@ -41,3 +42,24 @@ class TestRateLimiter:
         assert limiter.jitter == 0.5
         limiter.configure(min_interval=-1)  # 负数归一为 0
         assert limiter.min_interval == 0.0
+
+
+class TestApplyRateLimit:
+    def test_szse_uses_its_own_interval(self):
+        """深交所节流器独立于通用节流器，且缺省时沿用全局值。"""
+        import main
+
+        try:
+            main._apply_rate_limit({
+                "min_interval_sec": 1.2, "jitter_sec": 0.5,
+                "szse_min_interval_sec": 5, "szse_jitter_sec": 2,
+            })
+            assert rate_limit.get_limiter().min_interval == 1.2
+            assert rate_limit.get_szse_limiter().min_interval == 5
+            assert rate_limit.get_szse_limiter().jitter == 2
+
+            main._apply_rate_limit({"min_interval_sec": 1.0, "jitter_sec": 0.2})
+            assert rate_limit.get_szse_limiter().min_interval == 1.0
+            assert rate_limit.get_szse_limiter().jitter == 0.2
+        finally:
+            main._apply_rate_limit({})

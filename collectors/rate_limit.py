@@ -9,6 +9,8 @@
     - 进程内单例 + 互斥锁，线程安全；Web 采集线程与调度线程共用同一节流器。
     - 默认 min_interval=0（不节流），完全兼容既有测试与本地Mock；
       仅在 main._collect / _retry_failed 从 config.fetch 显式配置后生效。
+    - 深交所使用独立节流器，可按 config.fetch.szse_min_interval_sec /
+      szse_jitter_sec 配置更长间隔，不拖慢上交所与净值接口。
     - 抖动 (jitter) 让间隔不再机械固定，进一步规避规律性识别。
 """
 from __future__ import annotations
@@ -56,14 +58,30 @@ class RateLimiter:
 # 进程内默认节流器；默认不节流，由采集入口按配置开启。
 _default = RateLimiter()
 
+# 深交所专用节流器：fund.szse.cn 对连续请求更敏感，使用独立的更长间隔，
+# 避免被全局 ETF/净值请求的短间隔带上节奏后被 RemoteDisconnected 断连。
+_szse = RateLimiter()
+
 
 def get_limiter() -> RateLimiter:
     return _default
+
+
+def get_szse_limiter() -> RateLimiter:
+    return _szse
 
 
 def configure(min_interval: float | None = None, jitter: float | None = None) -> None:
     _default.configure(min_interval, jitter)
 
 
+def configure_szse(min_interval: float | None = None, jitter: float | None = None) -> None:
+    _szse.configure(min_interval, jitter)
+
+
 def wait() -> None:
     _default.wait()
+
+
+def wait_szse() -> None:
+    _szse.wait()

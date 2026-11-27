@@ -31,7 +31,10 @@ from collectors.trade import collect_trade
 from collectors.etf import fetch_nav, get_trade_dates
 from collectors.index import INDEX_CATALOG
 from collectors.macro import CODE_TO_IFACE
-from collectors.rate_limit import configure as configure_rate_limit
+from collectors.rate_limit import (
+    configure as configure_rate_limit,
+    configure_szse as configure_szse_rate_limit,
+)
 from collectors.trade_calendar import resolve_default_end
 from exporter import export_results, prune_snapshots
 from monitor import Monitor, format_failure_detail
@@ -190,10 +193,18 @@ def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str])
 
 
 def _apply_rate_limit(fetch_cfg: dict) -> None:
-    """按配置启用请求节流（最小间隔 + 抖动），默认关闭以兼容测试。"""
+    """按配置启用请求节流（最小间隔 + 抖动），默认关闭以兼容测试。
+
+    深交所有独立节流器：未单独配置时沿用全局值；生产配置给出更长间隔，
+    专门降低 fund.szse.cn 的断连概率。
+    """
     configure_rate_limit(
         min_interval=fetch_cfg.get("min_interval_sec", 0.0),
         jitter=fetch_cfg.get("jitter_sec", 0.0),
+    )
+    configure_szse_rate_limit(
+        min_interval=fetch_cfg.get("szse_min_interval_sec", fetch_cfg.get("min_interval_sec", 0.0)),
+        jitter=fetch_cfg.get("szse_jitter_sec", fetch_cfg.get("jitter_sec", 0.0)),
     )
 
 
@@ -272,6 +283,8 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 default_trade_days=etf_days,
                 retries=retries,
                 retry_interval=retry_interval,
+                szse_retries=fetch_cfg.get("szse_retry"),
+                szse_retry_interval=fetch_cfg.get("szse_retry_interval_sec"),
                 timeout=timeout,
                 monitor=monitor,
                 listing_dates=listing_dates,
@@ -530,6 +543,8 @@ def _retry_failed(config: dict, monitor_cfg: dict,
             codes=codes, start_date=start, end_date=end,
             default_trade_days=n,
             retries=retries, retry_interval=retry_interval, timeout=timeout,
+            szse_retries=fetch_cfg.get("szse_retry"),
+            szse_retry_interval=fetch_cfg.get("szse_retry_interval_sec"),
             monitor=retry_monitor,
             sse_dates=None if full_etf_retry else (sse_dates or None),
             szse_range=None if full_etf_retry else szse_range,
@@ -624,6 +639,7 @@ def collect_interface(
     db_path = _db_path(config)
     monitor = Monitor(BASE_DIR, run_type="interface", history_path=history_path, db_path=db_path)
     fetch_cfg = config.get("fetch", {})
+    _apply_rate_limit(fetch_cfg)
     retries = fetch_cfg.get("retry", 3)
     retry_interval = fetch_cfg.get("retry_interval_sec", 2)
     timeout = fetch_cfg.get("timeout_sec", 15)
@@ -677,6 +693,8 @@ def collect_interface(
             codes=target_codes, start_date=s_date, end_date=e_date,
             default_trade_days=int(etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS) or _ETF_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, timeout=timeout,
+            szse_retries=fetch_cfg.get("szse_retry"),
+            szse_retry_interval=fetch_cfg.get("szse_retry_interval_sec"),
             monitor=monitor, listing_dates=listing_dates,
             szse_fallback=_etf_szse_fallback(config, target_codes),
         )

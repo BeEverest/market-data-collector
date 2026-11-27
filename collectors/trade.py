@@ -217,6 +217,14 @@ def _collect_margin(start_date: str, end_date: str, *, retries: int,
     return out
 
 
+def _snapshot_market_closed(now: datetime | None = None) -> bool:
+    """本地是否已过收盘且为工作日；盘中/周末不调用实时快照接口。"""
+    now = now or datetime.now()
+    if now.date().weekday() >= 5:
+        return False
+    return now.hour > 15 or (now.hour == 15 and now.minute >= 0)
+
+
 def _snapshot_trade_date(df: pd.DataFrame, now: datetime | None = None) -> str:
     """快照所属交易日。
 
@@ -245,6 +253,14 @@ def _collect_snapshot(start_date: str, end_date: str, *, retries: int,
     import akshare as ak
 
     started = time.time()
+    if not _snapshot_market_closed():
+        # 盘中/周末的实时快照不稳定且不含日期；直接跳过，避免无效请求和错标交易日。
+        reason = "未收盘或周末，跳过实时快照；不回退错标到上一交易日"
+        _report(monitor, key="trade.stock_snapshot", name="全A个股快照",
+                status="success", params={"skipped": True, "reason": reason},
+                started=started, attempts=0, rows=0)
+        logger.info("[交易·快照] %s", reason)
+        return pd.DataFrame()
     raw = _fetch_with_retry(ak.stock_zh_a_spot,
                             retries=retries, retry_interval=retry_interval)
     if raw.empty:

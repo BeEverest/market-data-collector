@@ -25,7 +25,7 @@ import requests
 
 from monitor import describe_failure, describe_http_failure
 from storage import ETF_FALLBACK_SOURCE
-from collectors.rate_limit import wait as throttle_wait
+from collectors.rate_limit import wait as throttle_wait, wait_szse as szse_throttle_wait
 from collectors.trade_calendar import resolve_default_end
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,11 @@ NAV_URL = "https://api.fund.eastmoney.com/f10/lsjz"
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 SSE_HEADERS = {"Referer": "https://www.sse.com.cn/", "User-Agent": _UA}
-SZSE_HEADERS = {"Referer": "https://fund.szse.cn/marketdata/fundslist/index.html", "User-Agent": _UA}
+SZSE_HEADERS = {
+    "Referer": "https://fund.szse.cn/marketdata/fundslist/index.html",
+    "User-Agent": _UA,
+    "Connection": "close",  # 避免复用被服务端提前关闭的 keep-alive 连接
+}
 NAV_HEADERS = {"Referer": "https://fundf10.eastmoney.com/", "User-Agent": _UA}
 
 OUTPUT_COLUMNS = [
@@ -366,7 +370,8 @@ def fetch_szse_shares(
 
     for attempt in range(1, retries + 1):
         try:
-            throttle_wait()
+            # 深交所单独限速：不与上交所/净值请求共用短间隔，降低 RemoteDisconnected 概率。
+            szse_throttle_wait()
             response = sess.get(SZSE_URL, params=params, headers=SZSE_HEADERS, timeout=timeout)
             response.raise_for_status()
             df = pd.read_excel(io.BytesIO(response.content), engine="openpyxl", dtype={"基金代码": str})
@@ -534,6 +539,8 @@ def collect_etf(
     nav_codes: list[str] | None = None,
     listing_dates: dict[str, str] | None = None,
     szse_fallback: pd.DataFrame | None = None,
+    szse_retries: int | None = None,
+    szse_retry_interval: float | None = None,
 ) -> pd.DataFrame:
     """按交易日采集指定 ETF 的份额、单位净值与规模。
 
@@ -545,8 +552,11 @@ def collect_etf(
                       传入的 dict 会被原地补全解析结果，供调用方持久化。
       szse_fallback - 深交所接口失败时沿用的已落库份额；带「沿用已落库」标记，
                       入库时 DO NOTHING，不计新增、不覆盖原数据。
+      szse_retries / szse_retry_interval - 深交所专用重试次数与退避基数；留空沿用全局值。
     """
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    szse_retry_count = int(szse_retries if szse_retries is not None else retries)
+    szse_retry_sec = float(szse_retry_interval if szse_retry_interval is not None else retry_interval)
     logger.info("  [ETF采集] 开始：%d 只标的（沪 %d / 深 %d）",
                 len(codes),
                 sum(1 for c in codes if str(c).strip().startswith(("5", "6"))),
@@ -619,7 +629,7 @@ def collect_etf(
     sz_start, sz_end = szse_range if szse_range else (effective_start or start, end)
     logger.info("  ├ 深交所份额：一次区间查询 %s ~ %s，深市标的 %d 只（%s）",
                 sz_start, sz_end, len(sz_targets), ", ".join(sz_targets) or "无")
-    szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session,
+    szse_frame = fetch_szse_shares(sz_start, sz_end, szse_retry_count, szse_retry_sec, timeout, session,
                                    monitor=monitor, target_codes=sz_targets,
                                    fallback_frame=szse_fallback)
 

@@ -431,6 +431,30 @@ async function loadStatus(){
     if(hdStatus) hdStatus.textContent = S.running ? '采集中…' : '系统正常';
   } catch(e){ console.warn('loadStatus', e); }
 }
+/* 定时刷新采集数量卡片：只拉 /api/status 并原地更新数值，不重建视图、不打断操作。
+   定时调度在后台完成时页面可能一直停留，此函数保证卡片数据自动跟上。 */
+async function refreshSummaryCards(){
+  try {
+    const d = await api('/api/status');
+    S.macro_rows=d.macro_rows; S.index_rows=d.index_rows; S.etf_rows=d.etf_rows;
+    S.trade_raw_rows=d.trade_raw_rows||{}; S.today_new=d.today_new||{}; S.today_written=d.today_written||{};
+    const wrap = byId('summaryCardsWrap'); if(!wrap) return;
+    const stock = {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()};
+    const net = todayNewByCat();
+    const cards = wrap.querySelectorAll('.summary-card');
+    [[stock,0],[net,1]].forEach(([vals,i])=>{
+      const card = cards[i]; if(!card) return;
+      card.querySelectorAll('[data-summary-cell]').forEach(el=>{
+        const k = el.getAttribute('data-summary-cell');
+        const nv = fmt(vals?.[k]??0);
+        if(el.textContent !== nv) el.textContent = nv;
+      });
+    });
+    const written = Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0);
+    const sub = cards[1]?.querySelector('.summary-sub');
+    if(sub) sub.textContent = `今日真实净新增（幂等去重）· 写入累计 ${fmt(written)}（含重复采集，仅对账）`;
+  } catch(e){ /* 刷新失败静默，下次重试 */ }
+}
 async function loadCatalog(){
   try {
     CATALOG = await api('/api/catalog');
@@ -755,8 +779,19 @@ function todayNewByCat(){
 }
 const summaryCard = (ic, color, title, sub, vals) => `<div class="col-sm-12 col-lg-6"><div class="stat-card stat-card-wide summary-card">
   <div class="summary-head"><div class="ic ${color}"><i class="ti ti-${ic}"></i></div><div><div class="summary-title">${title}</div><div class="summary-sub">${sub}</div></div></div>
-  <div class="summary-grid">${CATS4.map(([k,lbl,icn,tc])=>`<div class="summary-cell"><div class="summary-cell-ic ${icn}"><i class="ti ti-${ic}"></i></div><div class="summary-cell-val ${tc}">${fmt(vals?.[k]??0)}</div><div class="summary-cell-lbl">${lbl}</div></div>`).join('')}</div>
+  <div class="summary-grid">${CATS4.map(([k,lbl,icn,tc])=>`<div class="summary-cell"><div class="summary-cell-ic ${icn}"><i class="ti ti-${ic}"></i></div><div class="summary-cell-val ${tc}" data-summary-cell="${k}">${fmt(vals?.[k]??0)}</div><div class="summary-cell-lbl">${lbl}</div></div>`).join('')}</div>
 </div></div>`;
+/* 两张汇总卡片统一构造，供初次渲染与定时刷新共用 */
+function summaryCards(){
+  const written = Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0);
+  return statRow(
+    summaryCard('database','ic-blue','采集数量汇总','已入库数据行数 · 交易按6张原始表合计',
+      {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()})
+    + summaryCard('calendar-plus','ic-purple','当日净新增汇总',
+      `今日真实净新增（幂等去重）· 写入累计 ${fmt(written)}（含重复采集，仅对账）`,
+      todayNewByCat())
+  );
+}
 const head = (t,d) => ''; // 视图标题条已移除，导航与卡片标题即可标识当前位置
 const tbl = (cols, rows, opts={}) => {
   const headCells = [...(opts.expand?['<th></th>']:[]), ...cols.map((c,ci)=>{
@@ -1067,13 +1102,7 @@ const VIEWS = {
 
   /* ---------------- 数据采集：控制台 ---------------- */
   console:()=>head('采集控制台','整体 / 部分采集 · 3 种采样方式 + 实时监控')
-    + statRow(
-        summaryCard('database','ic-blue','采集数量汇总','已入库数据行数 · 交易按5张原始表合计',
-          {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()})
-        + summaryCard('calendar-plus','ic-purple','当日净新增汇总',
-          `今日净新增（升级后统计）· 写入累计 ${fmt(Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0))}（含重复采集）`,
-          todayNewByCat())
-      )
+    + `<div id="summaryCardsWrap">${summaryCards()}</div>`
     +`<div class="card"><div class="card-header"><h3><i class="ti ti-player-play" style="color:var(--blue)"></i> 采样方式</h3><span class="sub">整体 / 部分 · 参数行内可调 · 提交任务后查看实时日志</span></div>
       <div class="card-body"><div style="display:grid;grid-template-columns:150px 70px 1fr 70px 90px;gap:8px;font-size:10px;color:#8fa6c4;padding:0 0 6px;border-bottom:1px solid #243a59"><span>采样方式</span><span>范围</span><span>参数（行内可调）</span><span>启用</span><span>操作</span></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#3b5bdb"><i class="ti ti-refresh"></i></div><div><b>全量采集</b><small>宏观 + ETF + 指数</small></div></div><span class="scope-pill scope-whole">整体</span>
@@ -2355,6 +2384,8 @@ bindEvents();
   // 预热日志面板
   pollLiveOnce();
   setInterval(pollLiveOnce, 4000);
+  // 采集数量卡片定时刷新（后台定时调度完成后自动更新，无需手动刷新页面）
+  setInterval(()=>{ if(curView==='console') refreshSummaryCards(); }, 15000);
 })();
 
 

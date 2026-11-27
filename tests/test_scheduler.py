@@ -89,6 +89,22 @@ class TestScheduleWindows:
         # 交易/最后交易日非空
         assert data["trade"]["start"] and data["last_trade_date"]
 
+    def test_etf_window_ignores_persisted_end_date(self, client, monkeypatch, db_path):
+        """ETF 窗口只看交易日锚点，持久化 start_date/end_date 不再优先。"""
+        import storage
+
+        storage.save_etf_config(db_path, {
+            "codes": ["510050"], "start_date": "1999-01-01",
+            "end_date": "1999-12-31", "default_trade_days": 1,
+        })
+        last = "2026-11-25"
+        monkeypatch.setattr(web_app, "last_completed_trade_day", lambda: last)
+
+        data = client.get("/api/schedule-windows").json()
+        assert data["etf"]["end"] == last
+        assert data["etf"]["days"] == 1
+        assert data["etf"]["start"] != "1999-01-01"
+
     def test_frontend_no_hardcoded_windows(self):
         """前端采集窗口表格不得再写死"最近 N 个交易日"。"""
         js = (web_app.BASE_DIR / "static" / "app.js").read_text(encoding="utf-8")

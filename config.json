@@ -59,11 +59,11 @@
       "588050": "2020-09-28"
     },
     "_listing_dates_help": "各基金上市/成立日缓存 {代码: YYYY-MM-DD}，采集时自动解析并回写；早于该日的交易日数据自动忽略",
-    "start_date": "2026-11-25",
-    "end_date": "2026-11-25",
+    "start_date": "",
+    "end_date": "",
     "default_trade_days": 1,
-    "_date_help": "日频数据区间 YYYY-MM-DD。两者留空时：end_date 取最近一个已结束交易日（凌晨采集当天必为空），start_date 取往前 default_trade_days 个交易日。",
-    "_default_trade_days_help": "留空日期时默认采集最近 N 个交易日，默认 1（仅最近一个已结束交易日）；N 越大，上交所逐日查询耗时越长。注意：SQLite 为权威源，Web 改配置会同步回写此处。",
+    "_date_help": "ETF 默认不读取 start_date/end_date，始终按最近一个已结束交易日采集；精确采集请在前端表单临时填写日期。",
+    "_default_trade_days_help": "默认采集最近 N 个已结束交易日，默认 1（仅最近一个已结束交易日）；N 越大，上交所逐日查询耗时越长。注意：SQLite 为权威源，Web 改配置会同步回写此处。",
     "tags": {
       "159629": [
         "汇金",

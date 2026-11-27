@@ -552,7 +552,7 @@ def collect_etf(
                 sum(1 for c in codes if str(c).strip().startswith(("5", "6"))),
                 sum(1 for c in codes if str(c).strip().startswith(("1", "8"))))
     # 默认锚定到最近一个已结束交易日：凌晨运行时"今天"数据尚未披露，采当天必为空。
-    # 显式 end_date 始终最高优先。
+    # 调用方显式传入的 end_date 最高优先；配置文件中的持久化结束日不再传入采集器。
     end = resolve_default_end(end_date)
     logger.info("  ├ 采集区间结束日：%s%s", end,
                 "（显式指定）" if (end_date or "").strip() else "（最近已结束交易日）")

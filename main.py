@@ -202,8 +202,8 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
              macro_current_month: bool = False) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """执行一次完整采集，返回 (宏观_df, ETF_df, 指数_df)。
 
-    start_date / end_date 为全量采集的日期范围覆盖值；留空时回退到各类别的
-    配置默认值。这样一次采集即可让宏观、ETF、指数三类统一按指定范围抓取。
+    start_date / end_date 为全量采集的日期范围覆盖值；宏观/指数留空时回退到
+    各类别配置默认值，ETF 留空时始终按最近已结束交易日，不读取配置里的 start/end。
 
     macro_current_month=True 时宏观按「滚动窗口」采集：end=当月 YYYY-MM，
     start=往前 lookback 个月（取自 scheduler.macro_lookback_months，默认 2），
@@ -256,17 +256,20 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
         if not codes:
             logger.warning("[ETF] 配置中未填写 ETF 代码（etf.codes），将不采集 ETF 数据")
         else:
-            etf_start = start_date or etf_cfg.get("start_date") or None
-            etf_end = end_date or etf_cfg.get("end_date") or None
+            # ETF 默认始终锚定最近已结束交易日；持久化 start_date/end_date 不参与默认采集。
+            # 仅全量采集入参显式传入的日期范围生效（精确采集另有入口）。
+            etf_start = start_date or None
+            etf_end = end_date or None
+            etf_days = int(etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS) or _ETF_DEFAULT_DAYS)
             logger.info("[ETF] 开始采集：%d 只标的 | 日期 %s ~ %s | 默认交易日数=%d | 重试=%d 次",
-                        len(codes), etf_start or "默认（最近1个交易日）", etf_end or "默认（最近已结束交易日）",
-                        etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS), retries)
+                        len(codes), etf_start or f"默认（最近{etf_days}个交易日）", etf_end or "默认（最近已结束交易日）",
+                        etf_days, retries)
             listing_dates = etf_cfg.get("listing_dates", {}) or {}
             etf_df = collect_etf(
                 codes=codes,
                 start_date=etf_start,
                 end_date=etf_end,
-                default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
+                default_trade_days=etf_days,
                 retries=retries,
                 retry_interval=retry_interval,
                 timeout=timeout,
@@ -509,13 +512,11 @@ def _retry_failed(config: dict, monitor_cfg: dict,
 
     etf_cfg = config.get("etf", {})
     codes = etf_cfg.get("codes", [])
-    end = resolve_default_end(etf_cfg.get("end_date"))
-    if etf_cfg.get("start_date"):
-        start = etf_cfg["start_date"]
-    else:
-        history = get_trade_dates("2000-01-01", end)
-        n = etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS)
-        start = history[-n] if len(history) >= n else (history[0] if history else end)
+    # 失败重跑同样按交易日锚点取默认窗口，不读取持久化 start_date/end_date。
+    end = resolve_default_end(None)
+    history = get_trade_dates("2000-01-01", end)
+    n = int(etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS) or _ETF_DEFAULT_DAYS)
+    start = history[-n] if len(history) >= n else (history[0] if history else end)
 
     etf_patch = pd.DataFrame()
     if full_etf_retry or sse_dates or szse_range:
@@ -523,7 +524,7 @@ def _retry_failed(config: dict, monitor_cfg: dict,
         logger.info("重跑 ETF 份额接口：sse_dates=%d, szse_range=%s", len(sse_dates), szse_range)
         etf_patch = collect_etf(
             codes=codes, start_date=start, end_date=end,
-            default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
+            default_trade_days=n,
             retries=retries, retry_interval=retry_interval, timeout=timeout,
             monitor=retry_monitor,
             sse_dates=None if full_etf_retry else (sse_dates or None),
@@ -611,7 +612,7 @@ def collect_interface(
 
     category : 'macro'（宏观指标代码）/ 'etf'（基金代码）/ 'index'（指数代码）
     codes    : 指标代码 / 基金代码 / 指数代码列表；为空时该类别全部目标
-    start/end: 宏观为 YYYY-MM，ETF/指数为 YYYY-MM-DD；留空表示按配置默认区间
+    start/end: 宏观为 YYYY-MM，ETF/指数为 YYYY-MM-DD；ETF 留空按最近已结束交易日，不读配置日期
     返回执行摘要文本，供 Web 任务展示。
     """
     monitor_cfg = config.get("monitor", {})
@@ -664,12 +665,13 @@ def collect_interface(
     elif category == "etf":
         etf_cfg = config.get("etf", {})
         target_codes = [str(c).strip().zfill(6) for c in codes] if codes else list(etf_cfg.get("codes", []))
-        s_date = start or etf_cfg.get("start_date") or None
-        e_date = end or etf_cfg.get("end_date") or None
+        # 精确采集仅信任表单临时传入的 start/end；持久化 ETF 日期不参与默认窗口。
+        s_date = start or None
+        e_date = end or None
         listing_dates = etf_cfg.get("listing_dates", {}) or {}
         patch = collect_etf(
             codes=target_codes, start_date=s_date, end_date=e_date,
-            default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
+            default_trade_days=int(etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS) or _ETF_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, timeout=timeout,
             monitor=monitor, listing_dates=listing_dates,
             szse_fallback=_etf_szse_fallback(config, target_codes),

@@ -51,9 +51,12 @@ class TestCollectDateOverride:
     def test_falls_back_to_config_when_no_override(self, monkeypatch, range_config):
         captured = _capture_collectors(monkeypatch)
         main._collect(range_config, Mock())
-        for name in ("collect_macro", "collect_etf", "collect_index"):
+        # 宏观/指数仍回退配置；ETF 已改为最近交易日，不再读取持久化 start/end。
+        for name in ("collect_macro", "collect_index"):
             assert captured[name]["start_date"] == "2020-01-01"
             assert captured[name]["end_date"] == "2020-12-31"
+        assert captured["collect_etf"]["start_date"] is None
+        assert captured["collect_etf"]["end_date"] is None
 
     def test_partial_override_only_replaces_given_side(self, monkeypatch, range_config):
         captured = _capture_collectors(monkeypatch)
@@ -61,7 +64,25 @@ class TestCollectDateOverride:
         assert captured["collect_macro"]["start_date"] == "2023-05-01"
         assert captured["collect_macro"]["end_date"] == "2020-12-31"
         assert captured["collect_etf"]["start_date"] == "2023-05-01"
-        assert captured["collect_etf"]["end_date"] == "2020-12-31"
+        assert captured["collect_etf"]["end_date"] is None
+
+    def test_exact_etf_uses_form_range_not_persisted_config(self, monkeypatch, range_config):
+        """精确采集：表单临时日期仍有效，但配置中的持久化 ETF 日期不再兜底。"""
+        captured = _capture_collectors(monkeypatch)
+        monkeypatch.setattr(main, "_read_base", lambda category, cfg: pd.DataFrame())
+        monkeypatch.setattr(main, "_finish", lambda *a, **k: None)
+        monkeypatch.setattr(main, "_merge_patch", lambda base, patch, keys: patch)
+
+        main.collect_interface(
+            range_config, "etf", [], start="2024-03-01", end="2024-03-05"
+        )
+        assert captured["collect_etf"]["start_date"] == "2024-03-01"
+        assert captured["collect_etf"]["end_date"] == "2024-03-05"
+
+        captured.clear()
+        main.collect_interface(range_config, "etf", [], start=None, end=None)
+        assert captured["collect_etf"]["start_date"] is None
+        assert captured["collect_etf"]["end_date"] is None
 
     def test_single_category_still_respects_its_own_flags(self, monkeypatch, range_config):
         captured = _capture_collectors(monkeypatch)

@@ -1147,7 +1147,7 @@ const VIEWS = {
       <button class="btn btn-primary btn-sm" data-act="etfcfg-filter"><i class="ti ti-search"></i> 查询</button>
       <button class="btn btn-sm" data-act="etfcfg-reset">重置</button>
       <span class="hint" style="margin-left:6px" data-etfcfg-count></span></div>
-    <div class="ctl-params"><label class="prec-field">默认区间 <input class="prec-input" type="date" value="${esc(ETF_CFG.start_date||LAST)}" style="width:125px" data-etf-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(ETF_CFG.end_date||LAST)}" style="width:125px" data-etf-end><label class="prec-field">最近 <input class="prec-input" type="number" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:60px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认最近一个交易日</span></div>
+    <div class="ctl-params"><label class="prec-field">默认最近交易日数 <input class="prec-input" type="number" min="1" max="500" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:70px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认采集始终锚定最近已结束交易日；不读取配置里的 start_date/end_date，精确采集请在采集控制台临时填日期</span></div>
     <div data-etfcfg-table style="margin-top:12px"></div>
     <div data-etfcfg-pager></div></div></div>`,
 
@@ -2295,9 +2295,9 @@ async function saveEtfConfigUI(view, quiet){
   const payload = {
     codes:(ETF_CFG.items||[]).map(x=>x.code),
     tags:{}, names:{}, listing_dates:{},
-    start_date:valOr('[data-etf-start]', ETF_CFG.start_date),
-    end_date:valOr('[data-etf-end]', ETF_CFG.end_date),
-    default_trade_days:Number(valOr('[data-etf-days]', ETF_CFG.default_trade_days)) || Number(ETF_CFG.default_trade_days||60),
+    start_date:'',
+    end_date:'',
+    default_trade_days:Number(valOr('[data-etf-days]', ETF_CFG.default_trade_days)) || 1,
   };
   (ETF_CFG.items||[]).forEach(x=>{
     if(x.tags?.length) payload.tags[x.code]=x.tags;

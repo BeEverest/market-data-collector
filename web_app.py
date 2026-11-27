@@ -2000,7 +2000,7 @@ def _schedule_windows() -> dict:
 
     与采集链路（main._collect / collect_etf / collect_index）使用同一配置源与交易日锚点：
     - 宏观：当前月往前 N 个月（N=scheduler.macro_lookback_months），含当月
-    - ETF：最近 default_trade_days 个已结束交易日；显式 end_date 优先
+    - ETF：最近 default_trade_days 个已结束交易日；不读取持久化 start_date/end_date
     - 指数：最近一个已结束交易日（start=end）
     - 交易：最近一个已结束交易日（start=end）
     """
@@ -2017,21 +2017,19 @@ def _schedule_windows() -> dict:
 
     last_day = last_completed_trade_day()
 
-    # ETF 窗口：显式配置优先，否则按最近 N 个已结束交易日（用交易日锚点描述）
+    # ETF 窗口：不再读取持久化 start_date/end_date，统一按交易日锚点回推最近 N 个已结束交易日
     etf = storage.get_etf_config(db_path, cfg.get("etf", {})) if db_path else cfg.get("etf", {})
     etf_days = int(etf.get("default_trade_days", storage.DEFAULT_ETF_CONFIG["default_trade_days"]) or 1)
-    etf_start = (etf.get("start_date") or "").strip()
-    etf_end = (etf.get("end_date") or "").strip() or last_day
-    if not etf_start:
-        # 交易日历可用时给出真实起止，否则以"最近 N 个交易日 + 结束日"描述
-        try:
-            import akshare as _ak
-            import pandas as _pd
-            cal = _pd.to_datetime(_ak.tool_trade_date_hist_sina()["trade_date"], errors="coerce")
-            days = sorted(d.strftime("%Y-%m-%d") for d in cal if _pd.notna(d) and d.strftime("%Y-%m-%d") <= etf_end)
-            etf_start = days[-etf_days] if len(days) >= etf_days else (days[0] if days else etf_end)
-        except Exception:
-            etf_start = f"最近{etf_days}个交易日（起）"
+    etf_end = last_day
+    # 交易日历可用时给出真实起止，否则以"最近 N 个交易日 + 结束日"描述
+    try:
+        import akshare as _ak
+        import pandas as _pd
+        cal = _pd.to_datetime(_ak.tool_trade_date_hist_sina()["trade_date"], errors="coerce")
+        days = sorted(d.strftime("%Y-%m-%d") for d in cal if _pd.notna(d) and d.strftime("%Y-%m-%d") <= etf_end)
+        etf_start = days[-etf_days] if len(days) >= etf_days else (days[0] if days else etf_end)
+    except Exception:
+        etf_start = f"最近{etf_days}个交易日（起）"
 
     # 指数窗口：显式配置优先，否则最近一个已结束交易日
     idx = storage.get_index_config(db_path, cfg.get("index", {})) if db_path else cfg.get("index", {})

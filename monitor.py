@@ -286,7 +286,10 @@ class Monitor:
                 "成功率(%)": round((total - failed) / total * 100, 1),
                 "总耗时(秒)": round(g["duration_sec"].sum(), 2),
             })
-        overview_df = pd.DataFrame(overview).sort_values("运行日期", ascending=False).reset_index(drop=True)
+        # 运行总览按运行时间倒序展示；同一时刻用运行ID稳定倒序，避免同日多批次顺序颠倒。
+        overview_df = (pd.DataFrame(overview)
+                       .sort_values(["运行时间", "运行ID"], ascending=[False, False], na_position="last")
+                       .reset_index(drop=True))
 
         # 2) 失败明细，并标注是否已在后续批次重跑成功
         fails = hist[hist["status"] == "failed"].copy()
@@ -319,14 +322,15 @@ class Monitor:
                 lambda r: failure_task_id(r["interface_key"], r["params"]), axis=1
             )
             fails["失败详情"] = fails.apply(lambda r: format_failure_detail(r), axis=1)
-            fails = fails.sort_values("run_time", ascending=False)
+            # 失败明细同样按运行时间倒序；同一时刻用运行ID稳定倒序。
+            fails = fails.sort_values(["run_time", "run_id"], ascending=[False, False])
             fail_df = fails[[
-                "任务ID", "run_date", "run_id", "category", "interface_name",
+                "任务ID", "run_date", "run_time", "run_id", "category", "interface_name",
                 "params", "attempts", "error", "重跑结果", "失败详情",
             ]].rename(columns={
-                "任务ID": "任务ID", "run_date": "失败日期", "run_id": "运行ID",
-                "category": "类别", "interface_name": "接口名称", "params": "调用参数",
-                "attempts": "尝试次数", "error": "失败原因",
+                "任务ID": "任务ID", "run_date": "失败日期", "run_time": "运行时间",
+                "run_id": "运行ID", "category": "类别", "interface_name": "接口名称",
+                "params": "调用参数", "attempts": "尝试次数", "error": "失败原因",
             }).reset_index(drop=True)
 
         # 3) 接口健康度

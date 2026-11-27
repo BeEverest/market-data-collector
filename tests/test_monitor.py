@@ -169,6 +169,14 @@ class TestReport:
         assert full_run["成功率(%)"] == 50.0
         assert "运行时间" in overview.columns  # 精确到时分秒的运行时刻
         assert str(full_run["运行时间"]).startswith("2026-11-01")
+        times = list(report["运行总览"]["运行时间"])
+        assert times == sorted(times, reverse=True)  # 按运行时间倒序，而非仅按运行日期
+        assert str(times[0]).startswith("2026-11-02 10:00")
+        assert str(times[1]).startswith("2026-11-02 09:00")
+
+        fail_times = list(report["失败明细"]["运行时间"])
+        assert "运行时间" in report["失败明细"].columns
+        assert fail_times == sorted(fail_times, reverse=True)
 
         fails = report["失败明细"].set_index("运行ID")
         assert "已重跑成功" in fails.loc["20261102_090000_full", "重跑结果"]

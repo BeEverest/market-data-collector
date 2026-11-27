@@ -500,6 +500,8 @@ class TestWebPage:
 
         rows = page.locator('#v-mon-failures [data-monitor-table="failures"] tbody tr')
         assert rows.count() == 2
+        headers = page.locator('#v-mon-failures [data-monitor-table="failures"] thead th').all_inner_texts()
+        assert "运行时间" in headers
         assert page._js_errors == []
 
     def test_log_line_uses_record_time(self, page):

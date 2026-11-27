@@ -182,6 +182,8 @@ class TestReadOnlyApis:
         report = client.get("/api/monitor/report").json()
         assert set(report) == {"运行总览", "失败明细", "接口健康度", "调用明细", "采集量统计"}
         assert len(report["调用明细"]) == 4
+        times = [row["运行时间"] for row in report["运行总览"]]
+        assert times == sorted(times, reverse=True)  # 运行总览按运行时间倒序
         assert "采集量统计" in report  # 新增统计 sheet
         tasks = client.get("/api/monitor/failed").json()["tasks"]
         assert len(tasks) == 1
@@ -190,6 +192,7 @@ class TestReadOnlyApis:
     def test_monitor_failure_detail_has_task_id(self, client):
         fails = client.get("/api/monitor/report").json()["失败明细"]
         assert all("任务ID" in row for row in fails)
+        assert all("运行时间" in row for row in fails)
         tid = next(row["任务ID"] for row in fails
                    if row["运行ID"] == "20261102_090000_full")
         assert len(tid) == 12

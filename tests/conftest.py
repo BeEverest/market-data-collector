@@ -13,6 +13,34 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_live_log_file_for_all_tests(tmp_path_factory):
+    """全局隔离实时日志：任何测试的 logger 都不得写进生产 output/live_monitor.log。
+
+    LiveLogHandler 常驻 root logger，采集器测试里的模拟异常会经 root 写入实时日志，
+    前端会把这些假失败展示成真实采集失败，但 interface_run 中并无对应记录。
+    这里在会话开始时就把文件、内存缓冲和序号切到临时目录，覆盖所有测试模块。
+    """
+    import itertools
+    from collections import deque
+
+    import web_app
+
+    patch = pytest.MonkeyPatch()
+    log_dir = tmp_path_factory.mktemp("live_log")
+    patch.setattr(web_app, "LIVE_LOG_FILE", log_dir / "live_monitor.log")
+    patch.setattr(web_app, "LIVE_LOG_MAX_BYTES", 15 * 1024 * 1024)
+    patch.setattr(web_app, "LIVE_LOG_LIMIT", 10000)
+    patch.setattr(web_app, "_live_logs", deque(maxlen=10000))
+    patch.setattr(web_app, "_live_seq", itertools.count(1))
+    patch.setattr(web_app, "_live_loaded", False)
+    patch.setattr(web_app, "_live_file_lines", 0)
+    try:
+        yield
+    finally:
+        patch.undo()
+
+
 @pytest.fixture
 def base(tmp_path: Path) -> Path:
     """隔离的项目根目录。"""

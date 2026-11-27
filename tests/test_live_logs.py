@@ -4,6 +4,7 @@ from __future__ import annotations
 import itertools
 import logging
 from collections import deque
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -48,6 +49,14 @@ def clean_buffer():
 class TestLiveLogBuffer:
     def test_handler_attached_to_root(self):
         assert any(isinstance(h, web_app.LiveLogHandler) for h in web_app._root_logger.handlers)
+
+    def test_global_isolation_keeps_production_file_untouched(self, clean_buffer):
+        """任意测试 logger 写入临时日志，不得污染生产实时日志。"""
+        production = Path(web_app.BASE_DIR) / "output" / "live_monitor.log"
+        before = production.read_bytes() if production.exists() else b""
+        logging.getLogger("collectors.trade").warning("全局日志隔离校验")
+        after = production.read_bytes() if production.exists() else b""
+        assert after == before
 
     def test_emit_captures_all_threads_logger(self, clean_buffer):
         # 用任意 logger 名（模拟采集器子 logger），都应传播到 root 被捕获

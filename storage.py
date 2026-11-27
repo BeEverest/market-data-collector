@@ -4,7 +4,8 @@
 - 宏观业务主键：{指标代码}_{YYYYMM}，例如 M2_202610
 - ETF 业务主键：{6位基金代码}_{YYYYMMDD}，例如 510050_20261020
 - 监控业务主键：{run_id}_{接口键}_{运行时间}_{序号}
-- 所有写入使用 ON CONFLICT(biz_key) DO UPDATE，保证重跑/精确采集不产生重复行。
+- 正常写入使用 ON CONFLICT(biz_key) DO UPDATE，保证重跑/精确采集不产生重复行；
+  深交所失败兜底行例外，仅对已存在业务键 DO NOTHING，禁止覆盖或凭空新增采集原数据。
 """
 from __future__ import annotations
 
@@ -29,6 +30,10 @@ ETF_COLUMNS = [
     "基金代码", "基金简称", "交易市场", "交易日期",
     "份额(亿份)", "单位净值(元)", "规模(亿元)", "数据源", "采集时间",
 ]
+# 深交所接口断连时用于展示的兜底行标记：已存在业务键必须 DO NOTHING，
+# 禁止把兜底行当作新采集写回覆盖原数据，也不计入采集量统计。
+ETF_FALLBACK_MARK = "沿用已落库"
+ETF_FALLBACK_SOURCE = "深交所接口失败-沿用已落库（不计新增）"
 INDEX_COLUMNS = [
     "指数代码", "指数名称", "交易日期",
     "开盘价", "最高价", "最低价", "收盘价", "成交量", "涨跌幅(%)",
@@ -548,34 +553,71 @@ def upsert_etf(path: str | Path, df: pd.DataFrame, run_id: str = "") -> int:
     if df is None or df.empty:
         return 0
     init_schema(path)
-    records = []
-    for _, r in df.iterrows():
+    records: list[tuple] = []
+    fallback_records: list[tuple] = []
+    fallback_mask = (
+        df["数据源"].astype(str).str.contains(ETF_FALLBACK_MARK, na=False)
+        if "数据源" in df.columns else pd.Series(False, index=df.index)
+    )
+    for idx, (_, r) in enumerate(df.iterrows()):
         code = str(r.get("基金代码", "")).strip().zfill(6)
         date = str(r.get("交易日期", ""))[:10]
         if not code or not date:
             continue
-        records.append((
+        record = (
             etf_biz_key(code, date), code, str(r.get("基金简称", "") or ""),
             str(r.get("交易市场", "") or ""), date,
             _clean(r.get("份额(亿份)")), _clean(r.get("单位净值(元)")),
             _clean(r.get("规模(亿元)")), str(r.get("数据源", "") or ""),
             str(r.get("采集时间", "") or ""), run_id,
-        ))
-    with connect(path) as conn:
-        conn.executemany(
-            """
-            INSERT INTO etf_observation(
-                biz_key, code, name, market, trade_date, shares, nav, market_cap,
-                source, collected_at, run_id
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(biz_key) DO UPDATE SET
-                name=excluded.name, market=excluded.market,
-                shares=excluded.shares, nav=excluded.nav, market_cap=excluded.market_cap,
-                source=excluded.source, collected_at=excluded.collected_at,
-                run_id=excluded.run_id
-            """,
-            records,
         )
+        if bool(fallback_mask.iloc[idx]):
+            fallback_records.append(record)
+        else:
+            records.append(record)
+    with connect(path) as conn:
+        if records:
+            conn.executemany(
+                """
+                INSERT INTO etf_observation(
+                    biz_key, code, name, market, trade_date, shares, nav, market_cap,
+                    source, collected_at, run_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(biz_key) DO UPDATE SET
+                    name=excluded.name, market=excluded.market,
+                    shares=excluded.shares, nav=excluded.nav, market_cap=excluded.market_cap,
+                    source=excluded.source, collected_at=excluded.collected_at,
+                    run_id=excluded.run_id
+                """,
+                records,
+            )
+        if fallback_records:
+            # 兜底行只用于本次展示/计算：先确认业务键已存在，再原样跳过。
+            # 这样既不会更新原行，也不会凭空插入库里没有的历史日。
+            keys = [rec[0] for rec in fallback_records]
+            existing: set[str] = set()
+            for offset in range(0, len(keys), 500):
+                chunk = keys[offset:offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                existing.update(
+                    row["biz_key"] for row in conn.execute(
+                        f"SELECT biz_key FROM etf_observation WHERE biz_key IN ({placeholders})",
+                        chunk,
+                    )
+                )
+            existing_records = [rec for rec in fallback_records if rec[0] in existing]
+            if existing_records:
+                conn.executemany(
+                    """
+                    INSERT INTO etf_observation(
+                        biz_key, code, name, market, trade_date, shares, nav, market_cap,
+                        source, collected_at, run_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(biz_key) DO NOTHING
+                    """,
+                    existing_records,
+                )
+    # 返回真实采集写入行数，兜底行不计入本次新增/采集量。
     return len(records)
 
 

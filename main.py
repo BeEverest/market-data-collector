@@ -111,6 +111,27 @@ def _read_base(kind: str, config: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _etf_szse_fallback(config: dict, codes: list[str]) -> pd.DataFrame:
+    """读取已落库深市 ETF 份额，供深交所接口失败时展示兜底。
+
+    返回的仍然是采集原数据字段；真正写库时由 storage.upsert_etf 根据来源标记
+    执行 DO NOTHING，确保这里不会反向覆盖 SQLite 中的原始记录。
+    """
+    targets = {str(c).strip().zfill(6) for c in (codes or []) if str(c).strip()}
+    if not targets:
+        return pd.DataFrame()
+    base = _read_base("etf", config)
+    required = {"基金代码", "基金简称", "交易市场", "交易日期", "份额(亿份)"}
+    if base.empty or not required.issubset(base.columns):
+        return pd.DataFrame()
+    normalized = base["基金代码"].astype(str).str.strip().str.zfill(6)
+    market = base["交易市场"].astype(str).str.upper()
+    out = base[normalized.isin(targets) & market.eq("SZ")].copy()
+    if out.empty:
+        return pd.DataFrame()
+    return out[["基金代码", "基金简称", "交易市场", "交易日期", "份额(亿份)"]]
+
+
 def _save_listing_dates(config: dict, config_path: str = "config.json") -> None:
     """仅把 ETF 上市日期回写配置文件，保留文件当前其它字段。"""
     cfg_path = Path(config_path)
@@ -251,6 +272,7 @@ def _collect(config: dict, monitor: Monitor, *, macro_only=False, etf_only=False
                 timeout=timeout,
                 monitor=monitor,
                 listing_dates=listing_dates,
+                szse_fallback=_etf_szse_fallback(config, codes),
             )
             # 回写新解析的上市日期到配置，避免每次重新请求档案页
             etf_cfg["listing_dates"] = listing_dates
@@ -296,6 +318,11 @@ def _collect_stat_records(monitor: Monitor, macro_df: pd.DataFrame,
     for category, df, code_col, name_col in specs:
         if df is None or df.empty or code_col not in df.columns:
             continue
+        # 深交所失败兜底行只用于展示，不是本次采集结果，不能进入采集量统计。
+        if category == "ETF" and "数据源" in df.columns:
+            df = df[~df["数据源"].astype(str).str.contains("沿用已落库", na=False)]
+            if df.empty:
+                continue
         grouped = df.groupby(code_col, dropna=False)
         for code, group in grouped:
             code = str(code)
@@ -374,8 +401,12 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
         monitor.db_path = db_path
         logger.info("  [入库] 步骤 a 保存接口监控记录：%d 条", len(monitor.records))
         monitor.save()
-        logger.info("  [入库] 步骤 b 写入业务表：宏观 %d / ETF %d / 指数 %d 行（业务键幂等）",
-                    len(macro_df), len(etf_df), len(index_df))
+        etf_fallback_rows = (
+            int(etf_df["数据源"].astype(str).str.contains("沿用已落库", na=False).sum())
+            if not etf_df.empty and "数据源" in etf_df.columns else 0
+        )
+        logger.info("  [入库] 步骤 b 写入业务表：宏观 %d / ETF %d / 指数 %d 行（业务键幂等；ETF 兜底 %d 行不写回）",
+                    len(macro_df), len(etf_df), len(index_df), etf_fallback_rows)
         storage.upsert_macro(db_path, macro_df, run_ts)
         storage.upsert_etf(db_path, etf_df, run_ts)
         storage.upsert_index(db_path, index_df, run_ts)
@@ -498,6 +529,7 @@ def _retry_failed(config: dict, monitor_cfg: dict,
             sse_dates=None if full_etf_retry else (sse_dates or None),
             szse_range=None if full_etf_retry else szse_range,
             nav_codes=None,
+            szse_fallback=_etf_szse_fallback(config, codes),
         )
     elif nav_codes:
         # 仅净值失败：只补采净值，份额沿用主数据，避免无谓重采份额引入新故障
@@ -640,6 +672,7 @@ def collect_interface(
             default_trade_days=etf_cfg.get("default_trade_days", _ETF_DEFAULT_DAYS),
             retries=retries, retry_interval=retry_interval, timeout=timeout,
             monitor=monitor, listing_dates=listing_dates,
+            szse_fallback=_etf_szse_fallback(config, target_codes),
         )
         etf_cfg["listing_dates"] = listing_dates
         _save_listing_dates(config)
@@ -651,7 +684,10 @@ def collect_interface(
         etf_final = _merge_patch(etf_base, patch, ["基金代码", "交易日期"])
         if not etf_final.empty and {"份额(亿份)", "单位净值(元)"}.issubset(etf_final.columns):
             etf_final["规模(亿元)"] = etf_final["份额(亿份)"] * etf_final["单位净值(元)"]
-        added_etf = len(patch)
+        if not patch.empty and "数据源" in patch.columns:
+            added_etf = int((~patch["数据源"].astype(str).str.contains("沿用已落库", na=False)).sum())
+        else:
+            added_etf = len(patch)
         macro_final = macro_base
         index_final = index_base
         logger.info("精确采集 ETF：补丁 %d 行，合并后 %d 行", added_etf, len(etf_final))

@@ -83,6 +83,32 @@ class TestUpsert:
         assert total == 3
         assert set(df["基金代码"]) == {"510050", "159915"}
 
+    def test_upsert_etf_fallback_does_not_overwrite_existing_raw(self, db_path, etf_df):
+        """深交所兜底行不得反向覆盖已落库采集原数据，也不得计入写入行数。"""
+        storage.upsert_etf(db_path, etf_df, "run_a")
+        before = storage.read_etf(db_path, code="159915")[1].iloc[0]
+
+        fallback = etf_df[etf_df["基金代码"] == "159915"].copy()
+        fallback["数据源"] = storage.ETF_FALLBACK_SOURCE
+        fallback["份额(亿份)"] = 999.0
+        fallback["单位净值(元)"] = 9.0
+        fallback["规模(亿元)"] = 8991.0
+        fallback["采集时间"] = "2099-01-01 00:00:00"
+        assert storage.upsert_etf(db_path, fallback, "run_b") == 0
+
+        after = storage.read_etf(db_path, code="159915")[1].iloc[0]
+        assert after["份额(亿份)"] == before["份额(亿份)"]
+        assert after["单位净值(元)"] == before["单位净值(元)"]
+        assert after["规模(亿元)"] == before["规模(亿元)"]
+        assert after["采集时间"] == before["采集时间"]
+        assert after["数据源"] == "SZSE+天天基金"
+
+        missing_key = fallback.copy()
+        missing_key["基金代码"] = "159999"
+        assert storage.upsert_etf(db_path, missing_key, "run_c") == 0
+        total_after, _ = storage.read_etf(db_path)
+        assert total_after == 3, "兜底行不得凭空插入库里不存在的历史交易日"
+
     def test_append_interface_runs_uses_generated_biz_key(self, db_path, run_records):
         assert storage.append_interface_runs(db_path, run_records) == 4
         storage.append_interface_runs(db_path, run_records)

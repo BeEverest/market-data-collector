@@ -587,17 +587,28 @@ def collect_macro(
             return _fetch(ak, fn_name, monitor=monitor, retries=retries,
                           retry_interval=retry_interval, only=None, params=call_params)
 
+        def _clip_to_range(d: pd.DataFrame) -> pd.DataFrame:
+            """长周期补全也遵守本次采集窗口；无窗口参数时保留全量。"""
+            if d.empty or not (start_date or end_date):
+                return d
+            mask = pd.Series(True, index=d.index)
+            if start_date:
+                mask &= d["日期"] >= start_date
+            if end_date:
+                mask &= d["日期"] <= end_date
+            return d[mask]
+
         extra: list[pd.DataFrame] = []
         if only is None or "macro_rmb_loan" in only or LONG_LOAN_IFACE in only:
-            d = build_long_loan_balance(fetch_helper, fetch_time)
+            d = _clip_to_range(build_long_loan_balance(fetch_helper, fetch_time))
             if not d.empty:
                 extra.append(d)
         if only is None or "macro_rmb_deposit" in only or LONG_DEPOSIT_IFACE in only:
-            d = build_long_hh_deposit(fetch_helper, fetch_time)
+            d = _clip_to_range(build_long_hh_deposit(fetch_helper, fetch_time))
             if not d.empty:
                 extra.append(d)
         if only is None or RETAIL_IFACE in only:
-            d = build_retail_jan_feb(fetch_helper, fetch_time)
+            d = _clip_to_range(build_retail_jan_feb(fetch_helper, fetch_time))
             if not d.empty:
                 extra.append(d)
         if extra:

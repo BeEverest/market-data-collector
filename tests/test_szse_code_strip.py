@@ -10,6 +10,7 @@ import io
 from unittest.mock import Mock
 
 import pandas as pd
+import requests
 
 from collectors import etf
 
@@ -70,3 +71,45 @@ class TestSzseCodeStrip:
             target_codes=["159915"],
         )
         assert set(out["基金代码"]) == {"159915"}
+
+    def test_remote_disconnect_uses_stored_fallback_and_marks_no_new_row(self):
+        """接口断连时沿用已落库份额，但必须标记不写回、不计新增。"""
+        sess = Mock()
+        sess.get.side_effect = requests.ConnectionError(
+            "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+        )
+        monitor = Mock()
+        fallback = pd.DataFrame([{
+            "基金代码": "159629", "基金简称": "中证1000ETF富", "交易市场": "SZ",
+            "交易日期": "2026-11-25", "份额(亿份)": 8.09252663,
+        }])
+        out = etf.fetch_szse_shares(
+            "2026-11-25", "2026-11-25", retries=1, session=sess,
+            target_codes=["159629"], fallback_frame=fallback, monitor=monitor,
+        )
+
+        assert len(out) == 1
+        assert out.iloc[0]["基金代码"] == "159629"
+        assert out.iloc[0]["交易日期"] == "2026-11-25"
+        assert out.iloc[0]["数据源"] == "深交所接口失败-沿用已落库（不计新增）"
+        record = monitor.record.call_args.kwargs
+        assert record["status"] == "failed"
+        assert "已沿用已落库份额 1 行" in record["error"]
+
+    def test_success_response_does_not_use_fallback(self):
+        """接口成功时不能把兜底数据混入本次采集结果。"""
+        sess = Mock()
+        sess.get.return_value = _xlsx_response([
+            {"日期": "2026-11-20", "基金代码": "159845  ",
+             "基金简称": "中证1000ETF华夏", "基金规模(份)": 2388425606.0},
+        ])
+        fallback = pd.DataFrame([{
+            "基金代码": "159629", "基金简称": "中证1000ETF富", "交易市场": "SZ",
+            "交易日期": "2026-11-20", "份额(亿份)": 8.0,
+        }])
+        out = etf.fetch_szse_shares(
+            "2026-11-20", "2026-11-20", retries=1, session=sess,
+            target_codes=["159845", "159629"], fallback_frame=fallback,
+        )
+        assert set(out["基金代码"]) == {"159845"}
+        assert "数据源" not in out.columns

@@ -67,6 +67,34 @@ class TestLongHistory:
         assert feb26["同比(%)"] == pytest.approx(2.8)
         assert feb26["数值"] == pytest.approx(86078.9 - 43039.45, abs=0.01)
 
+    def test_collect_macro_long_history_respects_window(self, monkeypatch):
+        """长周期补全必须与普通宏观指标一样遵守采集窗口。"""
+        inc = pd.DataFrame({
+            "月份": ["2026年10月份", "2026年09月份"],
+            "当月": [9500.0, 8000.0],
+        })
+        cur = pd.DataFrame({
+            "月份": ["2026-10", "2026-11"],
+            "累计人民币贷款-总额": [2487269.61, 2508526.52],
+        })
+
+        def fake_fetch(ak, fn_name, **kwargs):
+            if fn_name == "macro_china_new_financial_credit":
+                return inc.copy()
+            if fn_name == "macro_rmb_loan":
+                return cur.copy()
+            return pd.DataFrame()
+
+        monkeypatch.setattr(m, "_fetch", fake_fetch)
+        df = m.collect_macro(
+            start_date="2026-10", end_date="2026-11",
+            only={"macro_rmb_loan"}, sa_mom_map={}, sfr_stock_map={},
+        )
+        assert set(df["日期"]) == {"2026-10", "2026-11"}
+        row = df[df["日期"] == "2026-10"].iloc[0]
+        assert "长周期重建" in row["数据源"]
+        assert not (df["数据源"].astype(str).str.contains("长周期重建") & (df["日期"] == "2026-09")).any()
+
 
 class TestGoldAnomaly:
     def test_big_disclosure_jump_skipped(self, macro_df):

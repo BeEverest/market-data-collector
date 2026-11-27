@@ -24,6 +24,7 @@ import pandas as pd
 import requests
 
 from monitor import describe_failure, describe_http_failure
+from storage import ETF_FALLBACK_SOURCE
 from collectors.rate_limit import wait as throttle_wait
 from collectors.trade_calendar import resolve_default_end
 
@@ -67,6 +68,41 @@ def _empty_shares() -> pd.DataFrame:
 
 def _empty_nav() -> pd.DataFrame:
     return pd.DataFrame(columns=_NAV_COLUMNS)
+
+
+def _fallback_szse_shares(
+    fallback_frame: pd.DataFrame | None,
+    start: str,
+    end: str,
+    target_codes: list[str] | None,
+) -> pd.DataFrame:
+    """把已落库的深市份额整理成可展示的兜底行；只加来源标记，不伪装成新采集。"""
+    if fallback_frame is None or fallback_frame.empty:
+        return _empty_shares()
+    required = {"基金代码", "交易日期", "份额(亿份)"}
+    if not required.issubset(fallback_frame.columns):
+        return _empty_shares()
+
+    out = fallback_frame.copy()
+    out["基金代码"] = (
+        out["基金代码"].astype(str).str.strip().str.replace(r"\D", "", regex=True).str.zfill(6)
+    )
+    out["交易日期"] = pd.to_datetime(out["交易日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["份额(亿份)"] = pd.to_numeric(out["份额(亿份)"], errors="coerce")
+    out["基金简称"] = out.get("基金简称", "").astype(str) if "基金简称" in out.columns else ""
+    out["交易市场"] = "SZ"
+    out = out[_SHARE_COLUMNS].dropna(subset=["交易日期", "份额(亿份)"])
+    if target_codes:
+        targets = {str(c).strip().zfill(6) for c in target_codes}
+        out = out[out["基金代码"].isin(targets)]
+    if start:
+        out = out[out["交易日期"] >= start]
+    if end:
+        out = out[out["交易日期"] <= end]
+    if out.empty:
+        return _empty_shares()
+    out["数据源"] = ETF_FALLBACK_SOURCE
+    return out[_SHARE_COLUMNS + ["数据源"]].reset_index(drop=True)
 
 
 def _report(monitor, *, key: str, name: str, status: str, params: dict,
@@ -304,11 +340,15 @@ def fetch_szse_shares(
     *,
     monitor=None,
     target_codes: list[str] | None = None,
+    fallback_frame: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """获取深交所日期区间内全部 ETF 每日份额（一次请求可返回多日）。
 
     target_codes 为本批次关注的标的，仅用于在失败时明确列出「受影响的标的」，
     便于监控看板定位问题范围；不参与请求参数，也不过滤返回结果。
+
+    fallback_frame 为调用方传入的已落库份额。仅当接口重试全部失败时使用，且会
+    标记「沿用已落库」；该标记保证入库时 DO NOTHING、不计新增、不覆盖原数据。
     """
     sess = session or requests.Session()
     targets_label = ", ".join(sorted(set(str(c).zfill(6) for c in (target_codes or [])))) or "未指定"
@@ -362,6 +402,26 @@ def fetch_szse_shares(
             if attempt < retries:
                 time.sleep(retry_interval * (2 ** (attempt - 1)))
 
+    error_text = describe_http_failure(
+        last_exc, url=SZSE_URL,
+        response_text=_response_snippet(last_exc),
+        extra=f"受影响标的={targets_label}",
+    )
+    fallback = _fallback_szse_shares(fallback_frame, start, end, target_codes)
+    if not fallback.empty:
+        error_text += f" | 已沿用已落库份额 {len(fallback)} 行（不写回、不计新增）"
+        logger.warning(
+            "深交所 %s ~ %s 份额采集失败（受影响标的：%s）：%s；已沿用已落库份额 %d 行",
+            start, end, targets_label, last_exc, len(fallback),
+        )
+        _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
+                status="failed", params={
+                    "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
+                    "catalog_id": params["CATALOGID"], "showtype": params["SHOWTYPE"],
+                    "jjlb": params["jjlb"], "受影响标的": targets_label,
+                }, started=started, attempts=retries, rows=0, error=error_text)
+        return fallback
+
     _report(monitor, key="etf.szse_shares", name=f"深交所ETF份额({start}~{end})",
             status="failed", params={
                 "start": start, "end": end, "market": "SZ", "url": SZSE_URL,
@@ -369,11 +429,7 @@ def fetch_szse_shares(
                 "jjlb": params["jjlb"], "受影响标的": targets_label,
             }, started=started,
             attempts=retries,
-            error=describe_http_failure(
-                last_exc, url=SZSE_URL,
-                response_text=_response_snippet(last_exc),
-                extra=f"受影响标的={targets_label}",
-            ))
+            error=error_text)
     logger.warning("深交所 %s ~ %s 份额采集失败（受影响标的：%s）：%s",
                    start, end, targets_label, last_exc)
     return _empty_shares()
@@ -477,6 +533,7 @@ def collect_etf(
     szse_range: tuple[str, str] | None = None,
     nav_codes: list[str] | None = None,
     listing_dates: dict[str, str] | None = None,
+    szse_fallback: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """按交易日采集指定 ETF 的份额、单位净值与规模。
 
@@ -486,6 +543,8 @@ def collect_etf(
       nav_codes  - 仅采集这些基金的日净值（None=全部目标基金）
       listing_dates - {基金代码: 上市/成立日}；早于该日期的交易日记录会被忽略。
                       传入的 dict 会被原地补全解析结果，供调用方持久化。
+      szse_fallback - 深交所接口失败时沿用的已落库份额；带「沿用已落库」标记，
+                      入库时 DO NOTHING，不计新增、不覆盖原数据。
     """
     fetch_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info("  [ETF采集] 开始：%d 只标的（沪 %d / 深 %d）",
@@ -561,7 +620,8 @@ def collect_etf(
     logger.info("  ├ 深交所份额：一次区间查询 %s ~ %s，深市标的 %d 只（%s）",
                 sz_start, sz_end, len(sz_targets), ", ".join(sz_targets) or "无")
     szse_frame = fetch_szse_shares(sz_start, sz_end, retries, retry_interval, timeout, session,
-                                   monitor=monitor, target_codes=sz_targets)
+                                   monitor=monitor, target_codes=sz_targets,
+                                   fallback_frame=szse_fallback)
 
     frames = sse_frames + ([szse_frame] if not szse_frame.empty else [])
     if not frames:
@@ -617,7 +677,14 @@ def collect_etf(
         if ignored:
             logger.info("已忽略早于上市日的记录 %d 行", ignored)
     merged["规模(亿元)"] = merged["份额(亿份)"] * merged["单位净值(元)"]
-    merged["数据源"] = "份额：交易所（上交所/深交所）；净值：天天基金（东方财富）"
+    if "数据源" in merged.columns:
+        inherited = merged["数据源"].fillna("").astype(str)
+        default_source = "份额：交易所（上交所/深交所）；净值：天天基金（东方财富）"
+        merged["数据源"] = inherited.where(
+            inherited.str.contains("沿用已落库", na=False), default_source
+        )
+    else:
+        merged["数据源"] = "份额：交易所（上交所/深交所）；净值：天天基金（东方财富）"
     merged["采集时间"] = fetch_time
 
     result = merged[OUTPUT_COLUMNS].sort_values(

@@ -20,11 +20,14 @@ def client(base, config_file, monkeypatch):
 
 class TestSchedulerRunType:
     @pytest.mark.parametrize("run_type", ["full", "macro", "etf", "index"])
-    def test_all_ui_run_types_are_accepted(self, client, run_type):
+    def test_all_ui_run_types_are_accepted(self, client, run_type, db_path):
         r = client.post("/api/scheduler", json={"run_type": run_type})
         assert r.status_code == 200
         assert r.json()["config"]["run_type"] == run_type
-        # 确认已落盘
+        # 唯一真相源：SQLite scheduler_config
+        import storage
+        assert storage.get_scheduler_config(db_path)["run_type"] == run_type
+        # config.json 仅作镜像
         cfg = json.loads(web_app.CONFIG_PATH.read_text(encoding="utf-8"))
         assert cfg["scheduler"]["run_type"] == run_type
 
@@ -33,11 +36,34 @@ class TestSchedulerRunType:
         assert r.status_code == 400
         assert "full/macro/etf/index" in r.json()["detail"]
 
-    def test_enable_and_time_roundtrip(self, client):
+    def test_enable_and_time_roundtrip(self, client, db_path):
         r = client.post("/api/scheduler", json={"enabled": True, "time": "09:15", "run_type": "index"})
         assert r.status_code == 200
         data = client.get("/api/scheduler").json()
         assert data["enabled"] is True and data["time"] == "09:15" and data["run_type"] == "index"
+        # 改写 config.json 镜像为其他值，读取仍以 SQLite 为准（证明无硬编码/无镜像依赖）
+        import storage
+        assert storage.get_scheduler_config(db_path)["time"] == "09:15"
+        mirror = json.loads(web_app.CONFIG_PATH.read_text(encoding="utf-8"))
+        mirror["scheduler"]["time"] = "23:59"
+        web_app.CONFIG_PATH.write_text(json.dumps(mirror, ensure_ascii=False), encoding="utf-8")
+        assert client.get("/api/scheduler").json()["time"] == "09:15"
+
+    def test_sqlite_is_source_of_truth_on_startup(self, client, db_path):
+        """预置 SQLite 配置，即使 config.json 是旧值，读取也应以 SQLite 为准。"""
+        import storage
+        storage.save_scheduler_config(db_path, {
+            "enabled": True, "time": "06:45", "run_type": "macro", "macro_lookback_months": 3,
+        })
+        data = client.get("/api/scheduler").json()
+        assert data["time"] == "06:45" and data["run_type"] == "macro"
+        assert data["macro_lookback_months"] == 3
+
+    def test_no_hardcoded_schedule_time_in_frontend(self):
+        """前端不得再硬编码 03:17：调度配置必须来自 API。"""
+        js = (web_app.BASE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        assert "03:17" not in js
+        assert "031700" not in js
 
 
 def test_scheduled_collection_recomputes_derived(base, config_file, monkeypatch):

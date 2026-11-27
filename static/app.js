@@ -84,7 +84,7 @@ const postJSON = (url, payload) => api(url, {method:'POST', headers:{'Content-Ty
 /* 全局数据：从真实 API 加载后填充（视图函数读取这些变量） */
 let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows:0, macro_indicators:0,
   etf_rows:0, etf_codes:0, index_rows:0, index_codes:0, trade_rows:0, trade_raw_rows:{},
-  today_new:{}, scheduler:{enabled:true,time:'03:17',run_type:'full',macro_lookback_months:2,next_run:'-'},
+  today_new:{}, scheduler:{enabled:false,time:'',run_type:'full',macro_lookback_months:2,next_run:'-',history:[]},
   running:false, server_time:'', last_trade_date:'' };
 let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
 let LAST = '', WEEK_START = '';
@@ -1206,9 +1206,14 @@ const VIEWS = {
     (CATALOG.macro||[]).slice(0,12).forEach(x=>timeRows.push([
       `　└ ${esc(x.name)}`, esc(x.code), esc(x.granularity||'月度'), `${mw.start} ~ ${mw.end}`,
     ]));
+    const schedHistory = (S.scheduler?.history||[]).map(h=>[
+      esc(h.run_time||'—'), esc(h.run_id||'—'), '全量',
+      `<span class="tag ${h.status==='failed'?'failed':'success'}">${h.status==='failed'?'失败':'成功'}</span>`,
+      String(h.calls ?? '—'), `${h.duration_sec ?? '—'}s`,
+    ]);
     return head('任务调度','每日定时调度 · 采集完成后自动增量重算')+`<div class="trigger-grid" style="grid-template-columns:1fr">
-    <div class="trigger-card"><div class="tc-head"><h3>⏰ 定时调度 <small>主触发</small></h3><label class="switch-row"><input type="checkbox" id="dpSchedEnabled" checked> 启用</label></div><div class="tc-body">
-      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" id="dpSchedTime" value="03:17" style="width:100px"><label>采集范围</label><select class="form-select" id="dpSchedRunType" style="width:160px"><option value="full">全量 full</option><option value="macro">仅宏观 macro（滚动窗口）</option><option value="etf">仅 ETF etf</option><option value="index">仅指数 index</option></select><label>宏观回溯月数</label><input class="prec-input" type="number" id="dpSchedLookback" min="0" max="12" value="${lb}" style="width:64px"><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
+    <div class="trigger-card"><div class="tc-head"><h3>⏰ 定时调度 <small>主触发</small></h3><label class="switch-row"><input type="checkbox" id="dpSchedEnabled" ${S.scheduler?.enabled?'checked':''}> 启用</label></div><div class="tc-body">
+      <div class="tc-row"><label>触发时刻</label><input class="prec-input" type="time" id="dpSchedTime" value="${esc(S.scheduler?.time||'')}" style="width:100px"><label>采集范围</label><select class="form-select" id="dpSchedRunType" style="width:160px">${[['full','全量 full'],['macro','仅宏观 macro（滚动窗口）'],['etf','仅 ETF etf'],['index','仅指数 index']].map(([v,l])=>`<option value="${v}" ${S.scheduler?.run_type===v?'selected':''}>${l}</option>`).join('')}</select><label>宏观回溯月数</label><input class="prec-input" type="number" id="dpSchedLookback" min="0" max="12" value="${lb}" style="width:64px"><label>下次运行</label><span class="hint" id="dpSchedNext">${S.scheduler.next_run}</span></div>
       <div class="tc-row tc-row-foot"><button class="btn btn-primary btn-sm" data-act="save-sched">保存调度配置</button><button class="btn btn-sm" data-act="sched-run-now"><i class="ti ti-player-play"></i> 立即触发一次</button></div>
       <div class="tc-note">宏观采集窗口：${mw.start} ~ ${mw.end}（当前月 + 前 ${lb} 月）· 采集完成后自动增量重算 · 每天仅触发一次 · 忙时跳过不补跑</div></div></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-info-circle" style="color:var(--muted)"></i> 触发逻辑说明</h3></div><div class="card-body"><ol class="steps">
@@ -1220,12 +1225,7 @@ const VIEWS = {
       <li><b>看板联动</b>：数据看板各图直接读取派生表，重算完成后自动生效。</li>
     </ol></div></div>
     <div class="card"><div class="card-header"><h3><i class="ti ti-clock" style="color:var(--blue)"></i> 各指标默认采集时间</h3><span class="sub">定时调度下每类数据的采集口径与窗口</span></div><div class="card-body">${tbl(['数据类别 / 指标','代码 / 频率','默认采集窗口','说明'], timeRows)}</div></div>
-    <div class="card"><div class="card-header"><h3><i class="ti ti-history" style="color:var(--blue)"></i> 最近调度记录</h3></div><div class="card-body">${tbl(['触发时间','运行ID','范围','状态','调用数','耗时'],[
-      ['2026-11-26 03:17','20261126_031700_scheduled','全量','<span class="tag success">成功</span>','284','186s'],
-      ['2026-11-25 03:17','20261125_031700_scheduled','全量','<span class="tag success">成功</span>','284','191s'],
-      ['2026-11-24 03:17','20261124_031700_scheduled','全量','<span class="tag warn">跳过</span>','—','今日已触发'],
-      ['2026-11-23 03:17','20261123_031700_scheduled','全量','<span class="tag success">成功</span>','282','188s'],
-    ])}</div></div>`;
+    <div class="card"><div class="card-header"><h3><i class="ti ti-history" style="color:var(--blue)"></i> 最近调度记录</h3><span class="sub">来自实时监控记录</span></div><div class="card-body">${schedHistory.length ? tbl(['触发时间','运行ID','范围','状态','调用数','耗时'], schedHistory) : '<div class="hint">暂无定时调度记录，到点触发后将在此显示。</div>'}</div></div>`;
   },
 };
 
@@ -1982,7 +1982,7 @@ function handleAction(act, btn, e){
     }
     case 'save-sched': {
       const en = $('#dpSchedEnabled')?.checked ?? true;
-      const tm = $('#dpSchedTime')?.value || '03:17';
+      const tm = $('#dpSchedTime')?.value || S.scheduler?.time || '08:30';
       const rt = $('#dpSchedRunType')?.value || 'full';
       const lb = Number($('#dpSchedLookback')?.value ?? 2);
       postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt, macro_lookback_months:lb})

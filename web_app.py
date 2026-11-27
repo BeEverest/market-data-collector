@@ -244,6 +244,35 @@ def _cfg() -> dict:
     return load_config(str(CONFIG_PATH))
 
 
+def _scheduler_cfg() -> dict:
+    """调度配置唯一真相源：SQLite scheduler_config；config.json 仅作首次种子与镜像。
+
+    SQLite 无记录时用 config.json 的 scheduler 段作为种子；用户在界面保存后写入 SQLite，
+    调度器/接口/看板均从此处读取，做到"改了立即生效、重启不丢、前端不硬编码"。
+    """
+    cfg = _cfg()
+    seed = cfg.get("scheduler", {}) or {}
+    db_path = _db_path(cfg)
+    if not db_path:
+        return dict(seed)
+    return storage.get_scheduler_config(db_path, seed)
+
+
+def _scheduler_cfg_view() -> dict:
+    """调度配置对外视图：配置值 + 下次运行 + 真实调度历史（无硬编码）。"""
+    cfg = _scheduler_cfg()
+    db_path = _db_path(_cfg())
+    history = storage.scheduled_run_history(db_path) if db_path else []
+    return {
+        "enabled": bool(cfg.get("enabled")),
+        "time": cfg.get("time", "08:30"),
+        "run_type": cfg.get("run_type", "full"),
+        "macro_lookback_months": int(cfg.get("macro_lookback_months", 2)),
+        "next_run": scheduler.next_run(),
+        "history": history,
+    }
+
+
 def _history_path(config: dict) -> Path:
     return BASE_DIR / config.get("monitor", {}).get(
         "history_file", "output/monitor/interface_runs.jsonl"
@@ -669,7 +698,7 @@ class Scheduler:
     def _loop(self):
         while not self._stop.wait(15):
             try:
-                cfg = _cfg().get("scheduler", {})
+                cfg = _scheduler_cfg()
                 now = datetime.now()
                 today = now.strftime("%Y-%m-%d")
                 hhmm = now.strftime("%H:%M")
@@ -716,7 +745,7 @@ class Scheduler:
                 logger.warning("调度器异常：%s", exc)
 
     def next_run(self) -> str:
-        cfg = _cfg().get("scheduler", {})
+        cfg = _scheduler_cfg()
         if not cfg.get("enabled"):
             return "未启用"
         now = datetime.now()
@@ -802,13 +831,7 @@ def api_status():
         "trade_raw_rows": trade_raw_rows,
         "today_new": today_new,
         "today_written": today_written,
-        "scheduler": {
-            "enabled": bool(cfg.get("scheduler", {}).get("enabled")),
-            "time": cfg.get("scheduler", {}).get("time", "08:30"),
-            "run_type": cfg.get("scheduler", {}).get("run_type", "full"),
-            "macro_lookback_months": int(cfg.get("scheduler", {}).get("macro_lookback_months", 2)),
-            "next_run": scheduler.next_run(),
-        },
+        "scheduler": _scheduler_cfg_view(),
         "running": _run_lock.locked(),
         "server_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         # 最近一个已结束交易日，供前端「精确采集 / 全量采集」日期默认取值
@@ -1974,14 +1997,7 @@ def api_retry_task(payload: dict):
 
 @app.get("/api/scheduler")
 def api_scheduler_get():
-    cfg = _cfg().get("scheduler", {})
-    return {
-        "enabled": bool(cfg.get("enabled")),
-        "time": cfg.get("time", "08:30"),
-        "run_type": cfg.get("run_type", "full"),
-        "macro_lookback_months": int(cfg.get("macro_lookback_months", 2)),
-        "next_run": scheduler.next_run(),
-    }
+    return _scheduler_cfg_view()
 
 
 @app.post("/api/scheduler")
@@ -1989,14 +2005,14 @@ def api_scheduler_set(payload: dict):
     allowed = {"enabled", "time", "run_type", "macro_lookback_months"}
     if not any(k in payload for k in allowed):
         raise HTTPException(status_code=400, detail="无有效配置项")
-    cfg = _cfg()
-    sched = cfg.setdefault("scheduler", {})
+    # 唯一真相源：SQLite scheduler_config。config.json 保留镜像用于回滚基线。
+    sched = _scheduler_cfg()
     if "enabled" in payload:
         sched["enabled"] = bool(payload["enabled"])
     if "time" in payload:
         try:
             datetime.strptime(payload["time"], "%H:%M")
-        except ValueError:
+        except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="时间格式应为 HH:MM")
         sched["time"] = payload["time"]
     if "run_type" in payload:
@@ -2011,6 +2027,12 @@ def api_scheduler_set(payload: dict):
         if not 0 <= lookback <= 12:
             raise HTTPException(status_code=400, detail="macro_lookback_months 应为 0~12 的整数")
         sched["macro_lookback_months"] = lookback
+    cfg = _cfg()
+    db_path = _db_path(cfg)
+    if db_path:
+        storage.save_scheduler_config(db_path, sched)
+    # 同步镜像回 config.json（仅回滚基线，运行时以 SQLite 为准）
+    cfg["scheduler"] = sched
     CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     return {"ok": True, "config": api_scheduler_get()}
 

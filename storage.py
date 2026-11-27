@@ -156,6 +156,12 @@ def init_schema(path: str | Path) -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS scheduler_config (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
@@ -1278,6 +1284,39 @@ def read_interface_runs(path: str | Path) -> pd.DataFrame:
     return pd.DataFrame([dict(r) for r in rows], columns=[c for c in RUN_FIELDS if c != "biz_key"])
 
 
+def scheduled_run_history(path: str | Path, limit: int = 5) -> list[dict]:
+    """最近 N 次定时调度运行（按 run_id 聚合），供任务调度页真实展示，杜绝硬编码。
+
+    定时调度的交易采集以 run_type='scheduled' 落监控；按 run_id 聚合运行时间、
+    接口调用数、失败数与耗时，返回给前端表格。
+    """
+    init_schema(path)
+    with connect(path) as conn:
+        rows = conn.execute(
+            """SELECT run_id, MAX(run_time) AS run_time, COUNT(*) AS calls,
+                      SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                      SUM(COALESCE(duration_sec, 0)) AS duration
+               FROM interface_run
+               WHERE run_type='scheduled'
+               GROUP BY run_id
+               ORDER BY run_time DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+    result = []
+    for r in rows:
+        failed = int(r["failed"] or 0)
+        result.append({
+            "run_time": r["run_time"],
+            "run_id": r["run_id"],
+            "status": "failed" if failed else "success",
+            "calls": int(r["calls"] or 0),
+            "failed": failed,
+            "duration_sec": round(float(r["duration"] or 0), 1),
+        })
+    return result
+
+
 def macro_stats(path: str | Path) -> dict[str, dict]:
     init_schema(path)
     with connect(path) as conn:
@@ -1451,6 +1490,44 @@ def save_index_config(path: str | Path, cfg: dict) -> dict:
     with connect(path) as conn:
         conn.execute(
             "INSERT INTO index_config(key, value, updated_at) VALUES('main', ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+            (value, now),
+        )
+    return cfg
+
+
+# ---------- 定时调度配置 ----------
+# 调度配置的唯一真相源：SQLite scheduler_config；config.json 仅作首次种子/回滚基线。
+DEFAULT_SCHEDULER_CONFIG = {
+    "enabled": False,
+    "time": "08:30",
+    "run_type": "full",
+    "macro_lookback_months": 2,
+}
+
+
+def get_scheduler_config(path: str | Path, default: dict | None = None) -> dict:
+    init_schema(path)
+    with connect(path) as conn:
+        row = conn.execute("SELECT value FROM scheduler_config WHERE key='main'").fetchone()
+    base = json.loads(json.dumps(default or DEFAULT_SCHEDULER_CONFIG))
+    if not row:
+        return base
+    try:
+        stored = json.loads(row["value"])
+    except json.JSONDecodeError:
+        stored = {}
+    base.update(stored)
+    return base
+
+
+def save_scheduler_config(path: str | Path, cfg: dict) -> dict:
+    init_schema(path)
+    value = json.dumps(cfg, ensure_ascii=False)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with connect(path) as conn:
+        conn.execute(
+            "INSERT INTO scheduler_config(key, value, updated_at) VALUES('main', ?, ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
             (value, now),
         )
@@ -1635,7 +1712,7 @@ def clean_monitor_data(path: str | Path, start: str | None = None,
 # 采集原数据（观测表 + 交易 *_raw 表）永不进入 clear_all；
 # 观测表的按口径删除只走 clean_data()，且必须由用户在危险操作中显式确认。
 CLEAR_TABLES = [
-    "interface_run", "etf_config", "index_config", "meta", "export_log",
+    "interface_run", "etf_config", "index_config", "scheduler_config", "meta", "export_log",
     "collection_stat", "new_row_log",
 ]
 

@@ -1995,6 +1995,65 @@ def api_retry_task(payload: dict):
     return {"job_id": job_id}
 
 
+def _schedule_windows() -> dict:
+    """按真实配置计算定时调度各类别的采集时间窗口，供前端展示（杜绝硬编码）。
+
+    与采集链路（main._collect / collect_etf / collect_index）使用同一配置源与交易日锚点：
+    - 宏观：当前月往前 N 个月（N=scheduler.macro_lookback_months），含当月
+    - ETF：最近 default_trade_days 个已结束交易日；显式 end_date 优先
+    - 指数：最近一个已结束交易日（start=end）
+    - 交易：最近一个已结束交易日（start=end）
+    """
+    cfg = _cfg()
+    sched = _scheduler_cfg()
+    db_path = _db_path(cfg)
+
+    # 宏观月份窗口
+    lb = max(0, min(int(sched.get("macro_lookback_months", 2) or 0), 12))
+    now = datetime.now()
+    end_month = now.strftime("%Y-%m")
+    total = now.year * 12 + (now.month - 1) - lb
+    start_month = f"{total // 12:04d}-{total % 12 + 1:02d}"
+
+    last_day = last_completed_trade_day()
+
+    # ETF 窗口：显式配置优先，否则按最近 N 个已结束交易日（用交易日锚点描述）
+    etf = storage.get_etf_config(db_path, cfg.get("etf", {})) if db_path else cfg.get("etf", {})
+    etf_days = int(etf.get("default_trade_days", storage.DEFAULT_ETF_CONFIG["default_trade_days"]) or 1)
+    etf_start = (etf.get("start_date") or "").strip()
+    etf_end = (etf.get("end_date") or "").strip() or last_day
+    if not etf_start:
+        # 交易日历可用时给出真实起止，否则以"最近 N 个交易日 + 结束日"描述
+        try:
+            import akshare as _ak
+            import pandas as _pd
+            cal = _pd.to_datetime(_ak.tool_trade_date_hist_sina()["trade_date"], errors="coerce")
+            days = sorted(d.strftime("%Y-%m-%d") for d in cal if _pd.notna(d) and d.strftime("%Y-%m-%d") <= etf_end)
+            etf_start = days[-etf_days] if len(days) >= etf_days else (days[0] if days else etf_end)
+        except Exception:
+            etf_start = f"最近{etf_days}个交易日（起）"
+
+    # 指数窗口：显式配置优先，否则最近一个已结束交易日
+    idx = storage.get_index_config(db_path, cfg.get("index", {})) if db_path else cfg.get("index", {})
+    idx_start = (idx.get("start_date") or "").strip()
+    idx_end = (idx.get("end_date") or "").strip()
+    if not idx_start and not idx_end:
+        idx_start = idx_end = last_day
+
+    return {
+        "macro": {"start": start_month, "end": end_month, "months": lb + 1},
+        "etf": {"start": etf_start, "end": etf_end, "days": etf_days},
+        "index": {"start": idx_start, "end": idx_end},
+        "trade": {"start": last_day, "end": last_day},
+        "last_trade_date": last_day,
+    }
+
+
+@app.get("/api/schedule-windows")
+def api_schedule_windows():
+    return _schedule_windows()
+
+
 @app.get("/api/scheduler")
 def api_scheduler_get():
     return _scheduler_cfg_view()

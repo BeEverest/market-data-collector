@@ -87,6 +87,11 @@ let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows
   today_new:{}, scheduler:{enabled:false,time:'',run_type:'full',macro_lookback_months:2,next_run:'-',history:[]},
   running:false, server_time:'', last_trade_date:'' };
 let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
+/* 定时调度采集窗口：从后端按真实配置计算，前端不硬编码 */
+let SCHED_WINDOWS = {macro:{start:'',end:'',months:1}, etf:{start:'',end:'',days:1}, index:{start:'',end:''}, trade:{start:'',end:''}, last_trade_date:''};
+async function loadScheduleWindows(){
+  try { SCHED_WINDOWS = await api('/api/schedule-windows'); } catch(e){ console.warn('loadScheduleWindows', e); }
+}
 let LAST = '', WEEK_START = '';
 function shiftDate(iso, days){
   if(!iso) return '';
@@ -350,9 +355,11 @@ function openTradeAddModal(){
 }
 
 /* ---------------- 实时监控日志（真实 /api/live-logs + /api/jobs） ---------------- */
-function appendLog(text, level='INFO'){
+function appendLog(text, level='INFO', logTime){
   const body = byId('logBody'); if(!body) return;
-  body.insertAdjacentHTML('beforeend', `<div class="log-line"><span class="t">${now()}</span> <span class="${level}">${esc(text)}</span></div>`);
+  // 优先用日志记录时间（后端落库时刻），仅本地事件无记录时间时才回退到浏览器当前时间
+  const ts = logTime || now();
+  body.insertAdjacentHTML('beforeend', `<div class="log-line"><span class="t">${esc(ts)}</span> <span class="${level}">${esc(text)}</span></div>`);
   const strip = byId('logMarquee'); if(strip){ strip.className = level; strip.textContent = text; }
   const wrap = byId('logBodyWrap'); if(wrap && byId('logAutoScroll')?.checked) wrap.scrollTop = wrap.scrollHeight;
 }
@@ -377,7 +384,7 @@ async function pollLiveOnce(){
     const render = lines.length > 500 ? lines.slice(-500) : lines;
     render.forEach(l=>{
       const lv = String(l.level||'INFO').toUpperCase();
-      appendLog(l.text || l.message || '', ['INFO','OK','WARN','ERROR'].includes(lv)?lv:'INFO');
+      appendLog(l.text || l.message || '', ['INFO','OK','WARN','ERROR'].includes(lv)?lv:'INFO', l.time);
     });
     if(lines.length) liveLogSeq = lines[lines.length-1].seq || liveLogSeq;
     trimLogBody();
@@ -703,7 +710,7 @@ async function loadDashboard(){
   } catch(e){ console.warn('loadDashboard', e); }
 }
 async function loadAllBase(){
-  await Promise.allSettled([loadStatus(), loadCatalog(), loadConfigs(), loadTradeLatest(), loadMonitor()]);
+  await Promise.allSettled([loadStatus(), loadCatalog(), loadConfigs(), loadTradeLatest(), loadMonitor(), loadScheduleWindows()]);
 }
 
 /* ---------------- 导航结构（覆盖原系统全部功能） ---------------- */
@@ -1223,17 +1230,19 @@ const VIEWS = {
   'mon-stats':()=>monitorView('stats'),
 
   tasksched:()=>{
-    const mw = macroSchedWindow();
-    const lb = Number(S.scheduler?.macro_lookback_months ?? 2);
-    // 各指标/类别的默认采集时间窗口（定时调度口径）
+    const W = SCHED_WINDOWS || {};
+    const mw = (W.macro&&W.macro.start) ? W.macro : macroSchedWindow();
+    const lb = Number(W.macro?.months ? W.macro.months-1 : (S.scheduler?.macro_lookback_months ?? 2));
+    const win = (a,b)=> (a||'—') + ' ~ ' + (b||'—');
+    // 各指标/类别采集时间窗口：来自后端 /api/schedule-windows（按真实配置计算，前端不硬编码）
     const timeRows = [
-      ['宏观指标（全部）', `月度 · 次月发布`, `${mw.start} ~ ${mw.end}`, `当前月往前 ${lb} 个月（共 ${lb+1} 期），幂等 upsert；覆盖刚发布的上月数据`],
-      ['ETF 基金（全部）', `日频 · 每交易日`, `最近 ${Number(ETF_CFG.default_trade_days||1)} 个交易日`, `按 etf.default_trade_days，默认最近 1 个已结束交易日`],
-      ['指数日线（全部）', `日频 · 每交易日`, `最近 1 个交易日`, `两日期留空时取最近已结束交易日`],
-      ['交易原始数据（全部）', `日频 · 每交易日`, `最近 1 个交易日`, `交易所 / 两融 / 快照；快照仅当日不可回溯`],
+      ['宏观指标（全部）', `月度 · 次月发布`, win(mw.start,mw.end), `当前月往前 ${lb} 个月（共 ${lb+1} 期），幂等 upsert；覆盖刚发布的上月数据`],
+      ['ETF 基金（全部）', `日频 · 每交易日`, win(W.etf?.start,W.etf?.end), `按 etf.default_trade_days=${W.etf?.days??'—'}，最近已结束交易日`],
+      ['指数日线（全部）', `日频 · 每交易日`, win(W.index?.start,W.index?.end), `显式配置优先，否则取最近已结束交易日`],
+      ['交易原始数据（全部）', `日频 · 每交易日`, win(W.trade?.start,W.trade?.end), `交易所 / 两融 / 快照；快照仅当日不可回溯`],
     ];
     (CATALOG.macro||[]).slice(0,12).forEach(x=>timeRows.push([
-      `　└ ${esc(x.name)}`, esc(x.code), esc(x.granularity||'月度'), `${mw.start} ~ ${mw.end}`,
+      `　└ ${esc(x.name)}`, esc(x.code), esc(x.granularity||'月度'), win(mw.start,mw.end),
     ]));
     const schedHistory = (S.scheduler?.history||[]).map(h=>[
       esc(h.run_time||'—'), esc(h.run_id||'—'), '全量',
@@ -1289,6 +1298,7 @@ function switchView(id){
   if(id==='etfcalc') setTimeout(()=>loadEtfCalc(), 30);
   if(id.startsWith('prev-')) setTimeout(()=>loadPreview(id.replace('prev-','')).then(()=>rerenderView(id)), 30);
   if(id.startsWith('mon-')) setTimeout(()=>loadMonitor().then(()=>rerenderView(id)), 30);
+  if(id==='tasksched') setTimeout(()=>loadScheduleWindows().then(()=>rerenderView('tasksched')), 30);
   window.scrollTo({top:0,behavior:'smooth'});
 }
 /* 数据到达后重渲染当前视图内容（保留激活态） */
@@ -2015,7 +2025,7 @@ function handleAction(act, btn, e){
       const rt = $('#dpSchedRunType')?.value || 'full';
       const lb = Number($('#dpSchedLookback')?.value ?? 2);
       postJSON('/api/scheduler', {enabled:en, time:tm, run_type:rt, macro_lookback_months:lb})
-        .then(()=>{ toast('调度配置已保存','ok'); loadStatus().then(()=>rerenderView('tasksched')); })
+        .then(()=>{ toast('调度配置已保存','ok'); Promise.all([loadStatus(),loadScheduleWindows()]).then(()=>rerenderView('tasksched')); })
         .catch(err=>toast('保存失败：'+err.message,'err'));
       break;
     }

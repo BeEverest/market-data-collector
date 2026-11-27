@@ -498,6 +498,17 @@ class TestWebPage:
         assert rows.count() == 2
         assert page._js_errors == []
 
+    def test_log_line_uses_record_time(self, page):
+        """实时日志时间用日志记录时间，不用浏览器当前时间。"""
+        _switch(page, "console")
+        page.evaluate("""() => {
+          document.getElementById('logBody').innerHTML = '';
+          appendLog('带记录时间的日志', 'INFO', '03:17:42');
+        }""")
+        first = page.locator("#logBody .log-line").last
+        assert "03:17:42" in first.locator(".t").inner_text()
+        assert page._js_errors == []
+
     def test_live_log_panel_scope_and_dom_limit(self, page):
         """实时日志面板：标注 10000 行/15M 落盘滚动，前端最多保留 10000 行。"""
         _switch(page, "console")

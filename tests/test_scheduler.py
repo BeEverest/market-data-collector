@@ -66,6 +66,37 @@ class TestSchedulerRunType:
         assert "031700" not in js
 
 
+class TestScheduleWindows:
+    def test_windows_follow_real_config(self, client, base, config_file, monkeypatch, db_path):
+        """采集窗口必须来自真实配置：宏观回溯月数、指数显式区间、交易日历锚点。"""
+        import storage
+        # 写真实配置：宏观回溯 3 月、指数显式区间、ETF 结束日
+        storage.save_scheduler_config(db_path, {
+            "enabled": True, "time": "09:00", "run_type": "full", "macro_lookback_months": 3,
+        })
+        idx_cfg = storage.get_index_config(db_path, {"start_date": "2020-01-02", "end_date": "2020-12-31"})
+        idx_cfg["start_date"] = "2020-01-02"
+        idx_cfg["end_date"] = "2020-12-31"
+        storage.save_index_config(db_path, idx_cfg)
+
+        data = client.get("/api/schedule-windows").json()
+        # 宏观：当前月起往前 3 个月 = 4 期
+        assert data["macro"]["months"] == 4
+        assert data["macro"]["end"] == web_app.datetime.now().strftime("%Y-%m")
+        # 指数显式区间原样返回
+        assert data["index"]["start"] == "2020-01-02"
+        assert data["index"]["end"] == "2020-12-31"
+        # 交易/最后交易日非空
+        assert data["trade"]["start"] and data["last_trade_date"]
+
+    def test_frontend_no_hardcoded_windows(self):
+        """前端采集窗口表格不得再写死"最近 N 个交易日"。"""
+        js = (web_app.BASE_DIR / "static" / "app.js").read_text(encoding="utf-8")
+        assert "schedule-windows" in js
+        assert "最近 1 个交易日" not in js
+        assert "最近 ${Number(ETF_CFG" not in js
+
+
 def test_scheduled_collection_recomputes_derived(base, config_file, monkeypatch):
     """派生指标由定时调度触发；手动/普通采集不触发。"""
     monkeypatch.setattr(web_app, "CONFIG_PATH", config_file)

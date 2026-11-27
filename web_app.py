@@ -1594,7 +1594,10 @@ def api_macro_config_set(payload: dict):
 
 @app.get("/api/trade/config")
 def api_trade_config_get():
-    """返回交易采集配置：参与采集的原始数据源 + 默认区间 + 可选项清单。"""
+    """返回交易采集配置：参与采集的原始数据源 + 兼容日期字段 + 可选项清单。
+
+    默认采集区间由 /api/schedule-windows 动态给出，不读取这里的兼容日期字段。
+    """
     from collectors.trade import RAW_KEYS, catalog as trade_source_catalog
     cfg = _cfg()
     trade = cfg.get("trade", {})
@@ -1614,7 +1617,7 @@ def api_trade_config_get():
 
 @app.post("/api/trade/config")
 def api_trade_config_set(payload: dict):
-    """更新交易采集配置。sources 仅接受合法原始源代码；可增删。"""
+    """更新交易采集配置。sources 仅接受合法原始源代码；日期字段仅兼容保留，不影响默认窗口。"""
     from collectors.trade import catalog as trade_source_catalog
     cfg = _cfg()
     trade = cfg.setdefault("trade", {})

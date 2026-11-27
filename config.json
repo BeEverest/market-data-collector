@@ -218,10 +218,10 @@
       "breadth",
       "congestion"
     ],
-    "start_date": "2026-11-25",
-    "end_date": "2026-11-25",
+    "start_date": "",
+    "end_date": "",
     "_sources_help": "交易原始数据源：exchange=沪深交易所概况 / margin=两融账户 / snapshot=全A个股快照（派生集中度与涨跌家数）",
-    "_date_help": "交易日区间 YYYY-MM-DD；留空时默认最近一个已结束交易日；快照仅当日不可回溯"
+    "_date_help": "交易默认不读取 start_date/end_date，始终按最近一个已结束交易日采集；精确采集请在前端表单临时填写日期；快照仅当日不可回溯"
   },
   "trade_policy": {
     "margin_ratio": [

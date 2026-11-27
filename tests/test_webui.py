@@ -423,6 +423,10 @@ class TestWebPage:
         page.evaluate("() => { ETF_CFG_STATE.keyword=''; ETF_CFG_STATE.tag=''; ETF_CFG_STATE.page=1; }")
         _switch(page, "etfcfg")
         page.wait_for_selector('#v-etfcfg [data-etfcfg-table] tbody tr')
+        # 采集区间展示来自 /api/schedule-windows，不再显示配置里的旧日期
+        window_text = page.locator("#v-etfcfg [data-etf-window]").inner_text().strip()
+        expected = page.evaluate("() => `${SCHED_WINDOWS.etf.start} ~ ${SCHED_WINDOWS.etf.end}`")
+        assert window_text == expected
         total = page.evaluate("(ETF_CFG.items||[]).length")
         # 默认展示：size=10 时全部标的在一页内
         assert page.locator('#v-etfcfg [data-etfcfg-table] tbody tr').count() == min(total, 10)
@@ -620,11 +624,10 @@ class TestWebPage:
         _switch(page, "tradecfg")
         assert page.locator("#v-tradecfg [data-act=\"trade-add\"]").count() == 1
         assert page.locator("#v-tradecfg [data-act=\"save-trade-config\"]").count() == 1
-        # 采集区间默认最近一个交易日（fixture 未配置 trade 日期，前端回退 LAST）
-        start = page.locator("#v-tradecfg [data-trade-start]").input_value()
-        end = page.locator("#v-tradecfg [data-trade-end]").input_value()
+        # 采集区间由 /api/schedule-windows 动态给出：最近已结束交易日，不再读配置日期
+        window_text = page.locator("#v-tradecfg [data-trade-window]").inner_text().strip()
         last = page.evaluate("LAST")
-        assert start and end and start == end == last
+        assert window_text == f"{last} ~ {last}"
         # catalog 参考表应有 6 类源（含 breadth/congestion/risk_premium）
         cat_text = page.locator("#v-tradecfg").inner_text()
         for code in ("exchange", "margin", "snapshot", "breadth", "congestion", "risk_premium"):

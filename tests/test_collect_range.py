@@ -84,6 +84,27 @@ class TestCollectDateOverride:
         assert captured["collect_etf"]["start_date"] is None
         assert captured["collect_etf"]["end_date"] is None
 
+    def test_trade_default_ignores_persisted_config_range(self, monkeypatch, range_config):
+        """交易默认采集同样不读取持久化日期，只认调用方显式参数。"""
+        captured = {}
+        monkeypatch.setattr(
+            main, "collect_trade",
+            lambda **kw: captured.update(kw) or {"exchange": pd.DataFrame()},
+        )
+        cfg = dict(range_config)
+        cfg["trade"] = {
+            "sources": ["exchange"], "start_date": "2020-01-01", "end_date": "2020-12-31",
+        }
+
+        main.collect_trade_raw(cfg, Mock())
+        assert captured["start_date"] is None
+        assert captured["end_date"] is None
+
+        captured.clear()
+        main.collect_trade_raw(cfg, Mock(), start_date="2024-01-01", end_date="2024-01-02")
+        assert captured["start_date"] == "2024-01-01"
+        assert captured["end_date"] == "2024-01-02"
+
     def test_single_category_still_respects_its_own_flags(self, monkeypatch, range_config):
         captured = _capture_collectors(monkeypatch)
         main._collect(range_config, Mock(), etf_only=True, start_date="2024-01-01")

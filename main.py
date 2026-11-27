@@ -345,13 +345,17 @@ def _collect_stat_records(monitor: Monitor, macro_df: pd.DataFrame,
 
 def collect_trade_raw(config: dict, monitor: Monitor, *, start_date=None, end_date=None,
                       sources: list[str] | None = None) -> dict[str, pd.DataFrame]:
-    """采集交易原始数据（只落库、不计算）。返回六类原始源 DataFrame。"""
+    """采集交易原始数据（只落库、不计算）。返回六类原始源 DataFrame。
+
+    默认不读取持久化的 trade.start_date/end_date，始终按最近已结束交易日采集；
+    精确采集表单临时传入的日期仍然最高优先。
+    """
     fetch_cfg = config.get("fetch", {})
     trade_cfg = config.get("trade", {})
     raw = collect_trade(
         sources=sources or trade_cfg.get("sources") or None,
-        start_date=start_date or trade_cfg.get("start_date") or None,
-        end_date=end_date or trade_cfg.get("end_date") or None,
+        start_date=start_date or None,
+        end_date=end_date or None,
         monitor=monitor,
         retries=fetch_cfg.get("retry", 3),
         retry_interval=fetch_cfg.get("retry_interval_sec", 2),

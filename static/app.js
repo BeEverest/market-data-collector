@@ -1147,7 +1147,7 @@ const VIEWS = {
       <button class="btn btn-primary btn-sm" data-act="etfcfg-filter"><i class="ti ti-search"></i> 查询</button>
       <button class="btn btn-sm" data-act="etfcfg-reset">重置</button>
       <span class="hint" style="margin-left:6px" data-etfcfg-count></span></div>
-    <div class="ctl-params"><label class="prec-field">默认最近交易日数 <input class="prec-input" type="number" min="1" max="500" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:70px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">默认采集始终锚定最近已结束交易日；不读取配置里的 start_date/end_date，精确采集请在采集控制台临时填日期</span></div>
+    <div class="ctl-params"><label class="prec-field">采集区间</label><strong class="hint" data-etf-window>${esc(SCHED_WINDOWS.etf?.start||LAST)} ~ ${esc(SCHED_WINDOWS.etf?.end||LAST)}</strong><label class="prec-field" style="margin-left:12px">默认最近交易日数 <input class="prec-input" type="number" min="1" max="500" value="${Number(ETF_CFG.default_trade_days||1)}" style="width:70px" data-etf-days></label><button class="btn btn-primary btn-sm" data-act="save-config">保存配置</button><span class="hint">采集区间动态锚定最近已结束交易日；不读取配置里的 start_date/end_date，精确采集请在采集控制台临时填日期</span></div>
     <div data-etfcfg-table style="margin-top:12px"></div>
     <div data-etfcfg-pager></div></div></div>`,
 
@@ -1163,7 +1163,7 @@ const VIEWS = {
         <div data-trade-src-table>${tbl(['源代码','数据源名称','接口','单位','粒度','操作'],
           sel.length ? sel.map(c=>{const x=byCode[c]||{};return [c, esc(x.name||c), esc(x.iface||'—'), esc(x.unit||'—'), esc(x.granularity||'—'), `<button class="btn btn-sm" data-act="trade-src-remove" data-code="${esc(c)}">删除</button>`];})
             : [['—','尚未配置交易源，请从上方下拉添加','—','—','—','—']])}</div>
-        <div class="ctl-params" style="margin-top:12px"><label class="prec-field">采集区间 <input class="prec-input" type="date" value="${esc(TRADE_CFG.start_date||LAST)}" style="width:125px" data-trade-start></label><span class="hint">~</span><input class="prec-input" type="date" value="${esc(TRADE_CFG.end_date||LAST)}" style="width:125px" data-trade-end><button class="btn btn-primary btn-sm" data-act="save-trade-config">保存配置</button><span class="hint">默认最近一个交易日；留空 = 动态取最近已结束交易日</span></div>
+        <div class="ctl-params" style="margin-top:12px"><label class="prec-field">采集区间</label><strong class="hint" data-trade-window>${esc(SCHED_WINDOWS.trade?.start||LAST)} ~ ${esc(SCHED_WINDOWS.trade?.end||LAST)}</strong><button class="btn btn-primary btn-sm" data-act="save-trade-config">保存配置</button><span class="hint">动态锚定最近已结束交易日；不读取配置里的 start_date/end_date，精确采集请在采集控制台临时填日期</span></div>
       </div></div>`
       + `<div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 交易源目录（参考）</h3><span class="sub">采集层原始数据源 · 计算层据此派生 11 项交易指标</span></div><div class="card-body">
         <div class="table-responsive">${tbl(['代码','数据源名称','接口','单位','粒度','字段说明','来源'],
@@ -1299,6 +1299,7 @@ function switchView(id){
   if(id.startsWith('prev-')) setTimeout(()=>loadPreview(id.replace('prev-','')).then(()=>rerenderView(id)), 30);
   if(id.startsWith('mon-')) setTimeout(()=>loadMonitor().then(()=>rerenderView(id)), 30);
   if(id==='tasksched') setTimeout(()=>loadScheduleWindows().then(()=>rerenderView('tasksched')), 30);
+  if(id==='etfcfg'||id==='tradecfg') setTimeout(()=>loadScheduleWindows().then(()=>rerenderView(id)), 30);
   window.scrollTo({top:0,behavior:'smooth'});
 }
 /* 数据到达后重渲染当前视图内容（保留激活态） */
@@ -2004,11 +2005,10 @@ function handleAction(act, btn, e){
       break;
     }
     case 'save-trade-config': {
-      const get = s => view?.querySelector(s)?.value||'';
       saveTradeConfigUI({
         sources: TRADE_CFG.sources||[],
-        start_date: get('[data-trade-start]'),
-        end_date: get('[data-trade-end]'),
+        start_date: '',
+        end_date: '',
       });
       break;
     }

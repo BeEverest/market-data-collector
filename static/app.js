@@ -1122,7 +1122,7 @@ const VIEWS = {
         <div class="ctl-params"><select class="form-select" style="width:100px" data-act="prec-cat"><option value="macro">宏观指标</option><option value="etf">ETF 基金</option><option value="index">指数</option><option value="trade">交易（原始）</option></select><span class="hint">→</span><select class="form-select" style="width:150px" data-prec-code>${precCodeOptionsHtml('macro')}</select><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-start><span class="hint">~</span><input class="prec-input" type="date" value="${LAST}" style="width:118px" data-prec-end></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><button class="btn btn-primary btn-sm" data-act="collect-prec">采集所选</button></div></div>
       <div class="ctl-row" style="grid-template-columns:150px 70px 1fr 70px 90px"><div class="ctl-name"><div class="ci" style="background:#c2410c"><i class="ti ti-file-import"></i></div><div><b>文件导入</b><small>份额与规模_代码.xlsx</small></div></div><span class="scope-pill scope-ops">ETF数据</span>
-        <div class="ctl-params"><input class="prec-input" type="file" style="width:220px;font-size:10px" data-import-file><button class="btn btn-sm" data-act="import">导入数据</button></div>
+        <div class="ctl-params"><input class="prec-input" type="file" multiple accept=".xlsx,.xlsm" style="width:220px;font-size:10px" data-import-file><button class="btn btn-sm" data-act="import">导入数据</button></div>
         <div style="text-align:center"><span class="s-always">手动</span></div><div><span class="hint" style="font-size:10px">≤10 文件</span></div></div>
       <div class="log-panel" style="margin-top:12px;display:block"><div class="log-head"><span>实时监控 · 实时日志</span><span class="log-scope">全部线程 · 最近10000行 · 落盘15M滚动</span><div class="log-tools"><label><input type="checkbox" id="logAutoScroll" checked> 自动滚动</label><button class="log-tool" data-act="log-bottom" title="回到底部">↓</button><button class="log-tool" data-act="log-toggle">展开</button><span class="log-dot"></span></div></div>
         <div class="log-strip" data-act="log-toggle"><span class="log-strip-label">最新</span><span id="logMarquee" class="INFO">正在加载实时日志…</span></div>
@@ -2372,7 +2372,9 @@ function bindEvents(){
   });
   document.addEventListener('input', e=>{
     if(e.target.matches('[data-import-file]')) {
-      const f=e.target.files?.[0]; if(f) toast(`已选择文件：${f.name}`,'info');
+      const fs=Array.from(e.target.files||[]);
+      if(fs.length===1) toast(`已选择文件：${fs[0].name}`,'info');
+      else if(fs.length>1) toast(`已选择 ${fs.length} 个文件（最多 10 个）`,'info');
     }
   });
 }

@@ -192,6 +192,89 @@ def _merge_patch(main_df: pd.DataFrame, patch_df: pd.DataFrame, keys: list[str])
     return out.reset_index(drop=True)
 
 
+def _values_equal(a, b) -> bool:
+    """业务字段比较：空值归一、数值/字符串容差；采集时间与 run_id 不参与。"""
+    def _blank(v) -> bool:
+        if v is None:
+            return True
+        try:
+            if pd.isna(v):
+                return True
+        except (TypeError, ValueError):
+            pass
+        return isinstance(v, str) and not v.strip()
+
+    if _blank(a) and _blank(b):
+        return True
+    if _blank(a) or _blank(b):
+        return False
+    try:
+        if float(a) == float(b):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return str(a).strip() == str(b).strip()
+
+
+def _write_change_summary(db_path, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
+                          index_df: pd.DataFrame | None = None) -> dict[str, dict]:
+    """对比待写入数据与库中现状，统计本次新增/更新/未变及业务字段更新原因。
+
+    只比较业务字段，不比较 collected_at / run_id：重复采集相同值不应被误报为更新。
+    ETF 兜底行（沿用已落库）不参与统计，因为不会写回原数据。
+    """
+    if index_df is None:
+        index_df = pd.DataFrame()
+    storage.init_schema(db_path)
+    specs = [
+        ("宏观", macro_df, "macro_observation", ("指标代码", "日期"),
+         {"指标名称": "name", "数值": "value", "单位": "unit",
+          "同比(%)": "yoy_pct", "环比(%)": "mom_pct", "数据源": "source"},
+         storage.macro_biz_key, False),
+        ("ETF", etf_df, "etf_observation", ("基金代码", "交易日期"),
+         {"基金简称": "name", "交易市场": "market", "份额(亿份)": "shares",
+          "单位净值(元)": "nav", "规模(亿元)": "market_cap", "数据源": "source"},
+         storage.etf_biz_key, True),
+        ("指数", index_df, "index_observation", ("指数代码", "交易日期"),
+         {"指数名称": "name", "开盘价": "open", "最高价": "high", "最低价": "low",
+          "收盘价": "close", "成交量": "volume", "涨跌幅(%)": "pct_change", "数据源": "source"},
+         storage.index_biz_key, True),
+    ]
+    out: dict[str, dict] = {}
+    with storage.connect(db_path) as conn:
+        for label, df, table, (ck, dk), val_map, key_fn, zfill_code in specs:
+            work = df
+            if zfill_code and work is not None and not work.empty and "数据源" in work.columns:
+                work = work[~work["数据源"].astype(str).str.contains(storage.ETF_FALLBACK_MARK, na=False)]
+            summary: dict[str, object] = {"新增": 0, "更新": 0, "未变": 0, "原因": {}}
+            if work is not None and not work.empty:
+                cols = ["biz_key"] + list(val_map.values())
+                existing = {r["biz_key"]: r for r in conn.execute(
+                    f"SELECT {', '.join(cols)} FROM {table}"
+                )}
+                reasons: dict[str, int] = {}
+                for _, row in work.iterrows():
+                    code = str(row.get(ck, "")).strip()
+                    if zfill_code:
+                        code = code.zfill(6)
+                    key = key_fn(code, str(row.get(dk, "")))
+                    old = existing.get(key)
+                    if old is None:
+                        summary["新增"] += 1
+                        continue
+                    changed = [cn for cn, dbcol in val_map.items()
+                               if not _values_equal(row.get(cn), old[dbcol])]
+                    if changed:
+                        summary["更新"] += 1
+                        for cn in changed:
+                            reasons[cn] = reasons.get(cn, 0) + 1
+                    else:
+                        summary["未变"] += 1
+                summary["原因"] = dict(sorted(reasons.items(), key=lambda kv: -kv[1]))
+            out[label] = summary
+    return out
+
+
 def _apply_rate_limit(fetch_cfg: dict) -> None:
     """按配置启用请求节流（最小间隔 + 抖动），默认关闭以兼容测试。
 
@@ -425,20 +508,32 @@ def _finish(monitor: Monitor, macro_df: pd.DataFrame, etf_df: pd.DataFrame,
             int(etf_df["数据源"].astype(str).str.contains("沿用已落库", na=False).sum())
             if not etf_df.empty and "数据源" in etf_df.columns else 0
         )
-        logger.info("  [入库] 步骤 b 写入业务表：宏观 %d / ETF %d / 指数 %d 行（业务键幂等；ETF 兜底 %d 行不写回）",
-                    len(macro_df), len(etf_df), len(index_df), etf_fallback_rows)
+        changes = _write_change_summary(db_path, macro_df, etf_df, index_df)
+
+        def _reason(s: dict) -> str:
+            return "，".join(f"{k} {v} 行" for k, v in (s["原因"] or {}).items()) or "无业务字段变化"
+
+        logger.info("  [入库] 步骤 b 写入业务表：宏观 新增%d/更新%d/未变%d；ETF 新增%d/更新%d/未变%d；指数 新增%d/更新%d/未变%d（业务键幂等；ETF 兜底 %d 行不写回）",
+                    changes["宏观"]["新增"], changes["宏观"]["更新"], changes["宏观"]["未变"],
+                    changes["ETF"]["新增"], changes["ETF"]["更新"], changes["ETF"]["未变"],
+                    changes["指数"]["新增"], changes["指数"]["更新"], changes["指数"]["未变"],
+                    etf_fallback_rows)
         storage.upsert_macro(db_path, macro_df, run_ts)
         storage.upsert_etf(db_path, etf_df, run_ts)
         storage.upsert_index(db_path, index_df, run_ts)
         stat_records = _collect_stat_records(monitor, macro_df, etf_df, index_df)
         written = storage.append_collection_stats(db_path, stat_records)
         logger.info("  [入库] 步骤 c 采集量统计：%d 条（类别/标的细分口径）", written)
-        macro_rows, _ = storage.read_macro(db_path)
-        etf_rows, _ = storage.read_etf(db_path)
-        index_rows, _ = storage.read_index(db_path)
         failed = sum(1 for r in monitor.records if r["status"] == "failed")
-        logger.info("SQLite 主存储已更新：宏观 %d 行 / ETF %d 行 / 指数 %d 行；接口调用 %d 次，失败 %d 次",
-                    macro_rows, etf_rows, index_rows, len(monitor.records), failed)
+        parts = []
+        for label in ("宏观", "ETF", "指数"):
+            s = changes[label]
+            part = f"{label} 新增{s['新增']}/更新{s['更新']}/未变{s['未变']}"
+            if s["更新"]:
+                part += f"（更新原因：{_reason(s)}）"
+            parts.append(part)
+        logger.info("SQLite 本次变更：%s；接口调用 %d 次，失败 %d 次",
+                    "；".join(parts), len(monitor.records), failed)
         files: list[str] = []
         if config.get("storage", {}).get("auto_export_on_collect", False):
             files = export_results(macro_df, etf_df, BASE_DIR, config, run_ts,
@@ -529,6 +624,8 @@ def _retry_failed(config: dict, monitor_cfg: dict,
 
     etf_cfg = config.get("etf", {})
     codes = etf_cfg.get("codes", [])
+    # 复用数据库/配置中已有的上市日期，避免重跑时重复联网解析天天基金档案页。
+    listing_dates = etf_cfg.get("listing_dates", {}) or {}
     # 失败重跑同样按交易日锚点取默认窗口，不读取持久化 start_date/end_date。
     end = resolve_default_end(None)
     history = get_trade_dates("2000-01-01", end)
@@ -546,11 +643,14 @@ def _retry_failed(config: dict, monitor_cfg: dict,
             szse_retries=fetch_cfg.get("szse_retry"),
             szse_retry_interval=fetch_cfg.get("szse_retry_interval_sec"),
             monitor=retry_monitor,
+            listing_dates=listing_dates,
             sse_dates=None if full_etf_retry else (sse_dates or None),
             szse_range=None if full_etf_retry else szse_range,
             nav_codes=None,
             szse_fallback=_etf_szse_fallback(config, codes),
         )
+        etf_cfg["listing_dates"] = listing_dates
+        _save_listing_dates(config)
     elif nav_codes:
         # 仅净值失败：只补采净值，份额沿用主数据，避免无谓重采份额引入新故障
         logger.info("重跑 ETF 净值接口：nav_codes=%s", sorted(nav_codes))
@@ -610,8 +710,8 @@ def _retry_failed(config: dict, monitor_cfg: dict,
     if not index_base.empty:
         index_base["指数代码"] = index_base["指数代码"].astype(str).str.zfill(6)
     index_final = _merge_patch(index_base, index_patch, ["指数代码", "交易日期"])
-    logger.info("重跑合并完成：宏观 %d 行，ETF %d 行，指数 %d 行",
-                len(macro_final), len(etf_final), len(index_final))
+    logger.info("重跑合并完成：本次采集宏观 %d 行 / ETF %d 行 / 指数 %d 行（入库变更见后续日志）",
+                len(macro_patch), len(etf_patch), len(index_patch))
 
     _finish(retry_monitor, macro_final, etf_final, config, retry_monitor.run_id, index_final)
     succeeded = sum(1 for r in retry_monitor.records if r["status"] == "success")
@@ -681,7 +781,7 @@ def collect_interface(
         added_macro = len(patch)
         etf_final = etf_base
         index_final = index_base
-        logger.info("精确采集宏观：补丁 %d 行，合并后 %d 行", added_macro, len(macro_final))
+        logger.info("精确采集宏观：本次补丁 %d 行（入库变更见后续日志）", added_macro)
     elif category == "etf":
         etf_cfg = config.get("etf", {})
         target_codes = [str(c).strip().zfill(6) for c in codes] if codes else list(etf_cfg.get("codes", []))
@@ -714,7 +814,7 @@ def collect_interface(
             added_etf = len(patch)
         macro_final = macro_base
         index_final = index_base
-        logger.info("精确采集 ETF：补丁 %d 行，合并后 %d 行", added_etf, len(etf_final))
+        logger.info("精确采集 ETF：本次补丁 %d 行（入库变更见后续日志）", added_etf)
     elif category == "index":
         index_cfg = config.get("index", {})
         target_codes = [str(c).strip().zfill(6) for c in codes] if codes else list(index_cfg.get("codes", []))
@@ -733,7 +833,7 @@ def collect_interface(
         added_index = len(patch)
         macro_final = macro_base
         etf_final = etf_base
-        logger.info("精确采集指数：补丁 %d 行，合并后 %d 行", added_index, len(index_final))
+        logger.info("精确采集指数：本次补丁 %d 行（入库变更见后续日志）", added_index)
     else:
         raise ValueError(f"未知采集类别：{category}")
 

@@ -51,7 +51,7 @@ const runId = () => `20261126_${now().replace(/:/g,'')}_manual`;
 
 /* ---------------- API 层 ---------------- */
 async function api(url, opts={}) {
-  const r = await fetch(url, opts);
+  const r = await fetch(url, {...opts, cache:'no-store'});
   let body;
   try { body = await r.json(); } catch { body = {}; }
   if (!r.ok) throw new Error(body.detail || body.error || `HTTP ${r.status}`);
@@ -421,7 +421,9 @@ async function submitJob(url, payload, label){
  * ========================================================================== */
 async function loadStatus(){
   try {
-    S = await api('/api/status');
+    const status = await api('/api/status');
+    S = status;
+    applyStatusToSummaryCards(status);
     LAST = S.last_trade_date || '';
     WEEK_START = shiftDate(TODAY, -6);
     // 运维监控按运行日期筛选，默认最近一周且上限为今天；仅初始化，用户改动后不覆盖
@@ -438,28 +440,31 @@ async function loadStatus(){
     if(hdStatus) hdStatus.textContent = S.running ? '采集中…' : '系统正常';
   } catch(e){ console.warn('loadStatus', e); }
 }
+/* 把最新 /api/status 原地上到两张汇总卡片；初次加载、任务完成、定时刷新共用，避免只改全局状态不改 DOM。 */
+function applyStatusToSummaryCards(d){
+  if(!d) return;
+  S.macro_rows=d.macro_rows; S.index_rows=d.index_rows; S.etf_rows=d.etf_rows;
+  S.trade_raw_rows=d.trade_raw_rows||{}; S.today_new=d.today_new||{}; S.today_written=d.today_written||{};
+  const wrap = byId('summaryCardsWrap'); if(!wrap) return;
+  const stock = {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()};
+  const net = todayNewByCat();
+  const cards = wrap.querySelectorAll('.summary-card');
+  [[stock,0],[net,1]].forEach(([vals,i])=>{
+    const card = cards[i]; if(!card) return;
+    card.querySelectorAll('[data-summary-cell]').forEach(el=>{
+      const k = el.getAttribute('data-summary-cell');
+      const nv = fmt(vals?.[k]??0);
+      if(el.textContent !== nv) el.textContent = nv;
+    });
+  });
+  const sub = cards[1]?.querySelector('.summary-sub');
+  if(sub && sub.textContent !== NET_SUMMARY_SUB) sub.textContent = NET_SUMMARY_SUB;
+}
 /* 定时刷新采集数量卡片：只拉 /api/status 并原地更新数值，不重建视图、不打断操作。
-   定时调度在后台完成时页面可能一直停留，此函数保证卡片数据自动跟上。 */
+   api() 已禁用浏览器缓存，定时调度在后台完成时页面停留也能拿到最新值。 */
 async function refreshSummaryCards(){
   try {
-    const d = await api('/api/status');
-    S.macro_rows=d.macro_rows; S.index_rows=d.index_rows; S.etf_rows=d.etf_rows;
-    S.trade_raw_rows=d.trade_raw_rows||{}; S.today_new=d.today_new||{}; S.today_written=d.today_written||{};
-    const wrap = byId('summaryCardsWrap'); if(!wrap) return;
-    const stock = {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()};
-    const net = todayNewByCat();
-    const cards = wrap.querySelectorAll('.summary-card');
-    [[stock,0],[net,1]].forEach(([vals,i])=>{
-      const card = cards[i]; if(!card) return;
-      card.querySelectorAll('[data-summary-cell]').forEach(el=>{
-        const k = el.getAttribute('data-summary-cell');
-        const nv = fmt(vals?.[k]??0);
-        if(el.textContent !== nv) el.textContent = nv;
-      });
-    });
-    const written = Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0);
-    const sub = cards[1]?.querySelector('.summary-sub');
-    if(sub) sub.textContent = `今日真实净新增（幂等去重）· 写入累计 ${fmt(written)}（含重复采集，仅对账）`;
+    applyStatusToSummaryCards(await api('/api/status'));
   } catch(e){ /* 刷新失败静默，下次重试 */ }
 }
 async function loadCatalog(){
@@ -768,6 +773,7 @@ const statCardWide = (ic,c,val,lbl,trend,tc) => `<div class="col-sm-6 col-lg-4">
 const statRow = (...c) => `<div class="row row-cards">${c.join('')}</div>`;
 /* 分类汇总卡片：标题 + 宏观/指数/ETF/交易 四类小计 */
 const CATS4 = [['macro','宏观','ic-blue','t-blue'],['index','指数','ic-purple','t-blue'],['etf','ETF','ic-green','t-green'],['trade','交易','ic-orange','t-orange']];
+const NET_SUMMARY_SUB = '今日真实净新增（幂等去重）';
 /* 交易采集数量：6 张交易原始表行数之和（与宏观/指数/ETF 观测表行数同口径） */
 function tradeRawTotal(){
   const r = S.trade_raw_rows||{};
@@ -790,13 +796,10 @@ const summaryCard = (ic, color, title, sub, vals) => `<div class="col-sm-12 col-
 </div></div>`;
 /* 两张汇总卡片统一构造，供初次渲染与定时刷新共用 */
 function summaryCards(){
-  const written = Object.values(S.today_written||{}).reduce((a,b)=>a+(Number(b)||0),0);
   return statRow(
     summaryCard('database','ic-blue','采集数量汇总','已入库数据行数 · 交易按6张原始表合计',
       {macro:S.macro_rows, index:S.index_rows, etf:S.etf_rows, trade:tradeRawTotal()})
-    + summaryCard('calendar-plus','ic-purple','当日净新增汇总',
-      `今日真实净新增（幂等去重）· 写入累计 ${fmt(written)}（含重复采集，仅对账）`,
-      todayNewByCat())
+    + summaryCard('calendar-plus','ic-purple','当日净新增汇总', NET_SUMMARY_SUB, todayNewByCat())
   );
 }
 const head = (t,d) => ''; // 视图标题条已移除，导航与卡片标题即可标识当前位置

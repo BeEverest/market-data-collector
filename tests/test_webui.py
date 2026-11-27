@@ -544,7 +544,40 @@ class TestWebPage:
         net = page.evaluate("S.today_new")
         vals2 = cards.nth(1).locator(".summary-cell-val").all_inner_texts()
         assert vals2[0].replace(",", "") == str(int(net.get("宏观", 0)))
+        subs = cards.locator(".summary-sub").all_inner_texts()
+        assert all("写入累计" not in s and "仅对账" not in s for s in subs)
+        assert any("幂等去重" in s for s in subs)
         assert page._js_errors == []
+
+    def test_summary_cards_refresh_latest_status(self, page):
+        """刷新卡片时使用最新 /api/status 的净新增值，不再显示写入累计。"""
+        _switch(page, "console")
+        status = page.evaluate("JSON.parse(JSON.stringify(S))")
+        status["today_new"] = {"宏观": 7, "指数": 2, "ETF": 3, "交易": 1}
+        status["today_written"] = {"宏观": 999999}
+        status["server_time"] = "2026-11-27 15:00:00"
+        body = json.dumps(status, ensure_ascii=False)
+        pattern = "**/api/status*"
+        page.route(pattern, lambda route: route.fulfill(
+            status=200, content_type="application/json", body=body,
+        ))
+        try:
+            page.evaluate("refreshSummaryCards()")
+            page.wait_for_timeout(250)
+            cards = page.locator("#v-console .summary-card")
+            vals = cards.nth(1).locator(".summary-cell-val").all_inner_texts()
+            assert [v.replace(",", "") for v in vals] == ["7", "2", "3", "1"]
+            sub = cards.nth(1).locator(".summary-sub").inner_text()
+            assert "写入累计" not in sub and "仅对账" not in sub
+            assert "幂等去重" in sub
+            assert page._js_errors == []
+        finally:
+            page.unroute(pattern)
+
+    def test_api_requests_disable_browser_cache(self):
+        """所有 API 请求禁用浏览器缓存，避免状态卡片拿到旧值。"""
+        src = (Path(__file__).parents[1] / "static" / "app.js").read_text(encoding="utf-8")
+        assert "fetch(url, {...opts, cache:'no-store'})" in src
 
     def test_monitor_stats_dual_dimension_filter(self, page):
         """采集量统计按维度1(类别)+维度2(细分口径)两级筛选。"""

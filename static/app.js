@@ -1646,6 +1646,8 @@ function renderEtfChartNode(node, chart, months){
   if(!node) return null;
   const ins = initChart(node);
   const isRank = chart.layout==='etf_rank';
+  // 紧凑化只用于 ETF 维度「宽基」的 Top5 柱状排名图；汇金细分图保持原布局
+  const isBroadRank = isRank && chart.dim==='broad';
   const allCats = [...new Set((chart.series||[]).flatMap(s=>(s.data||[]).map(p=>p[0])))];
   const categories = isRank ? allCats : allCats.sort();
   const dataOf = s => { const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
@@ -1682,16 +1684,19 @@ function renderEtfChartNode(node, chart, months){
 
   const axisCount=(chart.y_axes||[]).length||1;
   ins.setOption({animation:false,color:CLR,
-    grid: isRank ? {left:62,right:24,top:30,bottom:82} : {left:62,right:34+(axisCount-1)*62,top:54,bottom:92},
+    grid: isRank ? (isBroadRank ? {left:50,right:20,top:22,bottom:50} : {left:62,right:24,top:30,bottom:82})
+                 : {left:62,right:34+(axisCount-1)*62,top:54,bottom:92},
     legend: isRank?{show:false}:{top:6,type:'scroll',textStyle:{fontSize:10}},
     tooltip:{trigger:'axis',axisPointer:{type:isRank?'shadow':'cross'},confine:true,
       valueFormatter:isRank?(v)=>(v==null?'—':Number(v).toLocaleString('zh-CN',{maximumFractionDigits:2})+' 亿元'):undefined},
     xAxis:{type:'category',data:categories,boundaryGap:hasBar,
       splitLine:{show:!isRank,lineStyle:{color:'#eef1f6',type:'dashed'}},
-      axisLabel:{fontSize:9,hideOverlap:!isRank,rotate:isRank?42:30,interval:isRank?0:'auto',margin:isRank?8:14}},
+      axisLabel:{fontSize:9,hideOverlap:!isRank,rotate:isRank?(isBroadRank?30:42):30,
+        interval:isRank?0:'auto',margin:isRank?(isBroadRank?7:8):14,
+        formatter:isBroadRank?(v)=>(v.length>8?v.slice(0,8)+'…':v):undefined}},
     yAxis:(chart.y_axes||[{name:''}]).map((a,i)=>({type:'value',name:a.name||'',position:a.position||'left',axisLabel:{fontSize:9},nameTextStyle:{fontSize:9},splitLine:{show:i===0,lineStyle:{color:i===0?'#e6eaf0':'#eef1f6',type:i===0?'solid':'dashed'}}})),
     series:(chart.series||[]).map((s,i)=>({name:s.name,type:s.type||'line',data:dataOf(s),yAxisIndex:s.y_axis_index||0,
-      smooth:s.type!=='bar',showSymbol:false,connectNulls:true,barMaxWidth:isRank?16:20,barGap:'20%',
+      smooth:s.type!=='bar',showSymbol:false,connectNulls:true,barMaxWidth:isRank?(isBroadRank?22:16):20,barGap:'20%',
       lineStyle:{width:2,color:CLR[i%CLR.length]},itemStyle:{color:CLR[i%CLR.length]}})),
   },{notMerge:true});
   return ins;

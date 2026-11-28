@@ -757,6 +757,10 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="etf_huijin"]').count() == 0
         assert view.locator(".chart-row-pair").count() == 6
         assert view.locator(".chart-row-pair [data-chart-card]").count() == 12
+        # 每组并排：合计图在左、Top5 柱状排名图在右
+        pair_order = view.locator(".chart-row-pair").first.locator("[data-chart-card]").evaluate_all(
+            "els=>els.map(e=>e.dataset.chartCard)")
+        assert pair_order[0].endswith("_stock") and pair_order[1].endswith("_top5")
         # 切回黄金：主图 + 累计图（整行）
         view.locator('[data-etf-dim="gold"]').click()
         page.wait_for_timeout(300)

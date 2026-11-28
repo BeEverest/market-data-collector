@@ -169,10 +169,10 @@ class TestEtfDashboard:
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_hs300_top5", "etf_hs300_stock", "etf_kc50_top5",
-            "etf_kc50_stock", "etf_cyb_top5", "etf_cyb_stock", "etf_sz50_top5",
-            "etf_sz50_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
-            "etf_a1000_stock"]
+            "etf_broad", "etf_hs300_stock", "etf_hs300_top5", "etf_kc50_stock",
+            "etf_kc50_top5", "etf_cyb_stock", "etf_cyb_top5", "etf_sz50_stock",
+            "etf_sz50_top5", "etf_a500_stock", "etf_a500_top5", "etf_a1000_stock",
+            "etf_a1000_top5"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
         assert hj["etf_count"] == 2
@@ -397,10 +397,10 @@ class TestEtfDashboard:
         charts = build_etf_charts(df, {}, months=12)
         assert [c["id"] for c in charts] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_hs300_top5", "etf_hs300_stock", "etf_kc50_top5",
-            "etf_kc50_stock", "etf_cyb_top5", "etf_cyb_stock", "etf_sz50_top5",
-            "etf_sz50_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
-            "etf_a1000_stock"]
+            "etf_broad", "etf_hs300_stock", "etf_hs300_top5", "etf_kc50_stock",
+            "etf_kc50_top5", "etf_cyb_stock", "etf_cyb_top5", "etf_sz50_stock",
+            "etf_sz50_top5", "etf_a500_stock", "etf_a500_top5", "etf_a1000_stock",
+            "etf_a1000_top5"]
         assert all(c.get("etf_count", 0) == 0 for c in charts)
         assert all(not s["data"] for c in charts for s in c["series"])
 
@@ -419,10 +419,10 @@ class TestDashboardApi:
         assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
         assert [c["id"] for c in data["etf"]["charts"]] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_hs300_top5", "etf_hs300_stock", "etf_kc50_top5",
-            "etf_kc50_stock", "etf_cyb_top5", "etf_cyb_stock", "etf_sz50_top5",
-            "etf_sz50_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
-            "etf_a1000_stock"]
+            "etf_broad", "etf_hs300_stock", "etf_hs300_top5", "etf_kc50_stock",
+            "etf_kc50_top5", "etf_cyb_stock", "etf_cyb_top5", "etf_sz50_stock",
+            "etf_sz50_top5", "etf_a500_stock", "etf_a500_top5", "etf_a1000_stock",
+            "etf_a1000_top5"]
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
@@ -709,6 +709,12 @@ class TestBroadEtfDashboard:
         charts = build_etf_charts(df, tags, months=1)
         stock_slugs = [c["pair"] for c in charts if c["id"].endswith("_stock")]
         assert stock_slugs == ["hs300", "kc50", "cyb", "sz50", "a500", "a1000"]
+        # 每组并排顺序：合计图在左、Top5 柱状排名图在右
+        broad_ids = [c["id"] for c in charts
+                     if c["dim"] == "broad" and (c["id"].endswith("_stock") or c["id"].endswith("_top5"))]
+        for i, slug in enumerate(["hs300", "kc50", "cyb", "sz50", "a500", "a1000"]):
+            assert broad_ids[2 * i] == f"etf_{slug}_stock"
+            assert broad_ids[2 * i + 1] == f"etf_{slug}_top5"
 
 
 class TestGoldCumulativeDashboard:

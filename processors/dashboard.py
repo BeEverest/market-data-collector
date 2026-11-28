@@ -526,7 +526,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 share_rank = [[v["name"], v["share"]] for _, v in top5 if v["share"] is not None]
                 net_rank = [[v["name"], v["net"]] for _, v in top5 if v["net"] is not None]
                 rank_meta = [{"code": code, "name": v["name"]} for code, v in top5]
-                charts.append({
+                # 先构造柱状排名图，稍后在合计图之后 append，使其并排显示在右侧
+                top5_chart = {
                     "id": f"etf_{slug}_top5",
                     "dim": "broad",
                     "pair": slug,  # 与本宽基合计图并作一排
@@ -547,7 +548,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                         {"name": "申赎净流入(亿元)", "data": net_rank,
                          "y_axis_index": 1, "type": "bar"},
                     ],
-                })
+                }
 
                 # 图：该宽基 ETF 合计流通份额存量 / 申赎净流入（按交易日），双轴；
                 # 上格叠加该宽基指数日线（固定 idx_code，不随用户选择的叠加指数变化）。
@@ -582,7 +583,9 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                     ],
                 }
                 attach_overlay(stock_chart, idx_code)
+                # 并排顺序：合计图在左、Top5 柱状排名图在右
                 charts.append(stock_chart)
+                charts.append(top5_chart)
     return charts
 
 

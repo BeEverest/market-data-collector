@@ -688,3 +688,37 @@ class TestWebPage:
         page.wait_for_timeout(150)
         assert page.locator("#v-tradecfg [data-trade-src-table] tbody tr").count() == initial_rows
         assert page._js_errors == []
+
+
+class TestDashboardNewViews:
+    """估值导航页与 ETF 维度标签切换（空数据也应能渲染，无 JS 异常）。"""
+
+    def test_valuation_nav_and_cards(self, page):
+        assert "dashval" in page.evaluate("Object.keys(VIEWS)")
+        _switch(page, "dashval")
+        view = page.locator("#v-dashval")
+        assert view.locator("[data-val-summary] .stat-card").count() == 4
+        assert view.locator('[data-chart-card="val_fed_band"]').count() == 1
+        assert view.locator('[data-chart-card="val_fed_percentile"]').count() == 1
+        assert page._js_errors == []
+
+    def test_etf_dim_tabs_switch_charts(self, page):
+        _switch(page, "dashetf")
+        view = page.locator("#v-dashetf")
+        assert view.locator(".etf-dim-tab").count() == 3
+        # 默认汇金：应显示汇金图，不显示宽基专属图
+        assert view.locator('[data-chart-card="etf_huijin"]').count() == 1
+        assert view.locator('[data-chart-card="etf_kc50_top5"]').count() == 0
+        # 切到宽基：显示宽基图与科创50两张图
+        view.locator('[data-etf-dim="broad"]').click()
+        page.wait_for_timeout(300)
+        assert view.locator('[data-chart-card="etf_broad"]').count() == 1
+        assert view.locator('[data-chart-card="etf_kc50_top5"]').count() == 1
+        assert view.locator('[data-chart-card="etf_kc50_stock"]').count() == 1
+        assert view.locator('[data-chart-card="etf_huijin"]').count() == 0
+        # 切回黄金：仅黄金图
+        view.locator('[data-etf-dim="gold"]').click()
+        page.wait_for_timeout(300)
+        assert view.locator('[data-chart-card="etf_gold"]').count() == 1
+        assert view.locator('[data-chart-card="etf_broad"]').count() == 0
+        assert page._js_errors == []

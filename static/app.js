@@ -86,7 +86,7 @@ let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows
   etf_rows:0, etf_codes:0, index_rows:0, index_codes:0, trade_rows:0, trade_raw_rows:{},
   today_new:{}, scheduler:{enabled:false,time:'',run_type:'full',macro_lookback_months:2,next_run:'-',history:[]},
   running:false, server_time:'', last_trade_date:'' };
-let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]} };
+let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]}, valuation:{charts:[],summary:{}} };
 /* 定时调度采集窗口：从后端按真实配置计算，前端不硬编码 */
 let SCHED_WINDOWS = {macro:{start:'',end:'',months:1}, etf:{start:'',end:'',days:1}, index:{start:'',end:''}, trade:{start:'',end:''}, last_trade_date:''};
 async function loadScheduleWindows(){
@@ -697,13 +697,14 @@ async function loadDashboard(){
     const range = chartRange(view);
     const params = new URLSearchParams({months:String(months), etf_months:String(months), trade_months:String(months)});
     // 三组看板统一按当前日期区间取数：避免后端始终只返回默认近一年
-    if(range.start){ params.set('macro_start',range.start); params.set('etf_start',range.start); params.set('trade_start',range.start); }
-    if(range.end){ params.set('macro_end',range.end); params.set('etf_end',range.end); params.set('trade_end',range.end); }
+    if(range.start){ params.set('macro_start',range.start); params.set('etf_start',range.start); params.set('trade_start',range.start); params.set('val_start',range.start); }
+    if(range.end){ params.set('macro_end',range.end); params.set('etf_end',range.end); params.set('trade_end',range.end); params.set('val_end',range.end); }
     const overlay = view?.querySelector('[data-act="overlay-index"]')?.value;
     if(overlay) params.set('overlay_index',overlay);
     const res = await api('/api/dashboard?' + params.toString());
     if(seq !== dashLoadSeq) return;  // 过期请求：视图已切换，丢弃，避免重复重建 DOM
-    DB = { macro:res.macro||{charts:[]}, etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]} };
+    DB = { macro:res.macro||{charts:[]}, etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]},
+           valuation:res.valuation||{charts:[],summary:{}} };
     if(res.index_options && res.index_options.length){
       $$('[data-act="overlay-index"]').forEach(sel=>{
         const cur = sel.value;
@@ -752,6 +753,7 @@ const NAV = {
       {id:'dashmacro',name:'宏观指标',icon:'chart-area'},
       {id:'dashetf',name:'ETF 维度',icon:'chart-bar'},
       {id:'dashtrade',name:'日交易',icon:'chart-line'},
+      {id:'dashval',name:'估值',icon:'chart-gauge'},
     ]},
   ]},
   ops:{name:'运维监控',groups:[
@@ -1083,20 +1085,38 @@ function hydrateTables(){
   Object.keys(PREVIEW_STATE).forEach(k=>{ renderPreviewTable(k); renderPreviewPager(k); });
   renderEtfCfgTable();
 }
+const DASH_TITLE = {macro:'宏观指标',etf:'ETF 维度',trade:'日交易',valuation:'估值'};
+const DASH_SUB = {
+  macro:'8 张图 · 统一日期联动',
+  etf:'汇金 / 黄金 / 宽基 · 顶部标签切换 · 日期联动',
+  trade:'2 张图 · 图1图2各一行 · 两融双 grid 联动',
+  valuation:'沪深300风险溢价率（FED 差值）· ±1σ/±2σ 通道 · 全历史百分位',
+};
+const ETF_DIMS = [['huijin','汇金'],['gold','黄金'],['broad','宽基']];
+let etfDim = 'huijin';
 function dashShell(grp){
   const overlay = grp==='etf'
     ? `<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="汇金图上方叠加的指数日线"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`
     : '';
-  const hintText = grp==='macro' ? '数据来源：宏观指标 / 宏观观测 / 上交所日线' : '';
+  // ETF 维度顶部标签：汇金 / 黄金 / 宽基
+  const dimTabs = grp==='etf'
+    ? `<div class="etf-dim-tabs" style="display:flex;gap:6px;margin-bottom:10px">${ETF_DIMS.map(([k,l])=>
+        `<button type="button" class="btn btn-sm etf-dim-tab ${k===etfDim?'active':''}" data-etf-dim="${k}">${l}</button>`).join('')}</div>`
+    : '';
+  // 估值当前摘要卡片（数据到达后由 renderDash 填充）
+  const valSummary = grp==='valuation'
+    ? `<div class="row row-cards" data-val-summary style="margin-bottom:12px"></div>` : '';
+  const hintText = grp==='macro' ? '数据来源：宏观指标 / 宏观观测 / 上交所日线'
+    : grp==='valuation' ? '百分位以全部历史为基准，不随日期窗口变化' : '';
   const ctl = `${overlay}
        <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
        <label class="prec-field">结束 <input class="prec-input" type="date" data-range-end value="${LAST}" style="width:125px"></label>
        ${rangeQuick('dash-'+grp,12)}${hintText?`<span class="hint">${hintText}</span>`:''}`;
-  return head(`数据看板 · ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}`,
-      grp==='macro'?'8 张图 · 统一日期联动':grp==='etf'?'4 张图 · 汇金 / 黄金 · 日期联动':'2 张图 · 图1图2各一行 · 两融双 grid 联动')
-    + `<div class="card"><div class="card-header"><h3><i class="ti ti-chart-line" style="color:var(--blue)"></i> ${grp==='macro'?'宏观指标':grp==='etf'?'ETF 维度':'日交易'}</h3>
-      <div style="flex:1"></div><button class="btn btn-sm" data-act="dash-refresh"><i class="ti ti-refresh"></i> 刷新图表</button><span class="hint" data-dash-meta>宏观 8 图 · ETF 4 图 · 交易 3 图</span></div>
-    <div class="card-body"><div class="ctl-params" style="margin-bottom:12px">${ctl}</div>
+  const title=DASH_TITLE[grp]||'数据看板';
+  return head(`数据看板 · ${title}`, DASH_SUB[grp]||'')
+    + `<div class="card"><div class="card-header"><h3><i class="ti ti-chart-line" style="color:var(--blue)"></i> ${title}</h3>
+      <div style="flex:1"></div><button class="btn btn-sm" data-act="dash-refresh"><i class="ti ti-refresh"></i> 刷新图表</button><span class="hint" data-dash-meta></span></div>
+    <div class="card-body">${valSummary}${dimTabs}<div class="ctl-params" style="margin-bottom:12px">${ctl}</div>
       <div class="grid-2 ${grp==='trade'?'one-col':''}" data-dash-charts></div></div></div>`;
 }
 
@@ -1226,6 +1246,7 @@ const VIEWS = {
 
   /* ---------------- 数据看板 ---------------- */
   dashmacro:()=>dashShell('macro'), dashetf:()=>dashShell('etf'), dashtrade:()=>dashShell('trade'),
+  dashval:()=>dashShell('valuation'),
 
   /* ---------------- 运维监控 ---------------- */
   'mon-overview':()=>monitorView('overview'), 'mon-failures':()=>monitorView('failures'),
@@ -1504,6 +1525,99 @@ function renderTradeMarketSplitNode(node, chart, months){
   return ins;
 }
 /* ==========================================================================
+ * 估值页图表：沪深300风险溢价率（FED 差值）
+ *  - valuation_band：折线 + 均值±1σ/±2σ 阴影通道（markArea）
+ *  - valuation_percentile：全历史百分位曲线（0~100%）
+ * ========================================================================== */
+function renderValuationBandNode(node, chart, months){
+  if(!node) return null;
+  const ins = initChart(node);
+  const categories = filteredData(chart, months);
+  const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
+  const nameOf = s=>s.name||'';
+  const find = key => (chart.series||[]).find(s=>nameOf(s)===key);
+  const rpS=find('风险溢价率'), avgS=find('历史均值');
+  const u1=find('均值+1σ'), l1=find('均值−1σ'), u2=find('均值+2σ'), l2=find('均值−2σ');
+  const mkArea = (lo,hi,color)=>{
+    const loS=find(lo), hiS=find(hi);
+    if(!loS||!hiS) return undefined;
+    const lm=new Map(loS.data||[]), hm=new Map(hiS.data||[]);
+    const data=[];
+    categories.forEach(c=>{ if(lm.has(c)&&hm.has(c)){
+      data.push([{xAxis:c,yAxis:lm.get(c),itemStyle:{color}},{xAxis:c,yAxis:hm.get(c)}]); }});
+    return data.length?{silent:true,data}:undefined;
+  };
+  const area2 = mkArea('均值−2σ','均值+2σ','rgba(37,99,235,.07)');
+  const area1 = mkArea('均值−1σ','均值+1σ','rgba(37,99,235,.13)');
+  const series = [
+    {name:'风险溢价率',type:'line',data:dataOf(rpS||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:2.4,color:CLR[0]},itemStyle:{color:CLR[0]},
+      markArea: area2||area1 ? {silent:true,data:[...(area2?.data||[]),...(area1?.data||[])]} : undefined},
+    {name:'历史均值',type:'line',data:dataOf(avgS||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:1.6,color:CLR[2],type:'dashed'},itemStyle:{color:CLR[2]}},
+    {name:'均值+1σ',type:'line',data:dataOf(u1||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:1,color:CLR[4],type:'dotted',opacity:.8},itemStyle:{color:CLR[4]}},
+    {name:'均值−1σ',type:'line',data:dataOf(l1||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:1,color:CLR[4],type:'dotted',opacity:.8},itemStyle:{color:CLR[4]}},
+    {name:'均值+2σ',type:'line',data:dataOf(u2||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:1,color:CLR[5],type:'dotted',opacity:.6},itemStyle:{color:CLR[5]}},
+    {name:'均值−2σ',type:'line',data:dataOf(l2||{data:[]}),yAxisIndex:0,smooth:false,showSymbol:false,
+      lineStyle:{width:1,color:CLR[5],type:'dotted',opacity:.6},itemStyle:{color:CLR[5]}},
+  ];
+  ins.setOption({animation:false,color:CLR,
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true,
+      valueFormatter:v=>v==null?'—':Number(v).toFixed(2)+' %'},
+    legend:{top:2,type:'scroll',textStyle:{fontSize:10}},
+    grid:{left:58,right:38,top:44,bottom:64},
+    xAxis:{type:'category',data:categories,axisLabel:{fontSize:9,hideOverlap:true,rotate:categories.length>18?30:0},axisLine:{lineStyle:{color:'#e3e9f2'}}},
+    yAxis:{type:'value',scale:true,name:'风险溢价率 (%)',nameTextStyle:{fontSize:9,color:'#8a97ac'},
+      axisLabel:{fontSize:9,color:'#8a97ac',formatter:v=>Number(v).toFixed(1)+'%'},
+      splitLine:{lineStyle:{color:'#edf1f7'}}},
+    dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:6,brushSelect:false}],
+    series,
+  },{notMerge:true});
+  return ins;
+}
+function renderValuationPercentileNode(node, chart, months){
+  if(!node) return null;
+  const ins = initChart(node);
+  const categories = filteredData(chart, months);
+  const s=(chart.series||[])[0]||{data:[]};
+  const m=new Map(s.data||[]);
+  const data=categories.map(c=>m.has(c)?m.get(c):null);
+  ins.setOption({animation:false,color:CLR,
+    tooltip:{trigger:'axis',axisPointer:{type:'cross'},confine:true,
+      valueFormatter:v=>v==null?'—':Number(v).toFixed(1)+'%'},
+    legend:{show:false},
+    grid:{left:58,right:38,top:44,bottom:64},
+    xAxis:{type:'category',data:categories,axisLabel:{fontSize:9,hideOverlap:true,rotate:categories.length>18?30:0},axisLine:{lineStyle:{color:'#e3e9f2'}}},
+    yAxis:{type:'value',min:0,max:100,name:'历史百分位 (%)',nameTextStyle:{fontSize:9,color:'#8a97ac'},
+      axisLabel:{fontSize:9,color:'#8a97ac',formatter:'{value}%'},splitLine:{lineStyle:{color:'#edf1f7'}}},
+    dataZoom:[{type:'inside'},{type:'slider',height:16,bottom:6,brushSelect:false}],
+    series:[{name:'历史百分位',type:'line',data,smooth:true,showSymbol:false,connectNulls:true,
+      lineStyle:{width:2,color:CLR[1]},itemStyle:{color:CLR[1]},
+      areaStyle:{color:CLR[1],opacity:.12},
+      markLine:{silent:true,symbol:'none',data:[
+        {yAxis:80,lineStyle:{color:CLR[4],type:'dashed',width:1},label:{formatter:'80% 高估区',position:'insideEndTop',color:'#c5282d',fontSize:10}},
+        {yAxis:20,lineStyle:{color:CLR[3],type:'dashed',width:1},label:{formatter:'20% 低估区',position:'insideEndTop',color:'#8056d8',fontSize:10}},
+      ]}}],
+  },{notMerge:true});
+  return ins;
+}
+function renderValuationSummary(){
+  const box=$('.view.active [data-val-summary]'); if(!box) return;
+  const s=DB.valuation?.summary||{};
+  const pct=s.percentile;
+  const pctCls = pct==null?'neutral':(pct>=80?'down':pct<=20?'up':'neutral');
+  const pctTag = pct==null?'—':(pct>=80?'高估区（股票偏贵）':pct<=20?'低估区（股票便宜）':'中性区间');
+  box.innerHTML =
+    statCard('chart-gauge','ic-blue', s.risk_premium==null?'—':fmtNum(s.risk_premium)+'%', `当前风险溢价率 · ${s.date||'—'}`, s.avg==null?'':`均值 ${fmtNum(s.avg)}%`, 't-blue')+
+    statCard('percent','ic-green', pct==null?'—':fmtNum(pct)+'%', '当前全历史百分位', pctTag, pctCls)+
+    statCard('trending-up','ic-orange', s.upper1std==null?'—':`${fmtNum(s.lower1std)}% ~ ${fmtNum(s.upper1std)}%`, '均值 ±1σ 区间', s.upper2std==null?'':`±2σ ${fmtNum(s.lower2std)}% ~ ${fmtNum(s.upper2std)}%`, 't-orange')+
+    statCard('calendar','ic-purple', fmt(s.total_days||0), '历史交易日样本', s.close==null?'':`沪深300收盘 ${fmtNum(s.close)}`, 't-blue');
+}
+
+/* ==========================================================================
  * ETF 维度图表（1:1 复刻生产）：
  *  - etf_overlay：上下双 grid（上=指数折线，下=份额/净流入柱），联动 dataZoom
  *  - etf_rank：ETF 净流入横向排名柱，点击柱子展开该 ETF 每日明细
@@ -1728,7 +1842,7 @@ async function etfToggleSharesDayDetail(date, tableBox, rangeParams){
 }
 
 function renderDash(){
-  const grp = curView.replace('dash','');
+  const grp = curView==='dashval' ? 'valuation' : curView.replace('dash','');
   if(!DB[grp]) return;
   const view = $('.view.active'); if(!view) return;
   const box = view.querySelector('[data-dash-charts]'); if(!box) return;
@@ -1736,9 +1850,13 @@ function renderDash(){
   // 宏观 / ETF / 交易统一用日期框的绝对区间过滤（快捷范围会写入日期框）
   const range = chartRange(view);
   const hasRange = range && (range.start || range.end);
-  const list = DB[grp].charts.map(c=>hasRange ? rangeChart(c, range, months) : c);
+  let allCharts = DB[grp].charts||[];
+  // ETF 维度：按顶部标签（汇金/黄金/宽基）过滤
+  if(grp==='etf') allCharts = allCharts.filter(c=>!c.dim || c.dim===etfDim);
+  const list = allCharts.map(c=>hasRange ? rangeChart(c, range, months) : c);
   // 有绝对区间时不再让渲染函数按 months 二次裁剪
   const renderMonths = hasRange ? null : months;
+  if(grp==='valuation') renderValuationSummary();
   // ETF 图1（叠指数的汇金图）与图2 各自的明细卡片：按卡片类型占满一行
   const cardHtml = (c)=>{
     const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split' || c.layout==='trade_market_split');
@@ -1755,7 +1873,25 @@ function renderDash(){
   };
   box.innerHTML = list.map(cardHtml).join('');
   const meta = view.querySelector('[data-dash-meta]');
-  if(meta) meta.textContent = `宏观 8 图 · ETF 4 图 · 交易 3 图 · 已渲染 ${list.length} 图`;
+  const dimLabel = ETF_DIMS.find(x=>x[0]===etfDim)?.[1]||'';
+  if(meta) meta.textContent = grp==='valuation'
+    ? `风险溢价率 · 均值±1σ/±2σ · 全历史百分位 · 2 图`
+    : grp==='etf' ? `当前维度：${dimLabel} · 已渲染 ${list.length} 图`
+    : `已渲染 ${list.length} 图`;
+  // ETF 顶部标签切换：仅重渲染图表，不重新拉数据
+  if(grp==='etf'){
+    view.querySelectorAll('.etf-dim-tab').forEach(btn=>{
+      if(btn.dataset.bound) return;
+      btn.dataset.bound='1';
+      btn.addEventListener('click',()=>{
+        const next=btn.dataset.etfDim;
+        if(next===etfDim) return;
+        etfDim=next;
+        view.querySelectorAll('.etf-dim-tab').forEach(b=>b.classList.toggle('active',b.dataset.etfDim===next));
+        renderDash();
+      });
+    });
+  }
   setTimeout(()=>{
     list.forEach((c,idx)=>{
       const card = box.querySelector(`[data-chart-card="${c.id}"]`);
@@ -1763,6 +1899,8 @@ function renderDash(){
       if(!target) return;
       let ins;
       if(grp==='etf') ins = renderEtfChartNode(target,c,renderMonths);
+      else if(c.layout==='valuation_band') ins = renderValuationBandNode(target,c,renderMonths);
+      else if(c.layout==='valuation_percentile') ins = renderValuationPercentileNode(target,c,renderMonths);
       else if(c.layout==='trade_margin_split') ins = renderMarginSplitNode(target,c,renderMonths);
       else if(c.layout==='trade_market_split') ins = renderTradeMarketSplitNode(target,c,renderMonths);
       else ins = renderChartNode(target,c,renderMonths);

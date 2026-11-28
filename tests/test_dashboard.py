@@ -9,7 +9,7 @@ import storage
 import web_app
 from processors.dashboard import (
     build_etf_charts, build_etf_daily_detail, build_macro_charts,
-    build_trade_charts,
+    build_trade_charts, build_valuation_charts,
 )
 
 
@@ -164,11 +164,12 @@ class TestEtfDashboard:
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
         tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
-        # 汇金原图(按交易日) + 汇金细分(按ETF净流入降序) + 黄金原图 + 汇金累计份额变化
+        # 汇金原图 + 汇金细分 + 汇金累计 + 黄金原图 + 宽基原图 + Top5科创50 + 科创50存量
         # 近1月只保留 2026-11；510050 规模变化 = 2+6+8 = 16，510300 = 4，合计 20
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == [
-            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold"]
+            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold",
+            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
         assert hj["etf_count"] == 2
@@ -390,8 +391,10 @@ class TestEtfDashboard:
              "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0},
         ])
         charts = build_etf_charts(df, {}, months=12)
-        assert [c["id"] for c in charts] == ["etf_huijin", "etf_huijin_detail", "etf_gold"]
-        assert all(c["etf_count"] == 0 for c in charts)
+        assert [c["id"] for c in charts] == [
+            "etf_huijin", "etf_huijin_detail", "etf_gold",
+            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
+        assert all(c.get("etf_count", 0) == 0 for c in charts)
         assert all(not s["data"] for c in charts for s in c["series"])
 
 
@@ -407,7 +410,9 @@ class TestDashboardApi:
         assert data["months"] == 12 and data["etf_months"] == 12
         assert len(data["macro"]["charts"]) == 8
         assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
-        assert len(data["etf"]["charts"]) == 4
+        assert [c["id"] for c in data["etf"]["charts"]] == [
+            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold",
+            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
@@ -544,3 +549,83 @@ class TestTradeDashboardLayout:
         """旧参数 days 显式传入仍按最近 N 个交易日截取。"""
         charts = build_trade_charts(self.df, days=3, months=12)
         assert self._dates(charts) == ["2026-11-17", "2026-11-18", "2026-11-19"]
+
+
+class TestValuationDashboard:
+    """估值页：FED 风险溢价率 + ±1σ/±2σ 均值通道 + 全历史百分位。"""
+
+    def setup_method(self):
+        dates = ["2026-11-%02d" % d for d in range(18, 23)]
+        rp = [4.0, 5.0, 6.0, 7.0, 8.0]  # 严格递增
+        self.df = pd.DataFrame({
+            "trade_date": dates,
+            "risk_premium": rp,
+            "avg": [5.0] * 5,
+            "upper1std": [6.0] * 5, "lower1std": [4.0] * 5,
+            "upper2std": [7.0] * 5, "lower2std": [3.0] * 5,
+            "ratio": [3.0] * 5, "close": [3900.0] * 5,
+        })
+
+    def test_band_and_percentile_series(self):
+        data = build_valuation_charts(self.df, months=12)
+        assert [c["id"] for c in data["charts"]] == ["val_fed_band", "val_fed_percentile"]
+        band = data["charts"][0]
+        assert band["layout"] == "valuation_band"
+        names = [s["name"] for s in band["series"]]
+        assert names == ["风险溢价率", "历史均值", "均值+1σ", "均值−1σ", "均值+2σ", "均值−2σ"]
+        assert band["series"][0]["data"][0][0] == "2026-11-18"
+        assert len(band["bands"]["std1"]) == 5
+        assert len(band["bands"]["std2"]) == 5
+        pct = data["charts"][1]
+        assert pct["layout"] == "valuation_percentile"
+        # 全历史百分位：最小=20%，最大=100%
+        vals = [v for _, v in pct["series"][0]["data"]]
+        assert vals[0] == 20.0 and vals[-1] == 100.0
+
+    def test_summary_latest(self):
+        data = build_valuation_charts(self.df, months=12)
+        s = data["summary"]
+        assert s["date"] == "2026-11-22"
+        assert s["risk_premium"] == 8.0
+        assert s["percentile"] == 100.0
+        assert s["upper1std"] == 6.0 and s["lower2std"] == 3.0
+        assert s["total_days"] == 5
+
+    def test_empty_input(self):
+        data = build_valuation_charts(pd.DataFrame(), months=12)
+        assert data["summary"] == {}
+        assert [c["id"] for c in data["charts"]] == ["val_fed_band", "val_fed_percentile"]
+
+    def test_date_window_only_filters_display(self):
+        # 百分位以全部历史为基准，不随展示窗口变化
+        full = build_valuation_charts(self.df, months=0)
+        narrow = build_valuation_charts(self.df, start="2026-11-20", end="2026-11-22")
+        full_last = full["charts"][1]["series"][0]["data"][-1][1]
+        narrow_last = narrow["charts"][1]["series"][0]["data"][-1][1]
+        assert full_last == narrow_last == 100.0
+        assert [d for d, _ in narrow["charts"][1]["series"][0]["data"]] == [
+            "2026-11-20", "2026-11-21", "2026-11-22"]
+
+
+class TestBroadEtfDashboard:
+    """宽基维度：Top5 科创50 ETF 份额/申赎净流入 + 合计存量。"""
+
+    def test_kc50_charts(self):
+        df = pd.DataFrame([
+            {"基金代码": "588000", "基金简称": "科创50ETF华夏", "交易日期": "2026-11-20",
+             "份额(亿份)": 10.0, "规模(亿元)": 20.0,
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0, "净流入(亿元)": 2.0},
+            {"基金代码": "588080", "基金简称": "科创50ETF易方达", "交易日期": "2026-11-20",
+             "份额(亿份)": 5.0, "规模(亿元)": 12.0,
+             "份额变化(亿份)": -0.5, "规模变化(亿元)": -1.0, "净流入(亿元)": -1.0},
+        ])
+        tags = {"588000": ["科创50", "宽基"], "588080": ["科创50", "宽基"]}
+        charts = build_etf_charts(df, tags, months=1)
+        top5 = next(c for c in charts if c["id"] == "etf_kc50_top5")
+        assert top5["dim"] == "broad"
+        assert [m["code"] for m in top5["rank_meta"]] == ["588000", "588080"]
+        assert top5["series"][1]["data"] == [
+            ["科创50ETF华夏", 2.0], ["科创50ETF易方达", -1.0]]
+        stock = next(c for c in charts if c["id"] == "etf_kc50_stock")
+        assert stock["series"][0]["data"] == [["2026-11-20", 15.0]]
+        assert stock["series"][1]["data"] == [["2026-11-20", 32.0]]

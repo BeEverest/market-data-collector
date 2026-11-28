@@ -21,7 +21,25 @@ import pandas as pd
 
 from processors.derived import _shift_month
 
-ETF_DASHBOARD_TAGS = ["汇金", "黄金"]
+ETF_DASHBOARD_TAGS = ["汇金", "黄金", "宽基"]
+
+# 估值页：沪深300风险溢价率（FED 差值）曲线 + 历史均值 ±1σ/±2σ 通道 + 全历史百分位。
+VALUATION_CHART_SPECS = [
+    {
+        "id": "val_fed_band", "title": "沪深300风险溢价率（FED 差值）· 均值 ±1σ/±2σ",
+        "note": "直采韭圈儿股债性价比：1/沪深300 PE_TTM − 10年期国债收益率；"
+                "均值与标准差为历史全样本滚动值，越高代表股票性价比越高",
+        "layout": "valuation_band",
+        "y_axes": [{"name": "风险溢价率 (%)", "position": "left"}],
+    },
+    {
+        "id": "val_fed_percentile", "title": "沪深300风险溢价率 · 全历史百分位",
+        "note": "百分位 = 当前风险溢价率低于历史所有交易日的比例（0~100%，越高越便宜）；"
+                "以全部历史为基准，不随展示窗口变化",
+        "layout": "valuation_percentile",
+        "y_axes": [{"name": "历史百分位 (%)", "position": "left"}],
+    },
+]
 
 MACRO_CHART_SPECS = [
     {
@@ -339,7 +357,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 if v is not None:
                     flow_data.append([str(d)[:10], v])
         charts.append({
-            "id": f"etf_{'huijin' if tag == '汇金' else 'gold'}",
+            "id": f"etf_{'huijin' if tag == '汇金' else 'gold' if tag == '黄金' else 'broad'}",
+            "dim": "huijin" if tag == "汇金" else "gold" if tag == "黄金" else "broad",
             "title": f"{tag}维度 · 流通份额变化 / 申赎净流入",
             "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的份额变化与申赎净流入；{scope}",
             "etf_count": len(codes),
@@ -392,6 +411,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
             total_share_change = _clean_number(sum(v["share"] for v in rank.values() if v["share"] is not None))
             charts.append({
                 "id": "etf_huijin_detail",
+                "dim": "huijin",
                 "title": "汇金维度 · 各 ETF 净流入细分（申赎资金）",
                 "note": f"净流入=份额变化×当日净值，剔除价格涨跌的市值波动（份额折算日不计）；"
                         f"按净流入降序，{scope} · 点击柱子查看每日明细",
@@ -422,6 +442,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                     cum_data.append([d, round(cum, 4)])
                 charts.append({
                     "id": "etf_huijin_cumulative",
+                    "dim": "huijin",
                     "title": "汇金维度 · 每日总份额变化累计",
                     "note": f"从所选区间起始日逐日累加汇金 ETF 总流通份额变化，末值为区间净变化；{scope}",
                     "y_axes": [{"name": "累计份额变化 (亿份)", "position": "left"}],
@@ -431,6 +452,83 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                     "total_cap_change": round(cum, 4),  # 末值=区间累计净变化
                     "range_label": scope,
                 })
+
+        if tag == "宽基":
+            # 宽基维度：Top5 科创50 ETF（按标签「科创50」取数）份额变化 / 申赎净流入排名，
+            # 以及全部科创50 ETF 合计的流通份额存量 / 规模存量时间序列。
+            kc_codes = {str(c).zfill(6) for c, tags in tag_map.items()
+                        if "科创50" in (tags or [])}
+            kc_sub = pd.DataFrame()
+            if (etf_df is not None and not etf_df.empty and kc_codes
+                    and required.issubset(etf_df.columns)):
+                kc_sub = etf_df[etf_df["基金代码"].isin(kc_codes)]
+
+            # 图：各科创50 ETF 区间净流入排名（Top5），含份额变化与申赎净流入
+            kc_rank: dict[str, dict] = {}
+            if not kc_sub.empty:
+                for code, grp in kc_sub.groupby("基金代码", sort=False):
+                    name = str(grp["基金简称"].iloc[0]) if "基金简称" in grp.columns else str(code)
+                    net = _net_inflow_sum(grp)
+                    share = _clean_number(grp["份额变化(亿份)"].sum())
+                    kc_rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
+            ordered = sorted(kc_rank.items(),
+                             key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
+            top5 = ordered[:5]
+            share_rank = [[v["name"], v["share"]] for _, v in top5 if v["share"] is not None]
+            net_rank = [[v["name"], v["net"]] for _, v in top5 if v["net"] is not None]
+            rank_meta = [{"code": code, "name": v["name"]} for code, v in top5]
+            charts.append({
+                "id": "etf_kc50_top5",
+                "dim": "broad",
+                "title": "宽基 · Top5 科创50 ETF 份额变化 / 申赎净流入",
+                "note": f"按「科创50」标签取数，按区间申赎净流入降序取前 5 只；"
+                        f"份额变化=较上一交易日环比累加，净流入=份额变化×当日净值；{scope}",
+                "layout": "etf_rank",
+                "etf_count": len(kc_codes),
+                "codes": sorted(kc_codes),
+                "rank_meta": rank_meta,
+                "detail_start": low, "detail_end": high,
+                "range_label": scope,
+                "y_axes": [{"name": "份额变化 (亿份)", "position": "left"},
+                           {"name": "申赎净流入 (亿元)", "position": "right"}],
+                "series": [
+                    {"name": "份额变化(亿份)", "data": share_rank,
+                     "y_axis_index": 0, "type": "bar"},
+                    {"name": "申赎净流入(亿元)", "data": net_rank,
+                     "y_axis_index": 1, "type": "bar"},
+                ],
+            })
+
+            # 图：科创50 ETF 合计流通份额 / 规模存量（按交易日），双轴
+            stock_share: dict[str, float] = {}
+            stock_cap: dict[str, float] = {}
+            if not kc_sub.empty and {"交易日期", "份额(亿份)", "规模(亿元)"}.issubset(kc_sub.columns):
+                for d, grp in kc_sub.groupby("交易日期", sort=True):
+                    s = _clean_number(pd.to_numeric(grp["份额(亿份)"], errors="coerce").sum())
+                    c = _clean_number(pd.to_numeric(grp["规模(亿元)"], errors="coerce").sum())
+                    if s is not None:
+                        stock_share[str(d)[:10]] = s
+                    if c is not None:
+                        stock_cap[str(d)[:10]] = c
+            charts.append({
+                "id": "etf_kc50_stock",
+                "dim": "broad",
+                "title": "宽基 · 科创50 ETF 合计流通份额 / 规模",
+                "note": f"按「科创50」标签全部 ETF 逐交易日合计：份额(亿份) 与规模(亿元) 存量，"
+                        f"非变化值；{scope}",
+                "etf_count": len(kc_codes),
+                "codes": sorted(kc_codes),
+                "y_axes": [{"name": "流通份额 (亿份)", "position": "left"},
+                           {"name": "规模 (亿元)", "position": "right"}],
+                "series": [
+                    {"name": "合计流通份额(亿份)",
+                     "data": [[d, v] for d, v in sorted(stock_share.items())],
+                     "y_axis_index": 0, "type": "line"},
+                    {"name": "合计规模(亿元)",
+                     "data": [[d, v] for d, v in sorted(stock_cap.items())],
+                     "y_axis_index": 1, "type": "line"},
+                ],
+            })
     return charts
 
 
@@ -584,6 +682,95 @@ TRADE_CHART_SPECS = [
         ],
     },
 ]
+
+
+def build_valuation_charts(rp_df: pd.DataFrame, months: int = 12,
+                           start: str | None = None, end: str | None = None) -> dict:
+    """估值页：FED 风险溢价率 + 均值±1σ/±2σ 通道 + 全历史百分位 + 当前摘要卡片。
+
+    rp_df 来自 trade_risk_premium_raw（原始直采表），含
+    trade_date / risk_premium / avg / upper1std / lower1std / upper2std / lower2std / ratio / close。
+
+    百分位口径：以「全部历史」risk_premium 为基准，统计 ≤ 当前值的交易日占比（0~100%），
+    不随展示窗口变化；窗口只决定曲线画哪一段。数值越高代表股票相对债券越便宜。
+    """
+    specs = {s["id"]: s for s in VALUATION_CHART_SPECS}
+    empty = {"charts": [_chart(specs[s["id"]], []) for s in VALUATION_CHART_SPECS],
+             "summary": {}, "total_days": 0}
+
+    if rp_df is None or rp_df.empty or "risk_premium" not in rp_df.columns:
+        return empty
+
+    df = rp_df.copy()
+    df["trade_date"] = df["trade_date"].astype(str).str[:10]
+    df = df[df["risk_premium"].notna()].sort_values("trade_date").reset_index(drop=True)
+    if df.empty:
+        return empty
+
+    rp = pd.to_numeric(df["risk_premium"], errors="coerce")
+    valid = rp.notna()
+    df = df[valid].reset_index(drop=True)
+    rp = pd.to_numeric(df["risk_premium"], errors="coerce")
+
+    # 全历史百分位：≤ 当前值的样本数 / 全部样本数 × 100
+    total = len(rp)
+    pct = rp.rank(pct=True, method="average") * 100
+
+    def col(name: str) -> list[float | None]:
+        return [(_clean_number(v) if name in df.columns else None) for v in (
+            df[name] if name in df.columns else [None] * total)]
+
+    date_list = [str(d) for d in df["trade_date"]]
+    rp_list = [_clean_number(v) for v in rp]
+    pct_list = [_clean_number(v) for v in pct]
+    avg_list = col("avg")
+    up1_list = col("upper1std")
+    low1_list = col("lower1std")
+    up2_list = col("upper2std")
+    low2_list = col("lower2std")
+
+    # 展示窗口：精确 start/end 优先于 months；百分位已在全历史上算好，这里只筛展示点
+    view_df, _, _, _ = _date_window(df, months, start, end, "trade_date")
+    visible = set(view_df["trade_date"].astype(str).str[:10]) if not view_df.empty else set()
+
+    def series(name, data, axis=0, typ="line"):
+        return {"name": name,
+                "data": [[d, v] for d, v in zip(date_list, data)
+                         if v is not None and d in visible],
+                "y_axis_index": axis, "type": typ}
+
+    band_series = [
+        series("风险溢价率", rp_list),
+        series("历史均值", avg_list),
+        series("均值+1σ", up1_list),
+        series("均值−1σ", low1_list),
+        series("均值+2σ", up2_list),
+        series("均值−2σ", low2_list),
+    ]
+    # 通道上下沿数据供前端渲染 markArea 阴影带
+    bands = {
+        "std1": [[d, lo, hi] for d, lo, hi in zip(date_list, low1_list, up1_list)
+                 if lo is not None and hi is not None and d in visible],
+        "std2": [[d, lo, hi] for d, lo, hi in zip(date_list, low2_list, up2_list)
+                 if lo is not None and hi is not None and d in visible],
+    }
+    pct_series = [series("历史百分位", pct_list)]
+
+    band_chart = _chart(specs["val_fed_band"], band_series)
+    band_chart["bands"] = bands
+    pct_chart = _chart(specs["val_fed_percentile"], pct_series)
+
+    latest = {
+        "date": date_list[-1],
+        "risk_premium": rp_list[-1],
+        "percentile": pct_list[-1],
+        "avg": avg_list[-1], "upper1std": up1_list[-1], "lower1std": low1_list[-1],
+        "upper2std": up2_list[-1], "lower2std": low2_list[-1],
+        "ratio": _clean_number(df["ratio"].iloc[-1]) if "ratio" in df.columns else None,
+        "close": _clean_number(df["close"].iloc[-1]) if "close" in df.columns else None,
+        "total_days": total,
+    }
+    return {"charts": [band_chart, pct_chart], "summary": latest, "total_days": total}
 
 
 def build_trade_charts(trade_df: pd.DataFrame, days: int | None = None,

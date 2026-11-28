@@ -49,6 +49,7 @@ from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
 from processors.dashboard import (
     build_etf_charts, build_etf_daily_detail, build_macro_charts, build_trade_charts,
+    build_valuation_charts,
 )
 from processors.etf_change import compute_etf_changes
 
@@ -1154,7 +1155,9 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
                   etf_start: str | None = None, etf_end: str | None = None,
                   overlay_index: str = "000001", trade_days: int | None = None,
                   trade_months: int = 12, trade_start: str | None = None,
-                  trade_end: str | None = None):
+                  trade_end: str | None = None,
+                  val_months: int = 12, val_start: str | None = None,
+                  val_end: str | None = None):
     """数据看板：宏观/ETF/交易三组图，共用系统数据源。
 
     months/etf_months/trade_months 均为月份范围（0=全部），默认近一年；
@@ -1170,6 +1173,7 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         etf_months = int(days)
     etf_months = max(0, min(int(etf_months or 0), 240))
     trade_months = max(0, min(int(trade_months or 0), 240))
+    val_months = max(0, min(int(val_months or 0), 240))
 
     derived_df = storage.read_derived(db)
     _, macro_df = storage.read_macro(db, limit=None)
@@ -1209,6 +1213,9 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "trade": {"charts": build_trade_charts(
             storage.read_trade(db), days=trade_days,
             months=trade_months, start=trade_start, end=trade_end)},
+        "valuation": build_valuation_charts(
+            storage.read_trade_raw(db, "risk_premium"), months=val_months,
+            start=val_start, end=val_end),
     }
 
 

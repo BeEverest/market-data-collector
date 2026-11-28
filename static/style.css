@@ -337,3 +337,8 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 .summary-cell-val{font-size:17px;font-weight:700;line-height:1.15;color:var(--ink)}
 .summary-cell-lbl{font-size:10.5px;color:var(--muted);margin-top:2px;font-weight:600}
 @media(max-width:640px){.summary-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* ETF 维度顶部标签切换 */
+.etf-dim-tabs .etf-dim-tab{background:rgba(148,163,184,.10);color:var(--muted);border:1px solid rgba(148,163,184,.28);font-weight:600;padding:5px 16px}
+.etf-dim-tabs .etf-dim-tab:hover{background:rgba(37,99,235,.14);color:var(--blue)}
+.etf-dim-tabs .etf-dim-tab.active{background:var(--blue);color:#fff;border-color:var(--blue);box-shadow:0 2px 8px rgba(37,99,235,.28)}

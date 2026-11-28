@@ -9,7 +9,8 @@
   6 居民存款同比多增
   7 黄金当月新增/吨
 
-ETF 2 张柱状图：按标签（汇金/黄金）汇总当日较上一交易日的流通份额变化与申赎净流入。
+ETF 图：按标签（汇金/黄金/宽基）汇总当日较上一交易日的流通份额变化与申赎净流入，
+并含黄金累计图、科创50 宽基排名与合计图（详见 build_etf_charts 文档）。
 
 所有函数均返回前端可直接消费的 dict/list；数值为 float，日期为 YYYY-MM 或 YYYY-MM-DD。
 """
@@ -323,14 +324,37 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
     与宏观图保持一致的「近一年/近6个月/近3年/近5年/全部」口径。变化值已在
     read_etf_with_changes 中基于全量历史算好，这里只按日期截取展示窗口。
     start/end 为 YYYY-MM-DD 精确日期区间，优先于 months（任一给出即生效）。
-    index_df 为指数日频数据，index_code 指定叠加的指数代码（默认上证指数 000001）；
-    有该指数数据时汇金原图叠加其日线（前端渲染为上下双图）。
+    index_df 为指数日频数据，index_code 指定汇金/宽基主图叠加的指数代码（默认上证指数 000001）；
+    科创50 合计图固定叠加科创50指数 000688。有该指数数据时前端渲染为上下双图联动。
+
+    维度口径：
+    - 汇金：主图（可叠指数）+ 各 ETF 净流入细分；不再提供每日变化累计图。
+    - 黄金：主图 + 累计份额变化 / 累计申赎净流入 / 总份额整行图。
+    - 宽基：主图（可叠指数）+ Top5 科创50 排名 + 科创50 合计流通份额 / 申赎净流入
+      （叠科创50指数），后两图由前端并作一排。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
     etf_df, scope, low, high = _etf_window(etf_df, months, start, end)
     charts = []
-    huijin_share_data: list[list] = []  # 汇金每日总份额变化，供累计图使用
+
+    def attach_overlay(chart: dict, code: str) -> str | None:
+        """给图表叠加指数日线（上格），前端渲染为上下双图联动；无数据时保持原样。"""
+        idx_data = _index_daily_window(index_df, low, high, code=code)
+        if not idx_data:
+            return None
+        idx_name = "指数"
+        if index_df is not None and not index_df.empty and "指数名称" in index_df.columns:
+            names = index_df[index_df["指数代码"].astype(str).str.zfill(6)
+                             == str(code).strip().zfill(6)]["指数名称"]
+            if not names.empty:
+                idx_name = str(names.iloc[0])
+        chart["layout"] = "etf_overlay"
+        chart["index_code"] = str(code).strip().zfill(6)
+        chart["index_name"] = f"{idx_name} (点)"
+        chart["index_data"] = idx_data
+        chart["note"] += f"；上方叠加{idx_name}日线"
+        return idx_name
     for tag in ETF_DASHBOARD_TAGS:
         codes = {str(c).zfill(6) for c, tags in tag_map.items()
                  if tag in (tags or [])}
@@ -376,21 +400,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         })
 
         if tag == "汇金":
-            huijin_share_data = share_data  # 记录汇金每日总份额变化（按交易日升序）
-            # 汇金原图叠加上证指数日线：与 ETF 同窗口截取；前端渲染为上下双图联动。
-            idx_data = _index_daily_window(index_df, low, high, code=index_code)
-            if idx_data:
-                idx_name = "指数"
-                if index_df is not None and not index_df.empty and "指数名称" in index_df.columns:
-                    names = index_df[index_df["指数代码"].astype(str).str.zfill(6)
-                                     == str(index_code).strip().zfill(6)]["指数名称"]
-                    if not names.empty:
-                        idx_name = str(names.iloc[0])
-                charts[-1]["layout"] = "etf_overlay"
-                charts[-1]["index_code"] = str(index_code).strip().zfill(6)
-                charts[-1]["index_name"] = f"{idx_name} (点)"
-                charts[-1]["index_data"] = idx_data
-                charts[-1]["note"] += f"；上方叠加{idx_name}日线"
+            # 汇金原图叠加所选指数日线：与 ETF 同窗口截取；前端渲染为上下双图联动。
+            attach_overlay(charts[-1], index_code)
             # 汇金细分：按每只 ETF 累加所选区间内的真实净流入（份额变化×当日净值）降序。
             # 变化基准来自全量历史（见 read_etf_with_changes），这里只按窗口截取再累加。
             # 兼容旧数据：无「净流入(亿元)」列时回退到规模变化。
@@ -432,30 +443,52 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 ],
             })
 
-            # 汇金每日总份额变化的区间累计曲线（默认近一年；随 ETF 范围控件联动）。
-            # 放在细分图之后、黄金图之前；从区间起始日逐日累加，末值为区间净变化。
-            if huijin_share_data:
-                cum = 0.0
-                cum_data = []
-                for d, v in huijin_share_data:
-                    cum += v
-                    cum_data.append([d, round(cum, 4)])
-                charts.append({
-                    "id": "etf_huijin_cumulative",
-                    "dim": "huijin",
-                    "title": "汇金维度 · 每日总份额变化累计",
-                    "note": f"从所选区间起始日逐日累加汇金 ETF 总流通份额变化，末值为区间净变化；{scope}",
-                    "y_axes": [{"name": "累计份额变化 (亿份)", "position": "left"}],
-                    "series": [
-                        {"name": "累计份额变化", "data": cum_data, "y_axis_index": 0, "type": "line"},
-                    ],
-                    "total_cap_change": round(cum, 4),  # 末值=区间累计净变化
-                    "range_label": scope,
-                })
+        if tag == "黄金":
+            # 黄金维度整行图：累计份额变化 / 累计申赎净流入 / 总份额。
+            # 前两条从区间起始日逐日累加「较上一交易日」变化，末值为区间净变化；
+            # 总份额为逐交易日存量，来自 ETF 日频「份额(亿份)」合计。
+            cum_share, acc = [], 0.0
+            for d, v in share_data:
+                acc += v
+                cum_share.append([d, round(acc, 4)])
+            cum_flow, acc = [], 0.0
+            for d, v in flow_data:
+                acc += v
+                cum_flow.append([d, round(acc, 4)])
+            total_share: dict[str, float] = {}
+            if not sub.empty and {"交易日期", "份额(亿份)"}.issubset(sub.columns):
+                for d, grp in sub.groupby("交易日期", sort=True):
+                    s = _clean_number(pd.to_numeric(grp["份额(亿份)"], errors="coerce").sum())
+                    if s is not None:
+                        total_share[str(d)[:10]] = s
+            charts.append({
+                "id": "etf_gold_cumulative",
+                "dim": "gold",
+                "wide": True,
+                "title": "黄金维度 · 流通累计份额变化 / 累计申赎净流入 / 总份额",
+                "note": f"累计变化从所选区间起始日逐日累加（末值为区间净变化），总份额为逐交易日存量；{scope}",
+                "etf_count": len(codes),
+                "codes": sorted(codes),
+                "y_axes": [
+                    {"name": "累计份额变化 (亿份)", "position": "left"},
+                    {"name": "累计申赎净流入 (亿元)", "position": "right"},
+                    {"name": "总份额 (亿份)", "position": "right", "offset": 52},
+                ],
+                "series": [
+                    {"name": "累计流通份额变化", "data": cum_share,
+                     "y_axis_index": 0, "type": "line"},
+                    {"name": "累计申赎净流入", "data": cum_flow,
+                     "y_axis_index": 1, "type": "line"},
+                    {"name": "总份额", "data": [[d, v] for d, v in sorted(total_share.items())],
+                     "y_axis_index": 2, "type": "line"},
+                ],
+            })
 
         if tag == "宽基":
+            # 宽基主图叠加所选指数日线（与汇金同口径，默认上证指数），上下双图联动。
+            attach_overlay(charts[-1], index_code)
             # 宽基维度：Top5 科创50 ETF（按标签「科创50」取数）份额变化 / 申赎净流入排名，
-            # 以及全部科创50 ETF 合计的流通份额存量 / 规模存量时间序列。
+            # 以及全部科创50 ETF 合计的流通份额存量 / 申赎净流入时间序列（叠科创50指数）。
             kc_codes = {str(c).zfill(6) for c, tags in tag_map.items()
                         if "科创50" in (tags or [])}
             kc_sub = pd.DataFrame()
@@ -480,6 +513,7 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
             charts.append({
                 "id": "etf_kc50_top5",
                 "dim": "broad",
+                "pair": "kc50",  # 与下一张科创50合计图并作一排
                 "title": "宽基 · Top5 科创50 ETF 份额变化 / 申赎净流入",
                 "note": f"按「科创50」标签取数，按区间申赎净流入降序取前 5 只；"
                         f"份额变化=较上一交易日环比累加，净流入=份额变化×当日净值；{scope}",
@@ -499,36 +533,40 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                 ],
             })
 
-            # 图：科创50 ETF 合计流通份额 / 规模存量（按交易日），双轴
+            # 图：科创50 ETF 合计流通份额存量 / 申赎净流入（按交易日），双轴；
+            # 上格叠加科创50指数日线（固定 000688，不随用户选择的叠加指数变化）。
             stock_share: dict[str, float] = {}
-            stock_cap: dict[str, float] = {}
-            if not kc_sub.empty and {"交易日期", "份额(亿份)", "规模(亿元)"}.issubset(kc_sub.columns):
+            stock_flow: dict[str, float] = {}
+            if not kc_sub.empty and {"交易日期", "份额(亿份)"}.issubset(kc_sub.columns):
                 for d, grp in kc_sub.groupby("交易日期", sort=True):
                     s = _clean_number(pd.to_numeric(grp["份额(亿份)"], errors="coerce").sum())
-                    c = _clean_number(pd.to_numeric(grp["规模(亿元)"], errors="coerce").sum())
+                    f = _net_inflow_sum(grp)
                     if s is not None:
                         stock_share[str(d)[:10]] = s
-                    if c is not None:
-                        stock_cap[str(d)[:10]] = c
-            charts.append({
+                    if f is not None:
+                        stock_flow[str(d)[:10]] = f
+            stock_chart = {
                 "id": "etf_kc50_stock",
                 "dim": "broad",
-                "title": "宽基 · 科创50 ETF 合计流通份额 / 规模",
-                "note": f"按「科创50」标签全部 ETF 逐交易日合计：份额(亿份) 与规模(亿元) 存量，"
-                        f"非变化值；{scope}",
+                "pair": "kc50",  # 与 Top5 图并作一排
+                "title": "宽基 · 科创50 ETF 合计流通份额 / 申赎净流入",
+                "note": f"按「科创50」标签全部 ETF 逐交易日合计：流通份额存量(亿份) 与申赎净流入(亿元)；"
+                        f"{scope}",
                 "etf_count": len(kc_codes),
                 "codes": sorted(kc_codes),
                 "y_axes": [{"name": "流通份额 (亿份)", "position": "left"},
-                           {"name": "规模 (亿元)", "position": "right"}],
+                           {"name": "申赎净流入 (亿元)", "position": "right"}],
                 "series": [
                     {"name": "合计流通份额(亿份)",
                      "data": [[d, v] for d, v in sorted(stock_share.items())],
                      "y_axis_index": 0, "type": "line"},
-                    {"name": "合计规模(亿元)",
-                     "data": [[d, v] for d, v in sorted(stock_cap.items())],
+                    {"name": "合计申赎净流入(亿元)",
+                     "data": [[d, v] for d, v in sorted(stock_flow.items())],
                      "y_axis_index": 1, "type": "line"},
                 ],
-            })
+            }
+            attach_overlay(stock_chart, "000688")
+            charts.append(stock_chart)
     return charts
 
 

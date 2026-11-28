@@ -1859,19 +1859,38 @@ function renderDash(){
   if(grp==='valuation') renderValuationSummary();
   // ETF 图1（叠指数的汇金图）与图2 各自的明细卡片：按卡片类型占满一行
   const cardHtml = (c)=>{
-    const wide = (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split' || c.layout==='trade_market_split');
+    // pair 图由外层 chart-row-pair 并排承载，自身不再跨整行
+    const wide = !!c.wide || (!c.pair && (c.layout==='etf_overlay' || c.layout==='etf_rank' || c.layout==='trade_margin_split' || c.layout==='trade_market_split'));
     const tall = c.layout==='trade_margin_split' || c.layout==='trade_market_split' || c.layout==='etf_rank';
-    const extra = c.layout==='etf_overlay' ? `<div class="card extra-detail-card" data-extra="daily">
+    // 汇金专属明细卡片只挂在汇金主图，避免其他叠加指数图重复出现汇金明细
+    const extra = (c.id==='etf_huijin' && c.layout==='etf_overlay') ? `<div class="card extra-detail-card" data-extra="daily">
         <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 按天流通份额 / 申赎净流入明细</h3><span class="hint" style="margin-left:auto">点击某天展开当日各 ETF 明细</span></div>
         <div class="card-body"><div class="etf-daily-total" id="etfDailyTotal"></div><div class="table-wrap" id="etfDailyTable"><div class="hint">加载中…</div></div></div></div>
       <div class="card extra-detail-card" data-extra="shares">
         <div class="card-header"><h3 style="font-size:12.5px">汇金维度 · 每日总份额（含累计变化）</h3><span class="hint" style="margin-left:auto">柱子=每日份额存量，折线=累计变化，点击柱子展开当日 ETF 明细</span></div>
         <div class="card-body"><div class="chart-box" id="etfSharesCumChart" style="height:300px"></div><div class="etf-daily-total" id="etfSharesTotal"></div><div class="table-wrap" id="etfSharesTable"><div class="hint">加载中…</div></div></div></div>` : '';
     const rankDetail = c.layout==='etf_rank' ? `<div class="etf-daily-detail" data-detail-for="${esc(c.id)}" hidden></div>` : '';
-    return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#8fa6c4" title="${esc(c.note)}"></i>`:''}</div>
+    return `<div class="card ${wide?'wide-card':''}" data-chart-card="${esc(c.id)}" data-pair="${esc(c.pair||'')}"><div class="card-header" style="padding:9px 13px"><h3 style="font-size:12.5px">${esc(c.title)}</h3>${c.note?`<i class="ti ti-info-circle" style="margin-left:auto;color:#8fa6c4" title="${esc(c.note)}"></i>`:''}</div>
       <div class="card-body" style="padding:6px"><div class="chart-box ${tall?'tall':''} ${c.layout==='etf_overlay'?'overlay':''} ${c.layout==='trade_market_split'?'tm-tall':''}"></div>${rankDetail}</div></div>${extra}`;
   };
-  box.innerHTML = list.map(cardHtml).join('');
+  // 相邻且同 pair 的两张图包进一个整行两列容器，实现「并作一排」
+  let cardsHtml = '', openPair = '';
+  list.forEach(c=>{
+    const card = cardHtml(c);
+    if(c.pair){
+      if(openPair !== c.pair){
+        if(openPair) cardsHtml += '</div>';
+        cardsHtml += '<div class="chart-row-pair">';
+        openPair = c.pair;
+      }
+      cardsHtml += card;
+    }else{
+      if(openPair){ cardsHtml += '</div>'; openPair=''; }
+      cardsHtml += card;
+    }
+  });
+  if(openPair) cardsHtml += '</div>';
+  box.innerHTML = cardsHtml;
   const meta = view.querySelector('[data-dash-meta]');
   const dimLabel = ETF_DIMS.find(x=>x[0]===etfDim)?.[1]||'';
   if(meta) meta.textContent = grp==='valuation'

@@ -164,11 +164,11 @@ class TestEtfDashboard:
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
         tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
-        # 汇金原图 + 汇金细分 + 汇金累计 + 黄金原图 + 宽基原图 + Top5科创50 + 科创50存量
+        # 汇金原图 + 汇金细分 + 黄金原图 + 黄金累计 + 宽基原图 + Top5科创50 + 科创50合计
         # 近1月只保留 2026-11；510050 规模变化 = 2+6+8 = 16，510300 = 4，合计 20
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == [
-            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold",
+            "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
             "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
@@ -187,15 +187,16 @@ class TestEtfDashboard:
         assert detail["detail_start"] == "2026-11"
         assert detail["rank_meta"] == [
             {"code": "510050", "name": "510050"}, {"code": "510300", "name": "510300"}]
-        # 累计份额变化在细分图之后、黄金之前（索引2）：逐日累加 4+5+7 = 16
-        cum = charts[2]
-        assert cum["id"] == "etf_huijin_cumulative"
-        gold = charts[3]
+        gold = charts[2]
         assert gold["id"] == "etf_gold"
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
-        assert cum["series"][0]["data"] == [
-            ["2026-11-18", 4.0], ["2026-11-19", 9.0], ["2026-11-20", 16.0]]
-        assert cum["total_cap_change"] == 16.0
+        # 黄金累计图（索引3）：从区间起始日逐日累加，末值为区间净变化；整行展示
+        cum = charts[3]
+        assert cum["id"] == "etf_gold_cumulative"
+        assert cum["wide"] is True and cum["dim"] == "gold"
+        assert cum["series"][0]["data"] == [["2026-11-19", -0.5]]
+        assert cum["series"][1]["data"] == [["2026-11-19", -1.5]]  # 回退规模变化
+        assert cum["series"][2]["data"] == []  # 无「份额(亿份)」列
 
         full = build_etf_charts(df, tag_map, months=0)
         # 全量区间：510050 = 10+2+6+8 = 26；510300 = 4
@@ -392,7 +393,7 @@ class TestEtfDashboard:
         ])
         charts = build_etf_charts(df, {}, months=12)
         assert [c["id"] for c in charts] == [
-            "etf_huijin", "etf_huijin_detail", "etf_gold",
+            "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
             "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
         assert all(c.get("etf_count", 0) == 0 for c in charts)
         assert all(not s["data"] for c in charts for s in c["series"])
@@ -411,19 +412,20 @@ class TestDashboardApi:
         assert len(data["macro"]["charts"]) == 8
         assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
         assert [c["id"] for c in data["etf"]["charts"]] == [
-            "etf_huijin", "etf_huijin_detail", "etf_huijin_cumulative", "etf_gold",
+            "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
             "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
-        assert data["etf"]["charts"][2]["id"] == "etf_huijin_cumulative"
-        assert data["etf"]["charts"][3]["id"] == "etf_gold"
+        assert data["etf"]["charts"][2]["id"] == "etf_gold"
+        assert data["etf"]["charts"][3]["id"] == "etf_gold_cumulative"
         assert "generated_at" in data
-        # 接口透传指数数据：汇金原图叠加日线（上下双图）
+        # 接口透传指数数据：汇金与宽基主图叠加所选指数日线（上下双图）
         hj = data["etf"]["charts"][0]
         assert hj["layout"] == "etf_overlay"
         assert [d for d, _ in hj["index_data"]] == ["2026-10-30", "2026-10-31"]
-        assert data["etf"]["charts"][3].get("layout") is None  # 黄金图为普通时间序列
+        assert data["etf"]["charts"][2].get("layout") is None  # 黄金图为普通时间序列
+        assert data["etf"]["charts"][4]["layout"] == "etf_overlay"  # 宽基主图
         # 默认叠加指数为上证指数，并返回可用指数选项
         assert data["overlay_index"] == "000001"
         assert {o["code"]: o["name"] for o in data["index_options"]} == {"000001": "上证指数"}
@@ -450,12 +452,11 @@ class TestDashboardApi:
         ).json()
         assert data["etf_start"] == "2026-11-10"
         assert data["etf_end"] == "2026-11-20"
-        # 未配置 ETF 标签时无汇金数据，故不生成累计图（3 张）；有汇金数据时为 4 张
         ids = [c["id"] for c in data["etf"]["charts"]]
-        assert "etf_huijin" in ids and "etf_gold" in ids
-        if "etf_huijin_cumulative" in ids:
-            cum = next(c for c in data["etf"]["charts"] if c["id"] == "etf_huijin_cumulative")
-            assert all("2026-11-10" <= d <= "2026-11-20" for d, _ in cum["series"][0]["data"])
+        assert "etf_huijin" in ids and "etf_gold" in ids and "etf_gold_cumulative" in ids
+        cum = next(c for c in data["etf"]["charts"] if c["id"] == "etf_gold_cumulative")
+        assert all("2026-11-10" <= d <= "2026-11-20"
+                   for s in cum["series"] for d, _ in s["data"])
 
     def test_etf_daily_endpoint_date_range(self, client):
         data = client.get(
@@ -608,10 +609,11 @@ class TestValuationDashboard:
 
 
 class TestBroadEtfDashboard:
-    """宽基维度：Top5 科创50 ETF 份额/申赎净流入 + 合计存量。"""
+    """宽基维度：Top5 科创50 ETF 份额/申赎净流入 + 合计流通份额/申赎净流入（叠科创50）。"""
 
-    def test_kc50_charts(self):
-        df = pd.DataFrame([
+    @staticmethod
+    def _df():
+        return pd.DataFrame([
             {"基金代码": "588000", "基金简称": "科创50ETF华夏", "交易日期": "2026-11-20",
              "份额(亿份)": 10.0, "规模(亿元)": 20.0,
              "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0, "净流入(亿元)": 2.0},
@@ -619,13 +621,60 @@ class TestBroadEtfDashboard:
              "份额(亿份)": 5.0, "规模(亿元)": 12.0,
              "份额变化(亿份)": -0.5, "规模变化(亿元)": -1.0, "净流入(亿元)": -1.0},
         ])
+
+    def test_kc50_charts(self):
         tags = {"588000": ["科创50", "宽基"], "588080": ["科创50", "宽基"]}
-        charts = build_etf_charts(df, tags, months=1)
+        charts = build_etf_charts(self._df(), tags, months=1)
         top5 = next(c for c in charts if c["id"] == "etf_kc50_top5")
-        assert top5["dim"] == "broad"
+        assert top5["dim"] == "broad" and top5["pair"] == "kc50"
         assert [m["code"] for m in top5["rank_meta"]] == ["588000", "588080"]
         assert top5["series"][1]["data"] == [
             ["科创50ETF华夏", 2.0], ["科创50ETF易方达", -1.0]]
         stock = next(c for c in charts if c["id"] == "etf_kc50_stock")
+        assert stock["pair"] == "kc50"
+        assert "合计流通份额" in stock["title"] and "申赎净流入" in stock["title"]
         assert stock["series"][0]["data"] == [["2026-11-20", 15.0]]
-        assert stock["series"][1]["data"] == [["2026-11-20", 32.0]]
+        assert stock["series"][1]["data"] == [["2026-11-20", 1.0]]  # 2 + (-1)
+
+    def test_broad_main_and_kc50_overlay_index(self):
+        df = self._df()
+        tags = {"588000": ["科创50", "宽基"], "588080": ["科创50", "宽基"]}
+        idx = pd.DataFrame([
+            {"指数代码": "000001", "指数名称": "上证指数", "交易日期": "2026-11-20", "收盘价": 3900.0},
+            {"指数代码": "000688", "指数名称": "科创50", "交易日期": "2026-11-20", "收盘价": 1000.0},
+        ])
+        charts = build_etf_charts(df, tags, months=1, index_df=idx, index_code="000001")
+        main = next(c for c in charts if c["id"] == "etf_broad")
+        assert main["layout"] == "etf_overlay" and main["index_code"] == "000001"
+        assert main["index_data"] == [["2026-11-20", 3900.0]]
+        stock = next(c for c in charts if c["id"] == "etf_kc50_stock")
+        assert stock["layout"] == "etf_overlay"
+        assert stock["index_code"] == "000688"  # 固定科创50，不随用户选择变化
+        assert stock["index_data"] == [["2026-11-20", 1000.0]]
+
+
+class TestGoldCumulativeDashboard:
+    """黄金维度：累计份额变化 / 累计申赎净流入 / 总份额。"""
+
+    def test_gold_cumulative_chart(self):
+        df = pd.DataFrame([
+            {"基金代码": "518880", "基金简称": "黄金ETF", "交易日期": "2026-11-18",
+             "份额(亿份)": 10.0, "规模(亿元)": 30.0,
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0, "净流入(亿元)": 1.5},
+            {"基金代码": "518880", "基金简称": "黄金ETF", "交易日期": "2026-11-19",
+             "份额(亿份)": 12.0, "规模(亿元)": 33.0,
+             "份额变化(亿份)": 2.0, "规模变化(亿元)": 3.0, "净流入(亿元)": 2.5},
+        ])
+        charts = build_etf_charts(df, {"518880": ["黄金"]}, months=1)
+        cum = next(c for c in charts if c["id"] == "etf_gold_cumulative")
+        assert cum["wide"] is True and cum["dim"] == "gold"
+        assert [a["name"] for a in cum["y_axes"]] == [
+            "累计份额变化 (亿份)", "累计申赎净流入 (亿元)", "总份额 (亿份)"]
+        assert cum["series"][0]["data"] == [
+            ["2026-11-18", 1.0], ["2026-11-19", 3.0]]
+        assert cum["series"][1]["data"] == [
+            ["2026-11-18", 1.5], ["2026-11-19", 4.0]]
+        assert cum["series"][2]["data"] == [
+            ["2026-11-18", 10.0], ["2026-11-19", 12.0]]
+        # 汇金累计图不再生成
+        assert all(c["id"] != "etf_huijin_cumulative" for c in charts)

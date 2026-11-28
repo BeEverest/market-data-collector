@@ -1094,9 +1094,15 @@ const DASH_SUB = {
 };
 const ETF_DIMS = [['huijin','汇金'],['gold','黄金'],['broad','宽基']];
 let etfDim = 'huijin';
+// 同步标签高亮：renderDash 与切换时共用，确保任何时刻只有一个维度处于激活态
+function syncEtfDimTabs(view){
+  (view||$('.view.active'))?.querySelectorAll('.etf-dim-tab').forEach(b=>{
+    b.classList.toggle('active', b.dataset.etfDim===etfDim);
+  });
+}
 function dashShell(grp){
   const overlay = grp==='etf'
-    ? `<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="汇金图上方叠加的指数日线"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`
+    ? `<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="ETF 主图上方叠加的指数日线（汇金/宽基主图）"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`
     : '';
   // ETF 维度顶部标签：汇金 / 黄金 / 宽基
   const dimTabs = grp==='etf'
@@ -1851,8 +1857,8 @@ function renderDash(){
   const range = chartRange(view);
   const hasRange = range && (range.start || range.end);
   let allCharts = DB[grp].charts||[];
-  // ETF 维度：按顶部标签（汇金/黄金/宽基）过滤
-  if(grp==='etf') allCharts = allCharts.filter(c=>!c.dim || c.dim===etfDim);
+  // ETF 维度：严格按顶部标签（汇金/黄金/宽基）过滤，图表不得跨维度泄漏
+  if(grp==='etf') allCharts = allCharts.filter(c=>c.dim===etfDim);
   const list = allCharts.map(c=>hasRange ? rangeChart(c, range, months) : c);
   // 有绝对区间时不再让渲染函数按 months 二次裁剪
   const renderMonths = hasRange ? null : months;
@@ -1897,20 +1903,9 @@ function renderDash(){
     ? `风险溢价率 · 均值±1σ/±2σ · 全历史百分位 · 2 图`
     : grp==='etf' ? `当前维度：${dimLabel} · 已渲染 ${list.length} 图`
     : `已渲染 ${list.length} 图`;
-  // ETF 顶部标签切换：仅重渲染图表，不重新拉数据
-  if(grp==='etf'){
-    view.querySelectorAll('.etf-dim-tab').forEach(btn=>{
-      if(btn.dataset.bound) return;
-      btn.dataset.bound='1';
-      btn.addEventListener('click',()=>{
-        const next=btn.dataset.etfDim;
-        if(next===etfDim) return;
-        etfDim=next;
-        view.querySelectorAll('.etf-dim-tab').forEach(b=>b.classList.toggle('active',b.dataset.etfDim===next));
-        renderDash();
-      });
-    });
-  }
+  // ETF 顶部标签的点击由全局事件委托统一处理（见 bindEvents），
+  // 避免数据尚未加载、renderDash 尚未执行时点击无效而停留在汇金维度。
+  if(grp==='etf') syncEtfDimTabs(view);
   setTimeout(()=>{
     list.forEach((c,idx)=>{
       const card = box.querySelector(`[data-chart-card="${c.id}"]`);
@@ -2484,6 +2479,18 @@ function bindEvents(){
     if(mod){ switchMod(mod.dataset.mod); return; }
     const fn = e.target.closest('.fn');
     if(fn){ switchView(fn.dataset.view); return; }
+    // ETF 维度标签：全局委托，数据加载前点击也能立即切换并高亮
+    const dim = e.target.closest('.etf-dim-tab');
+    if(dim){
+      const next = dim.dataset.etfDim;
+      if(next && next!==etfDim){
+        etfDim = next;
+        syncEtfDimTabs(dim.closest('.view'));
+        // 图表容器尚未填充时 renderDash 会安全返回；数据到达后会按新维度过滤
+        renderDash();
+      }
+      return;
+    }
     const act = e.target.closest('[data-act]');
     if(act){ handleAction(act.dataset.act, act, e); return; }
   });

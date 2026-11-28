@@ -702,6 +702,20 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="val_fed_percentile"]').count() == 1
         assert page._js_errors == []
 
+    def test_etf_dim_tab_click_before_data_load(self, page):
+        """数据尚未加载时点击宽基：切换立即生效，随后渲染不出现汇金图。"""
+        page.evaluate("() => { switchMod('dash'); switchView('dashetf'); }")
+        # 不等待 /api/dashboard 返回，立即点击宽基标签（旧实现此时尚未绑定点击处理器）
+        page.locator('#v-dashetf [data-etf-dim="broad"]').click()
+        assert page.evaluate("etfDim") == "broad"
+        assert page.locator('#v-dashetf .etf-dim-tab.active').get_attribute("data-etf-dim") == "broad"
+        # 数据到达后按新维度渲染，汇金图不得泄漏到宽基
+        page.wait_for_timeout(1500)
+        assert page.locator('#v-dashetf [data-chart-card="etf_huijin"]').count() == 0
+        assert page.locator('#v-dashetf [data-chart-card="etf_huijin_detail"]').count() == 0
+        assert page.locator('#v-dashetf [data-chart-card="etf_broad"]').count() == 1
+        assert page._js_errors == []
+
     def test_etf_dim_tabs_switch_charts(self, page):
         _switch(page, "dashetf")
         view = page.locator("#v-dashetf")

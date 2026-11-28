@@ -753,7 +753,7 @@ const NAV = {
       {id:'dashmacro',name:'宏观指标',icon:'chart-area'},
       {id:'dashetf',name:'ETF 维度',icon:'chart-bar'},
       {id:'dashtrade',name:'日交易',icon:'chart-line'},
-      {id:'dashval',name:'估值',icon:'chart-gauge'},
+      {id:'dashval',name:'估值',icon:'gauge'},
     ]},
   ]},
   ops:{name:'运维监控',groups:[
@@ -1617,7 +1617,7 @@ function renderValuationSummary(){
   const pctCls = pct==null?'neutral':(pct>=80?'down':pct<=20?'up':'neutral');
   const pctTag = pct==null?'—':(pct>=80?'高估区（股票偏贵）':pct<=20?'低估区（股票便宜）':'中性区间');
   box.innerHTML =
-    statCard('chart-gauge','ic-blue', s.risk_premium==null?'—':fmtNum(s.risk_premium)+'%', `当前风险溢价率 · ${s.date||'—'}`, s.avg==null?'':`均值 ${fmtNum(s.avg)}%`, 't-blue')+
+    statCard('gauge','ic-blue', s.risk_premium==null?'—':fmtNum(s.risk_premium)+'%', `当前风险溢价率 · ${s.date||'—'}`, s.avg==null?'':`均值 ${fmtNum(s.avg)}%`, 't-blue')+
     statCard('percent','ic-green', pct==null?'—':fmtNum(pct)+'%', '当前全历史百分位', pctTag, pctCls)+
     statCard('trending-up','ic-orange', s.upper1std==null?'—':`${fmtNum(s.lower1std)}% ~ ${fmtNum(s.upper1std)}%`, '均值 ±1σ 区间', s.upper2std==null?'':`±2σ ${fmtNum(s.lower2std)}% ~ ${fmtNum(s.upper2std)}%`, 't-orange')+
     statCard('calendar','ic-purple', fmt(s.total_days||0), '历史交易日样本', s.close==null?'':`沪深300收盘 ${fmtNum(s.close)}`, 't-blue');

@@ -28,13 +28,15 @@ ETF_DASHBOARD_TAGS = ["汇金", "黄金", "宽基"]
 # 每类生成一组同构图：Top5 ETF 份额/申赎净流入排名 + 合计流通份额/申赎净流入
 # （上格固定叠加该宽基指数自身日线；库中暂无该指数数据时退化为普通双轴图）。
 # 注：000852 官方名称为「中证1000」，项目配置沿用历史 ETF 标签「中证A1000」。
+# 宽基图排列顺序：沪深300 → 科创50 → 创业板 → 上证50 → 中证A500 → 中证A1000
+# （第 5/6 组即用户口径的「中证500/中证1000」，沿用现有 ETF 标签与指数代码）
 BROAD_INDEX_SPECS = [
-    ("上证50", "sz50", "000016"),
     ("沪深300", "hs300", "000300"),
-    ("中证A500", "a500", "000510"),
-    ("中证A1000", "a1000", "000852"),
     ("科创50", "kc50", "000688"),
     ("创业板", "cyb", "399006"),
+    ("上证50", "sz50", "000016"),
+    ("中证A500", "a500", "000510"),
+    ("中证A1000", "a1000", "000852"),
 ]
 
 # 估值页：沪深300风险溢价率（FED 差值）曲线 + 历史均值 ±1σ/±2σ 通道 + 全历史百分位。
@@ -704,7 +706,7 @@ def build_etf_daily_detail(etf_df, tag_map, months: int = 12, date: str | None =
     }
 
 
-# ---------------- 交易看板（3 图） ----------------
+# ---------------- 交易看板（2 图；风险溢价率已迁至「估值」维度） ----------------
 TRADE_CHART_SPECS = [
     {
         "id": "trade_market", "title": "图1：市场成交与集中度",
@@ -724,14 +726,6 @@ TRADE_CHART_SPECS = [
             {"name": "亿元 / 人", "position": "left"},
             {"name": "比例 (%)", "position": "right", "offset": 0},
             {"name": "两融余额 (亿元)", "position": "right", "offset": 52},
-        ],
-    },
-    {
-        "id": "trade_risk", "title": "图3：沪深300风险溢价率（FED 差值）",
-        "note": "数据源直采：1/沪深300 PE_TTM − 10年期国债收益率；数值越高代表股票性价比越高",
-        "layout": "trade_risk",
-        "y_axes": [
-            {"name": "风险溢价率 (%)", "position": "left"},
         ],
     },
 ]
@@ -829,7 +823,7 @@ def build_valuation_charts(rp_df: pd.DataFrame, months: int = 12,
 def build_trade_charts(trade_df: pd.DataFrame, days: int | None = None,
                        months: int = 12, start: str | None = None,
                        end: str | None = None) -> list[dict]:
-    """装配交易 3 图，日期口径与 ETF 维度一致。
+    """装配交易 2 图，日期口径与 ETF 维度一致。
 
     - start/end（YYYY-MM-DD）任一给出即按精确区间过滤，优先于 months 与 days。
     - 否则按近 months 个月（基于最大交易日回推，0=全部）——与 ETF 完全同口径。
@@ -879,9 +873,6 @@ def build_trade_charts(trade_df: pd.DataFrame, days: int | None = None,
             series("融资买入额占比", "financing_buy_pct", 3),
             series("两融余额", "margin_balance", 0),
             series("有负债投资者数", "debt_investors", 2),
-        ],
-        "trade_risk": [
-            series("沪深300风险溢价率", "risk_premium", 0),
         ],
     }
     return [_chart(spec, grouped[spec["id"]]) for spec in TRADE_CHART_SPECS]

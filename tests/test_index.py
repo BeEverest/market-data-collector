@@ -18,9 +18,11 @@ class TestIndexCollector:
     def test_catalog_has_six_broad_indices_plus_benchmark(self):
         cat = idx_mod.catalog()
         codes = {it["code"] for it in cat}
-        assert codes == {"000001", "000016", "000300", "000510", "000852", "000688", "399006"}
+        # 000905 中证500 为 Web 新增指数预设项，必须在目录内才能保存配置并采集。
+        assert codes == {"000001", "000016", "000300", "000510", "000905", "000852", "000688", "399006"}
         names = {it["code"]: it["name"] for it in cat}
         assert names["000852"] == "中证1000"  # 对应看板沿用的「中证A1000」ETF 标签
+        assert names["000905"] == "中证500"
         assert all(it["granularity"] == "交易日" for it in cat)
 
     def test_broad_index_codes_are_cataloged(self):

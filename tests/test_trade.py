@@ -457,7 +457,8 @@ class TestTradeCharts:
             "down_count": 3498, "debt_investors": 1968001.0,
         }])
         charts = build_trade_charts(df)
-        assert [c["id"] for c in charts] == ["trade_market", "trade_margin", "trade_risk"]
+        # 风险溢价率图3已迁至「估值」维度，日交易仅保留图1/图2。
+        assert [c["id"] for c in charts] == ["trade_market", "trade_margin"]
         # _chart 会过滤无数据的序列：图1 四序列中成交额/集中度/涨跌家数均有值
         assert {s["name"] for s in charts[0]["series"]} == {
             "全A成交额", "成交集中度(前5%)", "上涨家数", "下跌家数"}
@@ -468,19 +469,9 @@ class TestTradeCharts:
         assert charts[0]["series"][0]["data"] == [["2026-11-24", 1.4]]
         assert charts[0]["layout"] == "trade_market_split"
 
-    def test_risk_premium_chart_reads_wide_table(self):
-        df = pd.DataFrame([{
-            "trade_date": "2026-11-26", "risk_premium": 5.8757,
-        }])
-        charts = build_trade_charts(df)
-        risk = next(c for c in charts if c["id"] == "trade_risk")
-        assert risk["layout"] == "trade_risk"
-        assert risk["series"][0]["name"] == "沪深300风险溢价率"
-        assert risk["series"][0]["data"] == [["2026-11-26", 5.8757]]
-
     def test_empty_df(self):
         charts = build_trade_charts(pd.DataFrame())
-        assert len(charts) == 3 and all(c["series"] == [] for c in charts)
+        assert len(charts) == 2 and all(c["series"] == [] for c in charts)
 
 
 def test_indicator_codes():

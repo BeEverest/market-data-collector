@@ -702,6 +702,30 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="val_fed_percentile"]').count() == 1
         assert page._js_errors == []
 
+    def test_valuation_nav_icon_exists(self, page):
+        """估值导航图标必须使用 CSS 中真实存在的 ti-gauge，不能是无效的 chart-gauge。"""
+        icon_ok = page.evaluate("""() => {
+          const item = NAV.dashboard.groups.flatMap(g => g.items).find(x => x.id === 'dashval');
+          const cls = item ? 'ti-' + item.icon : '';
+          const probe = document.createElement('i');
+          probe.className = cls;
+          document.body.appendChild(probe);
+          const content = getComputedStyle(probe, '::before').content;
+          probe.remove();
+          return {icon: cls, ok: cls === 'ti-gauge' && content && content !== 'none' && content !== 'normal'};
+        }""")
+        assert icon_ok["icon"] == "ti-gauge"
+        assert icon_ok["ok"] is True
+
+    def test_trade_view_has_no_risk_chart(self, page):
+        """风险溢价率图3已迁至估值维度，日交易下只保留图1/图2。"""
+        _switch(page, "dashtrade")
+        view = page.locator("#v-dashtrade")
+        assert view.locator('[data-chart-card="trade_market"]').count() == 1
+        assert view.locator('[data-chart-card="trade_margin"]').count() == 1
+        assert view.locator('[data-chart-card="trade_risk"]').count() == 0
+        assert page._js_errors == []
+
     def test_etf_dim_tab_click_before_data_load(self, page):
         """数据尚未加载时点击宽基：切换立即生效，随后渲染不出现汇金图。"""
         page.evaluate("() => { switchMod('dash'); switchView('dashetf'); }")

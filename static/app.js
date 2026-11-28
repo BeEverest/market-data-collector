@@ -1652,6 +1652,21 @@ function renderEtfChartNode(node, chart, months){
   const categories = isRank ? allCats : allCats.sort();
   const dataOf = s => { const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
   const hasBar = (chart.series||[]).some(s=>s.type==='bar');
+  // 宽基 Top5 双轴柱状图：按当前数据动态留出顶部/底部空间，避免最高柱贴顶、标签遮挡
+  const broadRankRange = axisIndex => {
+    if(!isBroadRank) return {};
+    const vals = (chart.series||[])
+      .filter(s=>(s.y_axis_index||0)===axisIndex)
+      .flatMap(s=>(s.data||[]).map(p=>p[1]))
+      .filter(v=>v!==null&&v!==undefined&&v!=='')
+      .map(Number)
+      .filter(Number.isFinite);
+    if(!vals.length) return {};
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const spread = hi - lo || Math.max(Math.abs(hi), 1);
+    const pad = spread * 0.08;
+    return {min:lo<0?lo-pad:0, max:hi>0?hi+pad:0};
+  };
 
   if(chart.layout==='etf_overlay'){
     const idxName = chart.index_name || '上证指数 (点)';
@@ -1684,7 +1699,7 @@ function renderEtfChartNode(node, chart, months){
 
   const axisCount=(chart.y_axes||[]).length||1;
   ins.setOption({animation:false,color:CLR,
-    grid: isRank ? (isBroadRank ? {left:50,right:20,top:22,bottom:50} : {left:62,right:24,top:30,bottom:82})
+    grid: isRank ? (isBroadRank ? {left:58,right:48,top:44,bottom:66} : {left:62,right:24,top:30,bottom:82})
                  : {left:62,right:34+(axisCount-1)*62,top:54,bottom:92},
     legend: isRank?{show:false}:{top:6,type:'scroll',textStyle:{fontSize:10}},
     tooltip:{trigger:'axis',axisPointer:{type:isRank?'shadow':'cross'},confine:true,
@@ -1692,9 +1707,19 @@ function renderEtfChartNode(node, chart, months){
     xAxis:{type:'category',data:categories,boundaryGap:hasBar,
       splitLine:{show:!isRank,lineStyle:{color:'#eef1f6',type:'dashed'}},
       axisLabel:{fontSize:9,hideOverlap:!isRank,rotate:isRank?(isBroadRank?30:42):30,
-        interval:isRank?0:'auto',margin:isRank?(isBroadRank?7:8):14,
-        formatter:isBroadRank?(v)=>(v.length>8?v.slice(0,8)+'…':v):undefined}},
-    yAxis:(chart.y_axes||[{name:''}]).map((a,i)=>({type:'value',name:a.name||'',position:a.position||'left',axisLabel:{fontSize:9},nameTextStyle:{fontSize:9},splitLine:{show:i===0,lineStyle:{color:i===0?'#e6eaf0':'#eef1f6',type:i===0?'solid':'dashed'}}})),
+        interval:isRank?0:'auto',margin:isRank?(isBroadRank?10:8):14,
+        formatter:isBroadRank?(v)=>{const s=String(v);const short=s.replace(/^.*?ETF/,'')||s;return short.length>6?short.slice(0,6)+'…':short}:undefined}},
+    yAxis:(chart.y_axes||[{name:''}]).map((a,i)=>({
+      type:'value',name:a.name||'',position:a.position||'left',
+      ...broadRankRange(i),
+      axisLabel:{fontSize:9,margin:isBroadRank?8:undefined,
+        formatter:isBroadRank?(v)=>Number(v).toLocaleString('zh-CN',{maximumFractionDigits:0}):undefined},
+      nameGap:isBroadRank?10:undefined,
+      nameTextStyle:isBroadRank
+        ? {fontSize:9,align:a.position==='right'?'right':'left',padding:a.position==='right'?[0,2,0,0]:[0,0,0,2]}
+        : {fontSize:9},
+      splitLine:{show:i===0,lineStyle:{color:i===0?'#e6eaf0':'#eef1f6',type:i===0?'solid':'dashed'}}
+    })),
     series:(chart.series||[]).map((s,i)=>({name:s.name,type:s.type||'line',data:dataOf(s),yAxisIndex:s.y_axis_index||0,
       smooth:s.type!=='bar',showSymbol:false,connectNulls:true,barMaxWidth:isRank?(isBroadRank?22:16):20,barGap:'20%',
       lineStyle:{width:2,color:CLR[i%CLR.length]},itemStyle:{color:CLR[i%CLR.length]}})),

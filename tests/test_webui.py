@@ -800,6 +800,36 @@ class TestDashboardNewViews:
         assert "FRED" in view.inner_text()
         assert page._js_errors == []
 
+    def test_macro_top_tabs_switch_country(self, page):
+        """宏观页面顶部中国/美国标签：形式同 ETF 维度标签，点击切换对应视图。"""
+        page.locator('.mod[data-mod="dashboard"]').click()
+        _switch(page, "dashmacro")
+        cn = page.locator("#v-dashmacro")
+        us = page.locator("#v-dashmacro_us")
+        assert cn.locator(".macro-dim-tab").count() == 2
+        assert us.locator(".macro-dim-tab").count() == 2
+        assert [b.inner_text() for b in cn.locator(".macro-dim-tab").all()] == ["中国", "美国"]
+        assert "active" in (cn.locator('[data-macro-dim="macro"]').get_attribute("class") or "")
+        assert "active" in (us.locator('[data-macro-dim="macro_us"]').get_attribute("class") or "")
+
+        with page.expect_response(lambda r: "/api/dashboard" in r.url, timeout=30000) as resp_info:
+            cn.locator('[data-macro-dim="macro_us"]').click()
+        assert resp_info.value.status == 200
+        page.wait_for_timeout(500)
+        assert page.evaluate("document.querySelector('.view.active')?.id") == "v-dashmacro_us"
+        assert page.evaluate("document.querySelector('.fn.active')?.dataset.view") == "dashmacro_us"
+        assert us.locator("[data-chart-card]").count() == 3
+        assert "active" in (us.locator('[data-macro-dim="macro_us"]').get_attribute("class") or "")
+
+        with page.expect_response(lambda r: "/api/dashboard" in r.url, timeout=30000) as resp_info:
+            us.locator('[data-macro-dim="macro"]').click()
+        assert resp_info.value.status == 200
+        page.wait_for_timeout(500)
+        assert page.evaluate("document.querySelector('.view.active')?.id") == "v-dashmacro"
+        assert cn.locator("[data-chart-card]").count() > 0
+        assert "active" in (cn.locator('[data-macro-dim="macro"]').get_attribute("class") or "")
+        assert page._js_errors == []
+
     def test_gold_primary_chart_wide(self, page):
         """黄金维度份额变化/申赎净流入图占满一行。"""
         _switch(page, "dashetf")

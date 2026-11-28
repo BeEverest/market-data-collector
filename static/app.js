@@ -1097,21 +1097,31 @@ const DASH_SUB = {
 };
 const ETF_DIMS = [['huijin','汇金'],['gold','黄金'],['broad','宽基']];
 let etfDim = 'huijin';
+const MACRO_DIMS = [['macro','中国'],['macro_us','美国']];
 // 同步标签高亮：renderDash 与切换时共用，确保任何时刻只有一个维度处于激活态
 function syncEtfDimTabs(view){
   (view||$('.view.active'))?.querySelectorAll('.etf-dim-tab').forEach(b=>{
     b.classList.toggle('active', b.dataset.etfDim===etfDim);
   });
 }
+function syncMacroDimTabs(view){
+  const grp = curView==='dashmacro_us' ? 'macro_us' : curView==='dashmacro' ? 'macro' : '';
+  (view||$('.view.active'))?.querySelectorAll('.macro-dim-tab').forEach(b=>{
+    b.classList.toggle('active', b.dataset.macroDim===grp);
+  });
+}
 function dashShell(grp){
   const overlay = grp==='etf'
     ? `<label class="prec-field">叠加指数 <select class="form-select" style="width:135px" data-act="overlay-index" title="ETF 主图上方叠加的指数日线（汇金/宽基主图）"><option value="000001">上证指数 000001</option><option value="000300">沪深300 000300</option><option value="000688">科创50 000688</option><option value="399006">创业板指 399006</option></select></label>`
     : '';
-  // ETF 维度顶部标签：汇金 / 黄金 / 宽基
+  // 顶部维度标签：ETF 为汇金/黄金/宽基；宏观为中国/美国（形式保持一致）
   const dimTabs = grp==='etf'
     ? `<div class="etf-dim-tabs" style="display:flex;gap:6px;margin-bottom:10px">${ETF_DIMS.map(([k,l])=>
         `<button type="button" class="btn btn-sm etf-dim-tab ${k===etfDim?'active':''}" data-etf-dim="${k}">${l}</button>`).join('')}</div>`
-    : '';
+    : (grp==='macro'||grp==='macro_us')
+      ? `<div class="macro-dim-tabs" style="display:flex;gap:6px;margin-bottom:10px">${MACRO_DIMS.map(([k,l])=>
+          `<button type="button" class="btn btn-sm macro-dim-tab ${k===grp?'active':''}" data-macro-dim="${k}">${l}</button>`).join('')}</div>`
+      : '';
   // 估值当前摘要卡片（数据到达后由 renderDash 填充）
   const valSummary = grp==='valuation'
     ? `<div class="row row-cards" data-val-summary style="margin-bottom:12px"></div>` : '';
@@ -1327,6 +1337,7 @@ function switchView(id){
   $$('.view').forEach(x=>x.classList.remove('active'));
   const el = byId('v-'+id); if(el) el.classList.add('active');
   $$('.fn').forEach(x=>x.classList.toggle('active',x.dataset.view===id));
+  if(id==='dashmacro'||id==='dashmacro_us') syncMacroDimTabs(byId('v-'+id));
   if(id.startsWith('dash')) setTimeout(()=>{ loadDashboard(); }, 30);
   if(id==='ovCollect') setTimeout(renderOverview, 60);
   if(id==='macrocalc') setTimeout(()=>loadDerived(DERIVED_MONTH||CURRENT_MONTH), 30);
@@ -2003,6 +2014,7 @@ function renderDash(){
   // ETF 顶部标签的点击由全局事件委托统一处理（见 bindEvents），
   // 避免数据尚未加载、renderDash 尚未执行时点击无效而停留在汇金维度。
   if(grp==='etf') syncEtfDimTabs(view);
+  if(grp==='macro'||grp==='macro_us') syncMacroDimTabs(view);
   setTimeout(()=>{
     list.forEach((c,idx)=>{
       const card = box.querySelector(`[data-chart-card="${c.id}"]`);
@@ -2580,6 +2592,15 @@ function bindEvents(){
     if(mod){ switchMod(mod.dataset.mod); return; }
     const fn = e.target.closest('.fn');
     if(fn){ switchView(fn.dataset.view); return; }
+    // 宏观顶部标签：中国 / 美国，形式同 ETF 维度标签，切换对应看板视图
+    const macroTab = e.target.closest('.macro-dim-tab');
+    if(macroTab){
+      const next = macroTab.dataset.macroDim;
+      const viewId = next==='macro_us' ? 'dashmacro_us' : next==='macro' ? 'dashmacro' : '';
+      if(viewId && viewId!==curView) switchView(viewId);
+      else syncMacroDimTabs(macroTab.closest('.view'));
+      return;
+    }
     // ETF 维度标签：全局委托，数据加载前点击也能立即切换并高亮
     const dim = e.target.closest('.etf-dim-tab');
     if(dim){

@@ -14,12 +14,10 @@ WORKDIR /app
 ARG PIP_INDEX_URL=https://mirrors.tencent.com/pypi/simple/
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 
-# 时区必须正确：调度器按本地 HH:MM 触发采集
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata curl \
-    && ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
-    && echo ${TZ} > /etc/timezone \
-    && rm -rf /var/lib/apt/lists/*
+# 基础镜像已内置 Asia/Shanghai 时区数据，无需 apt 安装。
+# 调度器依赖本地 HH:MM；健康检查用 Python 标准库，无需 curl。
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime \
+    && echo ${TZ} > /etc/timezone
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -33,6 +31,6 @@ RUN mkdir -p /app/output/monitor /app/output/exports \
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/api/health || exit 1
+    CMD python3.11 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)" || exit 1
 
 ENTRYPOINT ["/app/docker/entrypoint.sh"]

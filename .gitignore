@@ -12,6 +12,9 @@ env/
 # 采集运行输出（数据结果、监控历史、报告 —— 每次运行重新生成）
 output/
 
+# Docker 部署的持久化数据卷（只放迁移过来的 market_data.db，绝不入库）
+data/
+
 # 编辑器 / 系统
 .vscode/
 .idea/

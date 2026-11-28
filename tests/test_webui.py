@@ -61,6 +61,7 @@ def _seed_data(root: Path) -> tuple[Path, dict]:
             ("CPI", "居民消费价格指数CPI", "上年同月=100", 100.2),
             ("EXPORT", "出口额", "亿美元", 3000 + i * 100),
             ("RMB_DEPOSIT", "人民币存款余额", "亿元", 100000 + (100 if i % 2 else 0)),
+            ("HH_DEPOSIT", "居民储蓄存款余额", "亿元", 1_500_000 + i * 1_000),
         ]:
             macro_rows.append({
                 "指标代码": code, "指标名称": name, "日期": month, "数值": value,
@@ -247,7 +248,9 @@ def _chart(page, chart_id: str):
           const opt = echarts.getInstanceByDom(dom).getOption();
           return {
             categories: (opt.xAxis[0].data || []).map(String),
-            series: (opt.series || []).map(s => ({name: s.name, data: s.data})),
+            series: (opt.series || []).map(s => ({
+              name: s.name, data: s.data, type: s.type, yAxisIndex: s.yAxisIndex
+            })),
           };
         }""",
         arg=chart_id,
@@ -903,6 +906,11 @@ class TestDashboardNewViews:
             assert "#ff3b30" in colors and "#00d47e" in colors, chart_id
             values = [p.get("value") for p in colored]
             assert any(v > 0 for v in values) and any(v < 0 for v in values), chart_id
+        # 图6 同时展示居民存款余额（万亿元）右轴线
+        hh_chart = _chart(page, "hh_deposit")
+        assert [s["name"] for s in hh_chart["series"]] == ["居民存款同比多增", "居民存款余额"]
+        assert hh_chart["series"][1]["yAxisIndex"] == 1
+        assert "居民存款余额（万亿元）" in view.locator('[data-chart-card="hh_deposit"]').inner_text()
         assert page._js_errors == []
 
     def test_gold_primary_chart_wide(self, page):

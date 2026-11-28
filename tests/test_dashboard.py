@@ -59,6 +59,11 @@ def _macro_rows() -> pd.DataFrame:
             "环比(%)": None, "数据源": "PBC", "采集时间": "test", "run_id": "test",
         })
         rows.append({
+            "指标代码": "HH_DEPOSIT", "指标名称": "居民储蓄存款余额", "日期": date,
+            "数值": 1_500_000.0 + i * 10_000.0, "单位": "亿元", "同比(%)": None,
+            "环比(%)": None, "数据源": "PBC", "采集时间": "test", "run_id": "test",
+        })
+        rows.append({
             "指标代码": "A_SHARE_MC", "指标名称": "A股总市值", "日期": date,
             "数值": 1_000_000.0, "单位": "亿元", "同比(%)": None,
             "环比(%)": None, "数据源": "test", "采集时间": "test", "run_id": "test",
@@ -131,6 +136,16 @@ class TestMacroDashboard:
         assert len(m2_chart["y_axes"]) == 3
         assert [s["name"] for s in m2_chart["series"]] == [
             "M2", "A股总市值", "A股总市值/M2", "上证指数"]
+        # 图6：居民存款同比多增柱 + 居民存款余额万亿元右轴线
+        hh = by_id["hh_deposit"]
+        assert hh["title"].endswith("居民存款同比多增、居民存款余额（万亿元）")
+        assert [s["name"] for s in hh["series"]] == ["居民存款同比多增", "居民存款余额"]
+        assert len(hh["y_axes"]) == 2
+        assert hh["y_axes"][1]["name"] == "居民存款余额 (万亿元)"
+        assert hh["series"][0]["type"] == "bar" and hh["series"][0]["y_axis_index"] == 0
+        assert hh["series"][1]["type"] == "line" and hh["series"][1]["y_axis_index"] == 1
+        assert hh["series"][1]["data"] == [
+            ["2026-08", 150.0], ["2026-09", 151.0], ["2026-10", 152.0]]
 
     def test_m2_converted_and_index_month_end(self):
         m2_chart = next(c for c in self.charts if c["id"] == "m2_market")

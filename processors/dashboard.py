@@ -6,7 +6,7 @@
   3 社融存量同比 + 人民币贷款当月新增（双轴，贷款柱按正负红/绿）
   4 M1/M2同比 + M1-M2剪刀差
   5 M2、A股总市值（万亿）+ A股总市值/M2（%）+ 上证指数（点，月末收盘，三轴）
-  6 居民存款同比多增（柱按正负红/绿）
+  6 居民存款同比多增（柱按正负红/绿）+ 居民存款余额（万亿元，右轴）
   7 黄金当月新增/吨（柱按正负红/绿）
   8 人民币存款当月新增（人民币存款余额月度差分，柱按正负红/绿）
 
@@ -116,9 +116,12 @@ MACRO_CHART_SPECS = [
         ],
     },
     {
-        "id": "hh_deposit", "title": "图6：居民存款同比多增",
-        "note": "本月居民存款新增 − 去年同月新增，单位亿元",
-        "y_axes": [{"name": "同比多增 (亿元)", "position": "left"}],
+        "id": "hh_deposit", "title": "图6：居民存款同比多增、居民存款余额（万亿元）",
+        "note": "柱=本月居民存款新增 − 去年同月新增（亿元，左轴）；线=居民储蓄存款余额÷10000（万亿元，右轴）",
+        "y_axes": [
+            {"name": "同比多增 (亿元)", "position": "left"},
+            {"name": "居民存款余额 (万亿元)", "position": "right"},
+        ],
     },
     {
         "id": "gold", "title": "图7：黄金当月新增/吨",
@@ -336,6 +339,7 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
         "mc_m2": _derived_pairs(derived_df, "A_SHARE_MC_M2"),
         "sh_index": _index_monthly(index_df, "000001"),
         "hh_new_yoy": _derived_pairs(derived_df, "HH_DEPOSIT_NEW_YOY"),
+        "hh_bal": _macro_value(macro_df, "HH_DEPOSIT", lambda v: v / 10000),
         "gold_new": _derived_pairs(derived_df, "GOLD_NEW_TON"),
         "deposit_new": _macro_delta(macro_df, "RMB_DEPOSIT"),
     }
@@ -359,7 +363,8 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
         "money_gap": [s("M1同比增速", "m1"), s("M2同比增速", "m2"), s("M1-M2剪刀差", "m1_m2")],
         "m2_market": [s("M2", "m2_bal"), s("A股总市值", "mc_bal"),
                       s("A股总市值/M2", "mc_m2", 1), s("上证指数", "sh_index", 2)],
-        "hh_deposit": [s("居民存款同比多增", "hh_new_yoy", 0, "bar", sign_color=True)],
+        "hh_deposit": [s("居民存款同比多增", "hh_new_yoy", 0, "bar", sign_color=True),
+                       s("居民存款余额", "hh_bal", 1)],
         "gold": [s("黄金当月新增", "gold_new", 0, "bar", sign_color=True)],
         "loan_new_chart": [s("人民币存款当月新增", "deposit_new", 0, "bar", sign_color=True)],
     }

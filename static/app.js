@@ -1729,6 +1729,27 @@ function renderEtfChartNode(node, chart, months){
 
 /* ---- ETF 明细交互（按天 / 单 ETF / 总份额） ---- */
 let etfDetailState = {code:'', page:1, start:'', end:''};
+// 宽基 Top5 每图独立保存明细状态，避免六组图之间串页/串标的
+const ETF_RANK_PAGE_SIZE = 10;
+const etfBroadRankStates = new Map();
+const etfBroadRankStateOf = chartId => {
+  if(!etfBroadRankStates.has(chartId)){
+    etfBroadRankStates.set(chartId,{code:'',page:1,start:'',end:'',seq:0});
+  }
+  return etfBroadRankStates.get(chartId);
+};
+function etfCloseBroadRankDetail(chartId){
+  const st=etfBroadRankStateOf(chartId);
+  st.seq++; st.code=''; st.page=1;
+  const panel=$(`[data-detail-for="${chartId}"]`);
+  if(panel){ panel.hidden=true; panel.innerHTML=''; }
+}
+function etfCloseOtherBroadRankDetails(chartId){
+  document.querySelectorAll('[data-detail-for]').forEach(panel=>{
+    const id=panel.dataset.detailFor;
+    if(id && id!==chartId && id.endsWith('_top5') && !panel.hidden) etfCloseBroadRankDetail(id);
+  });
+}
 
 let _etfDailySeq = 0;
 async function etfLoadDailyDetail(){
@@ -1804,6 +1825,45 @@ async function etfRenderRankPage(panel, chart, meta){
     panel.querySelector('[data-act="etf-rank-prev"]')?.addEventListener('click',()=>{etfDetailState.page--;etfRenderRankPage(panel,chart,meta);});
     panel.querySelector('[data-act="etf-rank-next"]')?.addEventListener('click',()=>{etfDetailState.page++;etfRenderRankPage(panel,chart,meta);});
   }catch(e){ panel.innerHTML=`<div class="hint">加载失败：${esc(e.message||e)}</div>`; }
+}
+async function etfOpenBroadRankDetail(chart, meta){
+  const panel=$(`[data-detail-for="${chart.id}"]`); if(!panel||!meta?.code) return;
+  const st=etfBroadRankStateOf(chart.id);
+  // 同一根柱子再次点击即收起；不同柱子/不同宽基图则替换当前明细
+  if(!panel.hidden && st.code===meta.code){ etfCloseBroadRankDetail(chart.id); return; }
+  etfCloseOtherBroadRankDetails(chart.id);
+  st.code=meta.code; st.page=1; st.start=chart.detail_start||''; st.end=chart.detail_end||''; st.seq++;
+  panel.hidden=false; panel.innerHTML='<div class="hint">加载每日明细…</div>';
+  await etfRenderBroadRankPage(panel, chart, meta);
+}
+async function etfRenderBroadRankPage(panel, chart, meta){
+  const st=etfBroadRankStateOf(chart.id);
+  const seq=++st.seq;
+  const qs=new URLSearchParams({code:meta.code,page:String(st.page),page_size:String(ETF_RANK_PAGE_SIZE),order:'desc'});
+  if(st.start) qs.set('start',st.start); if(st.end) qs.set('end',st.end);
+  const bindClose=()=>panel.querySelector('[data-act="etf-rank-close"]')?.addEventListener('click',()=>etfCloseBroadRankDetail(chart.id));
+  try{
+    const res=await api('/api/data/etf?'+qs.toString());
+    if(seq!==st.seq || panel.hidden || st.code!==meta.code) return;
+    const rows=res.rows||[];
+    const netCell=v=>v==null?'<span class="muted-inline">折算日</span>':`<span class="${v>=0?'up':'down'}">${v>=0?'+':''}${fmtNum(v)} <small>亿元</small></span>`;
+    panel.innerHTML=`<div class="etf-rank-detail-head">
+        <div class="etf-day-detail-title">${esc(meta.name)}（${esc(meta.code)}）· 每日申赎明细（共 ${fmtNum(res.total)} 条，第 ${res.page}/${res.pages} 页 · 每页 ${ETF_RANK_PAGE_SIZE} 行）</div>
+        <button type="button" class="btn btn-sm etf-rank-close" data-act="etf-rank-close" title="收起每日明细">收起</button>
+      </div>
+      <div class="etf-rank-detail-scroll"><table class="etf-day-detail-table"><thead><tr><th>交易日期</th><th>申赎净流入(亿元)</th><th>份额(亿份)</th><th>份额变化(亿份)</th><th>变化率(%)</th></tr></thead>
+      <tbody>${rows.map(r=>`<tr><td>${esc(r['交易日期'])}</td><td class="num">${netCell(r['净流入(亿元)'])}</td>
+        <td class="num">${fmtNum(r['份额(亿份)'])}</td><td class="num">${signed(r['份额变化(亿份)'],'亿份')}</td>
+        <td class="num">${r['份额变化率(%)']==null?'—':fmtNum(r['份额变化率(%)'])+'%'}</td></tr>`).join('')}</tbody></table></div>
+      <div class="pager etf-rank-pager">${res.page>1?`<button class="btn btn-sm" data-act="etf-rank-prev">上一页</button>`:''}<span class="hint"> 第 ${res.page}/${res.pages} 页 · 每页 ${ETF_RANK_PAGE_SIZE} 行 </span>${res.page<res.pages?`<button class="btn btn-sm" data-act="etf-rank-next">下一页</button>`:''}</div>`;
+    bindClose();
+    panel.querySelector('[data-act="etf-rank-prev"]')?.addEventListener('click',()=>{st.page=Math.max(1,(res.page||st.page)-1);etfRenderBroadRankPage(panel,chart,meta);});
+    panel.querySelector('[data-act="etf-rank-next"]')?.addEventListener('click',()=>{st.page=Math.min(res.pages||st.page+1,(res.page||st.page)+1);etfRenderBroadRankPage(panel,chart,meta);});
+  }catch(e){
+    if(seq!==st.seq||panel.hidden) return;
+    panel.innerHTML=`<div class="etf-rank-detail-head"><div class="hint">加载失败：${esc(e.message||e)}</div><button type="button" class="btn btn-sm etf-rank-close" data-act="etf-rank-close">收起</button></div>`;
+    bindClose();
+  }
 }
 function etfRenderSharesBlock(totalBox, tableBox, res, rangeParams){
   const t=res.total||{shares:0,days:0};
@@ -1949,12 +2009,16 @@ function renderDash(){
       else if(c.layout==='trade_market_split') ins = renderTradeMarketSplitNode(target,c,renderMonths);
       else ins = renderChartNode(target,c,renderMonths);
       if(c.layout==='etf_rank' && ins){
-        target.style.cursor='pointer'; target.title='点击任意 ETF 柱子，展开该 ETF 每日明细';
+        target.style.cursor='pointer';
+        target.title = c.dim==='broad'
+          ? '点击 ETF 柱子展开每日明细；再次点击柱子或点「收起」关闭'
+          : '点击任意 ETF 柱子，展开该 ETF 每日明细';
         ins.off('click');
         ins.on('click', p=>{
           if(p.componentType!=='series'||p.dataIndex==null) return;
           const m=(c.rank_meta||[])[p.dataIndex]; if(!m?.code) return;
-          etfOpenRankDetail(c,m);
+          if(c.dim==='broad') etfOpenBroadRankDetail(c,m);
+          else etfOpenRankDetail(c,m);
         });
       }
     });

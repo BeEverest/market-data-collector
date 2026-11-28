@@ -199,6 +199,12 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
 .etf-day-detail-table .up { color: #c0392b; font-weight: 600; }
 .etf-day-detail-table .down { color: #16855b; font-weight: 600; }
 .etf-day-detail-table small { font-size: 10px; font-weight: 400; }
+.etf-rank-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.etf-rank-detail-head .etf-day-detail-title { margin: 0; flex: 1; min-width: 0; }
+.etf-rank-close { flex: 0 0 auto; padding: 2px 8px !important; font-size: 10.5px !important; }
+.etf-rank-detail-scroll { max-height: 330px; overflow: auto; }
+.etf-rank-pager { justify-content: flex-end; padding: 6px 0 0; gap: 8px; }
+.etf-rank-pager .btn { padding: 2px 9px; font-size: 10.5px; }
 
 /* 汇总卡 + 按天明细表 */
 .etf-daily-total { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 10px; }

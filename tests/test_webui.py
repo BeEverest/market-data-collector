@@ -769,3 +769,75 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="etf_gold_cumulative"].wide-card').count() == 1
         assert view.locator('[data-chart-card="etf_broad"]').count() == 0
         assert page._js_errors == []
+
+    def test_broad_rank_detail_collapse_and_pagination(self, page):
+        """宽基 Top5 柱状图明细：可收起，分页每页 10 行；六组共用同一实现。"""
+        _switch(page, "dashetf")
+        view = page.locator("#v-dashetf")
+        view.locator('[data-etf-dim="broad"]').click()
+        page.wait_for_timeout(400)
+        assert view.locator('[data-detail-for$="_top5"]').count() == 6
+        panel = view.locator('[data-detail-for="etf_hs300_top5"]')
+        assert panel.is_hidden()
+
+        # 24 条模拟数据 -> 3 页，每页 10 行；只拦截单 ETF 每日明细接口
+        rows = [{
+            "交易日期": f"2026-09-{24 - i:02d}",
+            "净流入(亿元)": 10.0 + i,
+            "份额(亿份)": 100.0 + i,
+            "份额变化(亿份)": 0.5 + i,
+            "份额变化率(%)": 1.0 + i / 10,
+        } for i in range(24)]
+
+        def _route_detail(route):
+            query = route.request.url.split("?", 1)[1] if "?" in route.request.url else ""
+            params = dict(x.split("=", 1) for x in query.split("&") if "=" in x)
+            page_no = int(params.get("page", "1"))
+            size = int(params.get("page_size", "10"))
+            offset = (page_no - 1) * size
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "total": len(rows), "pages": (len(rows) + size - 1) // size,
+                "page": page_no, "page_size": size, "rows": rows[offset:offset + size],
+            }, ensure_ascii=False))
+
+        page.route("**/api/data/etf?*", _route_detail)
+        page.evaluate("""() => {
+          const chart = {id:'etf_hs300_top5', dim:'broad', detail_start:'2026-09-01',
+                         detail_end:'2026-09-30', rank_meta:[{code:'510300', name:'沪深300ETF测试'}]};
+          return etfOpenBroadRankDetail(chart, chart.rank_meta[0]);
+        }""")
+        panel.wait_for(state="visible")
+        page.wait_for_function("""() => {
+          const p = document.querySelector('[data-detail-for="etf_hs300_top5"]');
+          return p && p.querySelectorAll('tbody tr').length === 10 && p.textContent.includes('每页 10 行');
+        }""")
+        assert panel.locator('[data-act="etf-rank-close"]').inner_text().strip() == "收起"
+        assert "第 1/3 页" in panel.inner_text()
+        first_date = panel.locator("tbody tr").first.locator("td").first.inner_text()
+
+        panel.locator('[data-act="etf-rank-next"]').click()
+        page.wait_for_function("""() => document.querySelector('[data-detail-for="etf_hs300_top5"]')
+          .textContent.includes('第 2/3 页')""")
+        assert panel.locator("tbody tr").count() == 10
+        assert panel.locator("tbody tr").first.locator("td").first.inner_text() != first_date
+
+        panel.locator('[data-act="etf-rank-prev"]').click()
+        page.wait_for_function("""() => document.querySelector('[data-detail-for="etf_hs300_top5"]')
+          .textContent.includes('第 1/3 页')""")
+        # 同一根柱子的元数据再次触发即收起，第三次触发重新展开
+        page.evaluate("""() => {
+          const chart = {id:'etf_hs300_top5', dim:'broad', detail_start:'2026-09-01',
+                         detail_end:'2026-09-30', rank_meta:[{code:'510300', name:'沪深300ETF测试'}]};
+          return etfOpenBroadRankDetail(chart, chart.rank_meta[0]);
+        }""")
+        page.wait_for_timeout(150)
+        assert panel.is_hidden()
+        page.evaluate("""() => {
+          const chart = {id:'etf_hs300_top5', dim:'broad', detail_start:'2026-09-01',
+                         detail_end:'2026-09-30', rank_meta:[{code:'510300', name:'沪深300ETF测试'}]};
+          return etfOpenBroadRankDetail(chart, chart.rank_meta[0]);
+        }""")
+        panel.wait_for(state="visible")
+        panel.locator('[data-act="etf-rank-close"]').click()
+        assert panel.is_hidden()
+        assert page._js_errors == []

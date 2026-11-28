@@ -11,11 +11,13 @@ env/
 # 运行产出（数据库由迁移包单独导入到挂载卷，不进镜像）
 output/
 data/
+backup/
 *.log
 *.db
 *.db-wal
 *.db-shm
 *.sql
+*.tar.gz
 
 # 测试与开发脚本
 tests/

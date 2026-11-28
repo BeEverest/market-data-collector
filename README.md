@@ -59,6 +59,9 @@ market_data_collector/
 ├── docker-compose.yml       # 一键部署：./data 挂载为 /app/output 持久化数据
 ├── docker/entrypoint.sh     # 容器入口：仅准备目录并启动，绝不清理数据
 ├── tools/export_db.py       # 一致性导出 SQLite（含 WAL）+ SQL dump + manifest
+├── backup/                  # 随代码提供的数据库备份包 + 新环境导入操作说明
+│   ├── market_data_export_20261128.tar.gz
+│   └── 导入操作说明.md
 └── output/                  # 运行结果
     ├── market_data.db                # SQLite 主库（业务数据/监控/ETF与指数配置）
     ├── exports/                      # 按需导出：宏观/ETF/指数/接口监控 + 全量 ZIP
@@ -348,6 +351,8 @@ playwright install chromium        # 或使用系统已有 Chromium
 
 ## 十一、Docker 部署与数据库迁移
 
+> **新环境完整操作手册见 [`backup/导入操作说明.md`](backup/导入操作说明.md)**，含校验命令、Docker/非 Docker 两种方式、MCP 配置与常见问题。仓库 `backup/` 目录已随代码提供一份数据库备份包，clone 后即可导入。
+
 ### 为什么需要导出数据库
 
 `output/market_data.db` 是系统唯一实时主存储，且已被 `.gitignore` 排除（采集原数据不入库）。迁移到新环境时必须显式导出，不能只 clone 代码。生产库运行在 WAL 模式，直接 `cp` 会漏掉未 checkpoint 的数据，因此必须使用 SQLite 官方 backup API 导出一致性快照。
@@ -366,10 +371,11 @@ python3.11 tools/export_db.py --out /tmp/market_data_export
 git clone https://github.com/BeEverest/market-data-collector.git
 cd market-data-collector
 
-# 2. 创建持久化数据目录，导入迁移包中的数据库
+# 2. 解压仓库自带的备份包，创建持久化数据目录并导入数据库
+tar -xzf backup/market_data_export_20261128.tar.gz
 mkdir -p data
-cp /path/to/market_data_export/market_data.db data/market_data.db
-# 校验：sha256 应与 manifest.json 中 snapshot_sha256 一致
+cp market_data_export/market_data.db data/market_data.db
+# 校验：sha256 应与 manifest.json 中 snapshot_sha256 一致（详见 backup/导入操作说明.md）
 
 # 3. 配置 MCP 网关（东方财富）。若新环境无法解析内网地址，可省略，
 #    涨跌家数会自动降级为新浪全A快照派生，不影响启动。

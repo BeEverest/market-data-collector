@@ -49,7 +49,7 @@ from collectors.trade_calendar import last_completed_trade_day
 from processors.derived import compute_derived
 from processors.dashboard import (
     build_etf_charts, build_etf_daily_detail, build_macro_charts, build_trade_charts,
-    build_valuation_charts,
+    build_us_macro_charts, build_valuation_charts,
 )
 from processors.etf_change import compute_etf_changes
 
@@ -1208,6 +1208,8 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
         "index_options": index_options,
         "macro": {"charts": build_macro_charts(derived_df, macro_df, index_df, months,
                                                macro_start, macro_end)},
+        "macro_us": {"charts": build_us_macro_charts(macro_df, months,
+                                                     macro_start, macro_end)},
         "etf": {"charts": build_etf_charts(etf_df, etf_cfg.get("tags", {}), etf_months,
                                            etf_start, etf_end, index_df, overlay_index)},
         "trade": {"charts": build_trade_charts(

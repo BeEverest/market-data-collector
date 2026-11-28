@@ -770,6 +770,36 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="etf_broad"]').count() == 0
         assert page._js_errors == []
 
+    def test_macro_nav_country_split_and_us_charts(self, page):
+        """左侧导航宏观拆分为中国/美国；美国视图渲染 3 张 FRED 图。"""
+        nav = page.evaluate("""() => NAV.dashboard.groups.flatMap(g => g.items)
+          .filter(x => x.id === 'dashmacro' || x.id === 'dashmacro_us')
+          .map(x => ({id:x.id, name:x.name}))""")
+        assert nav == [
+            {"id": "dashmacro", "name": "中国宏观"},
+            {"id": "dashmacro_us", "name": "美国宏观"},
+        ]
+        _switch(page, "dashmacro_us")
+        view = page.locator("#v-dashmacro_us")
+        assert view.locator("[data-chart-card]").count() == 3
+        assert view.locator('[data-chart-card="us_gdp"]').count() == 1
+        assert view.locator('[data-chart-card="us_prices"]').count() == 1
+        assert view.locator('[data-chart-card="us_rates"]').count() == 1
+        assert "FRED" in view.inner_text()
+        assert page._js_errors == []
+
+    def test_gold_primary_chart_wide(self, page):
+        """黄金维度份额变化/申赎净流入图占满一行。"""
+        _switch(page, "dashetf")
+        view = page.locator("#v-dashetf")
+        view.locator('[data-etf-dim="gold"]').click()
+        page.wait_for_timeout(400)
+        gold = view.locator('[data-chart-card="etf_gold"]')
+        assert gold.count() == 1
+        assert "wide-card" in (gold.get_attribute("class") or "").split()
+        assert view.locator('[data-chart-card="etf_gold_cumulative"]').count() == 1
+        assert page._js_errors == []
+
     def test_broad_rank_detail_collapse_and_pagination(self, page):
         """宽基 Top5 柱状图明细：可收起，分页每页 10 行；六组共用同一实现。"""
         _switch(page, "dashetf")

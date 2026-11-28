@@ -86,7 +86,7 @@ let S = { last_run:{}, last_counts:{}, failed_total:0, today_calls:0, macro_rows
   etf_rows:0, etf_codes:0, index_rows:0, index_codes:0, trade_rows:0, trade_raw_rows:{},
   today_new:{}, scheduler:{enabled:false,time:'',run_type:'full',macro_lookback_months:2,next_run:'-',history:[]},
   running:false, server_time:'', last_trade_date:'' };
-let DB = { macro:{charts:[]}, etf:{charts:[]}, trade:{charts:[]}, valuation:{charts:[],summary:{}} };
+let DB = { macro:{charts:[]}, macro_us:{charts:[]}, etf:{charts:[]}, trade:{charts:[]}, valuation:{charts:[],summary:{}} };
 /* 定时调度采集窗口：从后端按真实配置计算，前端不硬编码 */
 let SCHED_WINDOWS = {macro:{start:'',end:'',months:1}, etf:{start:'',end:'',days:1}, index:{start:'',end:''}, trade:{start:'',end:''}, last_trade_date:''};
 async function loadScheduleWindows(){
@@ -703,7 +703,8 @@ async function loadDashboard(){
     if(overlay) params.set('overlay_index',overlay);
     const res = await api('/api/dashboard?' + params.toString());
     if(seq !== dashLoadSeq) return;  // 过期请求：视图已切换，丢弃，避免重复重建 DOM
-    DB = { macro:res.macro||{charts:[]}, etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]},
+    DB = { macro:res.macro||{charts:[]}, macro_us:res.macro_us||{charts:[]},
+           etf:res.etf||{charts:[]}, trade:res.trade||{charts:[]},
            valuation:res.valuation||{charts:[],summary:{}} };
     if(res.index_options && res.index_options.length){
       $$('[data-act="overlay-index"]').forEach(sel=>{
@@ -750,7 +751,8 @@ const NAV = {
   ]},
   dashboard:{name:'数据看板',groups:[
     {cap:'可视化',items:[
-      {id:'dashmacro',name:'宏观指标',icon:'chart-area'},
+      {id:'dashmacro',name:'中国宏观',icon:'chart-area'},
+      {id:'dashmacro_us',name:'美国宏观',icon:'chart-area'},
       {id:'dashetf',name:'ETF 维度',icon:'chart-bar'},
       {id:'dashtrade',name:'日交易',icon:'chart-line'},
       {id:'dashval',name:'估值',icon:'gauge'},
@@ -1085,9 +1087,10 @@ function hydrateTables(){
   Object.keys(PREVIEW_STATE).forEach(k=>{ renderPreviewTable(k); renderPreviewPager(k); });
   renderEtfCfgTable();
 }
-const DASH_TITLE = {macro:'宏观指标',etf:'ETF 维度',trade:'日交易',valuation:'估值'};
+const DASH_TITLE = {macro:'中国宏观',macro_us:'美国宏观',etf:'ETF 维度',trade:'日交易',valuation:'估值'};
 const DASH_SUB = {
   macro:'8 张图 · 统一日期联动',
+  macro_us:'3 张图 · FRED 官方口径 · 统一日期联动',
   etf:'汇金 / 黄金 / 宽基 · 顶部标签切换 · 日期联动',
   trade:'2 张图 · 图1图2各一行 · 两融双 grid 联动',
   valuation:'沪深300风险溢价率（FED 差值）· ±1σ/±2σ 通道 · 全历史百分位',
@@ -1113,6 +1116,7 @@ function dashShell(grp){
   const valSummary = grp==='valuation'
     ? `<div class="row row-cards" data-val-summary style="margin-bottom:12px"></div>` : '';
   const hintText = grp==='macro' ? '数据来源：宏观指标 / 宏观观测 / 上交所日线'
+    : grp==='macro_us' ? '数据来源：FRED（美联储 / BLS / BEA）'
     : grp==='valuation' ? '百分位以全部历史为基准，不随日期窗口变化' : '';
   const ctl = `${overlay}
        <label class="prec-field">开始 <input class="prec-input" type="date" data-range-start value="" style="width:125px"></label>
@@ -1251,7 +1255,8 @@ const VIEWS = {
     <div class="card"><div class="card-header"><h3><i class="ti ti-list-check" style="color:var(--blue)"></i> 11 项指标最新值</h3><span class="sub">${LAST}</span></div><div class="card-body">${tbl(['指标代码','指标名称','最新值','单位','数据来源'],TRADE_LATEST)}</div></div>`,
 
   /* ---------------- 数据看板 ---------------- */
-  dashmacro:()=>dashShell('macro'), dashetf:()=>dashShell('etf'), dashtrade:()=>dashShell('trade'),
+  dashmacro:()=>dashShell('macro'), dashmacro_us:()=>dashShell('macro_us'),
+  dashetf:()=>dashShell('etf'), dashtrade:()=>dashShell('trade'),
   dashval:()=>dashShell('valuation'),
 
   /* ---------------- 运维监控 ---------------- */
@@ -1938,7 +1943,9 @@ async function etfToggleSharesDayDetail(date, tableBox, rangeParams){
 }
 
 function renderDash(){
-  const grp = curView==='dashval' ? 'valuation' : curView.replace('dash','');
+  const grp = curView==='dashval' ? 'valuation'
+            : curView==='dashmacro_us' ? 'macro_us'
+            : curView.replace('dash','');
   if(!DB[grp]) return;
   const view = $('.view.active'); if(!view) return;
   const box = view.querySelector('[data-dash-charts]'); if(!box) return;

@@ -56,6 +56,28 @@ VALUATION_CHART_SPECS = [
     },
 ]
 
+# 美国宏观图：FRED 官方序列，独立于中国宏观 8 图，避免中国视图混入不同量纲数据。
+US_MACRO_CHART_SPECS = [
+    {
+        "id": "us_gdp", "title": "图1：美国GDP环比折年率",
+        "note": "FRED A191RL1Q225SBEA，实际GDP环比折年率（%），季度频率",
+        "y_axes": [{"name": "环比折年率 (%)", "position": "left"}],
+    },
+    {
+        "id": "us_prices", "title": "图2：CPI、核心CPI、PPI、非农就业人数",
+        "note": "CPI/核心CPI/PPI为指数（左轴），非农就业人数为千人（右轴），均为 FRED 官方序列",
+        "y_axes": [
+            {"name": "指数", "position": "left"},
+            {"name": "非农就业人数 (千人)", "position": "right"},
+        ],
+    },
+    {
+        "id": "us_rates", "title": "图3：联邦基金目标利率上下限",
+        "note": "FRED DFEDTARU / DFEDTARL，单位 %；上下限构成目标区间",
+        "y_axes": [{"name": "利率 (%)", "position": "left"}],
+    },
+]
+
 MACRO_CHART_SPECS = [
     {
         "id": "gdp_trade", "title": "图1：GDP与进出口同比",
@@ -329,6 +351,41 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
             for spec_id in [x["id"] for x in MACRO_CHART_SPECS]]
 
 
+def build_us_macro_charts(macro_df: pd.DataFrame, months: int | None = 60,
+                          start: str | None = None, end: str | None = None) -> list[dict]:
+    """装配美国宏观 3 图；数据来自 FRED 采集链路，口径与中国宏观视图分离。
+
+    months 控制展示最近 N 个月（None/0 为全部）；start/end 为绝对日期区间，
+    任一给出即优先于 months，与中国宏观/ETF/交易看板的日期口径保持一致。
+    """
+    raw = {
+        "us_gdp": _macro_value(macro_df, "US_GDP"),
+        "us_cpi": _macro_value(macro_df, "US_CPI"),
+        "us_core_cpi": _macro_value(macro_df, "US_CORE_CPI"),
+        "us_ppi": _macro_value(macro_df, "US_PPI"),
+        "us_nonfarm": _macro_value(macro_df, "US_NONFARM"),
+        "us_rate_upper": _macro_value(macro_df, "US_RATE_UPPER"),
+        "us_rate_lower": _macro_value(macro_df, "US_RATE_LOWER"),
+    }
+    use_range = bool(start or end)
+    cutoff = "" if use_range else _cutoff_date(list(raw.values()), months)
+
+    def s(name, key, axis=0, chart_type="line"):
+        data = _slice_range(raw[key], start, end) if use_range else _slice(raw[key], cutoff)
+        return {"name": name, "data": data, "y_axis_index": axis, "type": chart_type}
+
+    grouped = {
+        "us_gdp": [s("美国GDP环比折年率", "us_gdp", 0, "bar")],
+        "us_prices": [s("美国CPI", "us_cpi"), s("美国核心CPI", "us_core_cpi"),
+                      s("美国PPI", "us_ppi"), s("美国非农就业人数", "us_nonfarm", 1)],
+        "us_rates": [s("联邦基金目标利率上限", "us_rate_upper"),
+                     s("联邦基金目标利率下限", "us_rate_lower")],
+    }
+    specs = {spec["id"]: spec for spec in US_MACRO_CHART_SPECS}
+    return [_chart(specs[spec_id], grouped[spec_id])
+            for spec_id in [x["id"] for x in US_MACRO_CHART_SPECS]]
+
+
 def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
                      months: int = 12, start: str | None = None,
                      end: str | None = None, index_df: pd.DataFrame | None = None,
@@ -397,6 +454,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         charts.append({
             "id": f"etf_{'huijin' if tag == '汇金' else 'gold' if tag == '黄金' else 'broad'}",
             "dim": "huijin" if tag == "汇金" else "gold" if tag == "黄金" else "broad",
+            # 黄金维度的份额变化/申赎净流入图整行展示；汇金/宽基保持原布局
+            "wide": tag == "黄金",
             "title": f"{tag}维度 · 流通份额变化 / 申赎净流入",
             "note": f"按标签「{tag}」汇总 {len(codes)} 只 ETF 较上一交易日的份额变化与申赎净流入；{scope}",
             "etf_count": len(codes),

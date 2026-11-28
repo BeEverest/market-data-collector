@@ -8,8 +8,8 @@ from fastapi.testclient import TestClient
 import storage
 import web_app
 from processors.dashboard import (
-    build_etf_charts, build_etf_daily_detail, build_macro_charts,
-    build_trade_charts, build_valuation_charts,
+    build_etf_charts, build_etf_daily_detail, build_macro_charts, build_trade_charts,
+    build_us_macro_charts, build_valuation_charts,
 )
 
 
@@ -153,6 +153,34 @@ class TestMacroDashboard:
         assert [d for d, _ in s2["data"]] == ["2026-08", "2026-10"]
 
 
+class TestUsMacroDashboard:
+    """美国宏观 3 图：数据来自 FRED 序列，独立于中国宏观 8 图。"""
+
+    def test_us_charts_order_and_series(self):
+        codes = ["US_GDP", "US_CPI", "US_CORE_CPI", "US_PPI", "US_NONFARM",
+                 "US_RATE_UPPER", "US_RATE_LOWER"]
+        rows = []
+        for date in ("2026-08", "2026-09", "2026-10"):
+            for code in codes:
+                rows.append({
+                    "指标代码": code, "指标名称": code, "日期": date,
+                    "数值": 100.0 if code.endswith(("CPI", "PPI")) else 2.5,
+                    "单位": "", "同比(%)": None, "环比(%)": None,
+                    "数据源": "FRED", "采集时间": "test", "run_id": "test",
+                })
+        charts = build_us_macro_charts(pd.DataFrame(rows), months=3)
+        assert [c["id"] for c in charts] == ["us_gdp", "us_prices", "us_rates"]
+        assert charts[0]["title"] == "图1：美国GDP环比折年率"
+        assert charts[1]["title"] == "图2：CPI、核心CPI、PPI、非农就业人数"
+        assert charts[2]["title"] == "图3：联邦基金目标利率上下限"
+        assert [s["name"] for s in charts[1]["series"]] == [
+            "美国CPI", "美国核心CPI", "美国PPI", "美国非农就业人数"]
+        assert [d for d, _ in charts[1]["series"][0]["data"]] == ["2026-08", "2026-09", "2026-10"]
+        assert [s["name"] for s in charts[2]["series"]] == [
+            "联邦基金目标利率上限", "联邦基金目标利率下限"]
+        assert charts[1]["series"][3]["y_axis_index"] == 1
+
+
 class TestEtfDashboard:
     def test_aggregates_by_tag_and_months(self):
         df = pd.DataFrame([
@@ -192,6 +220,7 @@ class TestEtfDashboard:
             {"code": "510050", "name": "510050"}, {"code": "510300", "name": "510300"}]
         gold = charts[2]
         assert gold["id"] == "etf_gold"
+        assert gold["wide"] is True  # 黄金维度份额变化/申赎净流入图整行展示
         assert gold["series"][0]["data"] == [["2026-11-19", -0.5]]
         # 黄金累计图（索引3）：从区间起始日逐日累加，末值为区间净变化；整行展示
         cum = charts[3]
@@ -417,6 +446,8 @@ class TestDashboardApi:
         assert data["months"] == 12 and data["etf_months"] == 12
         assert len(data["macro"]["charts"]) == 8
         assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
+        assert [c["id"] for c in data["macro_us"]["charts"]] == [
+            "us_gdp", "us_prices", "us_rates"]
         assert [c["id"] for c in data["etf"]["charts"]] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
             "etf_broad", "etf_hs300_stock", "etf_hs300_top5", "etf_kc50_stock",

@@ -54,9 +54,8 @@ from processors.dashboard import (
 from processors.etf_change import compute_etf_changes
 
 # 可配置的 ETF 分组标签（前端多选枚举，按此顺序归一展示）。
-ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金"]
-# 历史标签兼容：旧配置中的「宽基」仍允许保留，避免编辑其它标的时静默丢失；前端不再展示该选项。
-LEGACY_ETF_TAGS = ("宽基",)
+# 「宽基」为看板维度标签，需在标的配置中显式可选：六大宽基指数下全部标的统一打此标签。
+ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金", "宽基"]
 
 # 采集数据·日交易 Tab：原始表中文字段名（不在此表的字段原样透传；run_id 显式剔除）。
 # 排序在映射前的英文 trade_date 上完成，此处仅用于预览表头展示。
@@ -1742,8 +1741,8 @@ def api_etf_config_set(payload: dict):
             }
         if not isinstance(raw, dict):
             raise HTTPException(status_code=400, detail="tags 应为 {代码: [标签]} 或 [{code, tags}]")
-        allowed = set(ETF_TAG_OPTIONS) | set(LEGACY_ETF_TAGS)
-        ordered_options = list(ETF_TAG_OPTIONS) + list(LEGACY_ETF_TAGS)
+        allowed = set(ETF_TAG_OPTIONS)
+        ordered_options = list(ETF_TAG_OPTIONS)
         cleaned: dict[str, list[str]] = {}
         for key, val in raw.items():
             code = str(key).strip().zfill(6)

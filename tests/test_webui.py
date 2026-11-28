@@ -345,7 +345,7 @@ class TestWebPage:
         page.wait_for_selector('#modalRoot .etf-tag-picker input[type="checkbox"]')
         opts = page.locator('#modalRoot .etf-tag-picker input[type="checkbox"]')
         values = opts.evaluate_all("els => els.map(e => e.value)")
-        assert values == ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金"]
+        assert values == ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金", "宽基"]
         # 多选：保留已勾选的汇金，再勾沪深300
         page.locator('#modalRoot .etf-tag-picker input[value="沪深300"]').check()
         page.locator('#modalRoot [data-act="modal-ok"]').click()

@@ -162,20 +162,20 @@ function modal(title, body, onOk, okText='确认'){
 function closeModal(){ byId('modalRoot').innerHTML = ''; }
 
 /* ETF 分组标签：可多选枚举（与后端 /api/etf/config 的 tag_options 保持一致，作为回退） */
-const ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金"];
+const ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金", "宽基"];
 let ETF_TAG_EDIT_PICK = [];
 function openEtfTagEditor(idx){
   const item = (ETF_CFG.items||[])[idx]; if(!item) return;
   const opts = ETF_CFG.tag_options||ETF_TAG_OPTIONS;
   const cur = item.tags||[];
   const curSet = new Set(cur);
-  // 历史标签（如「宽基」）不在新枚举内时也一并展示，避免取消勾选时静默丢失
+  // 配置中已有的非枚举标签也一并展示，避免编辑其它标的时静默丢失
   const extra = cur.filter(t=>!opts.includes(t));
   const all = [...opts, ...extra];
   ETF_TAG_EDIT_PICK = cur.slice();
   const body = `<div class="etf-tag-picker" style="display:flex;flex-wrap:wrap;gap:9px 16px;padding:4px 0">
     ${all.map(t=>`<label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;cursor:pointer"><input type="checkbox" value="${esc(t)}" ${curSet.has(t)?'checked':''} style="width:auto"> ${esc(t)}${extra.includes(t)?' <small style="color:#8fa6c4">(历史)</small>':''}</label>`).join('')}
-  </div><p class="hint" style="margin-top:10px">可多选，保存后立即写入配置；看板「汇金」「黄金」维度按此标签归类。</p>`;
+  </div><p class="hint" style="margin-top:10px">可多选，保存后立即写入配置；看板「汇金」「黄金」「宽基」维度按此标签归类。</p>`;
   modal(`配置标签 · ${item.code}${item.name?' '+item.name:''}`, body, ()=>{
     item.tags = ETF_TAG_EDIT_PICK.slice();
     saveEtfConfigUI(byId('v-etfcfg'), true).then(ok=>{

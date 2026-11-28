@@ -643,6 +643,48 @@ class TestWebPage:
         assert layout["marginTop"] > 0
         assert page._js_errors == []
 
+    def test_sidebar_collapse_and_expand(self, page):
+        """左侧导航可收起为图标栏、再次展开，并将状态持久化到 localStorage。"""
+        toggle = page.locator('#sidebar [data-act="sidebar-toggle"]')
+        assert toggle.count() == 1
+        expanded = page.evaluate("""() => ({
+          width: document.querySelector('#sidebar').getBoundingClientRect().width,
+          collapsed: document.querySelector('.layout').classList.contains('sidebar-collapsed'),
+          labelVisible: getComputedStyle(document.querySelector('#sidebar .fn span')).display !== 'none'
+        })""")
+        assert not expanded["collapsed"]
+        assert expanded["width"] > 180
+        assert expanded["labelVisible"]
+
+        toggle.click()
+        page.wait_for_timeout(250)
+        collapsed = page.evaluate("""() => ({
+          width: document.querySelector('#sidebar').getBoundingClientRect().width,
+          collapsed: document.querySelector('.layout').classList.contains('sidebar-collapsed'),
+          labelVisible: getComputedStyle(document.querySelector('#sidebar .fn span')).display !== 'none',
+          stored: localStorage.getItem('mdc_sidebar_collapsed'),
+          title: document.querySelector('#sidebar [data-act="sidebar-toggle"]').title
+        })""")
+        assert collapsed["collapsed"]
+        assert collapsed["width"] < 80
+        assert not collapsed["labelVisible"]
+        assert collapsed["stored"] == "1"
+        assert collapsed["title"] == "展开导航"
+
+        page.locator('#sidebar [data-act="sidebar-toggle"]').click()
+        page.wait_for_timeout(250)
+        restored = page.evaluate("""() => ({
+          width: document.querySelector('#sidebar').getBoundingClientRect().width,
+          collapsed: document.querySelector('.layout').classList.contains('sidebar-collapsed'),
+          labelVisible: getComputedStyle(document.querySelector('#sidebar .fn span')).display !== 'none',
+          stored: localStorage.getItem('mdc_sidebar_collapsed')
+        })""")
+        assert not restored["collapsed"]
+        assert restored["width"] > 180
+        assert restored["labelVisible"]
+        assert restored["stored"] == "0"
+        assert page._js_errors == []
+
     def test_console_trade_count_uses_raw_tables_sum(self, page):
         """采集数量汇总卡片的交易数=5张交易原始表行数之和。"""
         _switch(page, "console")
@@ -858,7 +900,7 @@ class TestDashboardNewViews:
             series = next(s for s in chart["series"] if s["name"] == series_name)
             colored = [p for p in series["data"] if isinstance(p, dict)]
             colors = {p.get("itemStyle", {}).get("color") for p in colored}
-            assert "#ff6b6b" in colors and "#35c98b" in colors, chart_id
+            assert "#ff3b30" in colors and "#00d47e" in colors, chart_id
             values = [p.get("value") for p in colored]
             assert any(v > 0 for v in values) and any(v < 0 for v in values), chart_id
         assert page._js_errors == []

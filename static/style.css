@@ -16,7 +16,7 @@
 :root{
   --navy-900:#0b1a33; --navy-800:#122645; --navy-700:#1b3560; --navy-600:#24477f;
   --blue:#2563eb; --blue-d:#1d4ed8; --line:#e3e9f2; --muted:#7b8aa3; --ink:#1b2b45;
-  --bg:#eef2f8; --ok:#16a36a; --warn:#ea8c28; --err:#e0484b;
+  --bg:#eef2f8; --ok:#16a36a; --warn:#ea8c28; --err:#e0484b; --up:#ff3b30; --down:#00d47e;
 }
 *{box-sizing:border-box}
 body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft YaHei",sans-serif;margin:0;color:var(--ink);font-size:13px}
@@ -37,7 +37,17 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
 .topnav .status.busy .dot{background:#f5c26b;box-shadow:0 0 0 3px rgba(245,194,107,.18)}
 .hd-chip{background:rgba(255,255,255,.1);padding:5px 11px;border-radius:16px;font-size:11.5px}
 .layout{display:flex}
-.sidebar{width:216px;flex-shrink:0;background:#fff;border-right:1px solid var(--line);min-height:calc(100vh - 60px);position:sticky;top:60px;height:calc(100vh - 60px);overflow-y:auto;display:flex;flex-direction:column}
+.sidebar{width:216px;flex-shrink:0;background:#fff;border-right:1px solid var(--line);min-height:calc(100vh - 60px);position:sticky;top:60px;height:calc(100vh - 60px);overflow-y:auto;display:flex;flex-direction:column;transition:width .18s ease}
+.sidebar-toggle{width:100%;height:38px;display:flex;align-items:center;justify-content:flex-end;gap:6px;padding:0 16px;background:transparent;border:0;border-bottom:1px solid var(--line);color:var(--muted);font-size:16px;cursor:pointer;flex-shrink:0}
+.sidebar-toggle:hover{color:var(--blue);background:rgba(91,155,255,.08)}
+.sidebar-toggle i{font-size:17px}
+.layout.sidebar-collapsed .sidebar{width:64px}
+.layout.sidebar-collapsed .sidebar-toggle{justify-content:center;padding:0}
+.layout.sidebar-collapsed .sidebar .cap{height:1px;margin:9px 10px;padding:0;background:var(--line);color:transparent;font-size:0;overflow:hidden}
+.layout.sidebar-collapsed .sidebar .fn{justify-content:center;gap:0;padding:9px 0}
+.layout.sidebar-collapsed .sidebar .fn span,.layout.sidebar-collapsed .sidebar .fn .badge{display:none}
+.layout.sidebar-collapsed .sidebar .fn i{width:auto;font-size:18px}
+.layout.sidebar-collapsed .sidebar-foot{display:none}
 .sidebar .cap{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:#9aabc2;padding:15px 16px 5px;font-weight:700}
 .sidebar .fn{display:flex;align-items:center;gap:9px;padding:8px 16px;font-size:12.5px;color:#51627e;cursor:pointer;border-left:3px solid transparent;user-select:none}
 .sidebar .fn:hover{background:#f4f7fc;color:var(--navy-700)}
@@ -196,8 +206,8 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
 .etf-day-detail-table th, .etf-day-detail-table td { padding: 5px 8px; text-align: center; border-bottom: 1px solid #edf1f7; }
 .etf-day-detail-table th { font-weight: 600; color: var(--text); background: #eef3ff; }
 .etf-day-detail-table td.num { font-variant-numeric: tabular-nums; }
-.etf-day-detail-table .up { color: #c0392b; font-weight: 600; }
-.etf-day-detail-table .down { color: #16855b; font-weight: 600; }
+.etf-day-detail-table .up { color: var(--up); font-weight: 700; }
+.etf-day-detail-table .down { color: var(--down); font-weight: 700; }
 .etf-day-detail-table small { font-size: 10px; font-weight: 400; }
 .etf-rank-detail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .etf-rank-detail-head .etf-day-detail-title { margin: 0; flex: 1; min-width: 0; }
@@ -222,8 +232,8 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
 .table-wrap td.num { font-variant-numeric: tabular-nums; }
 .table-wrap tbody tr:nth-child(odd) > td { background: #fafbff; }
 .table-wrap tbody tr:hover > td { background: #eef3ff; }
-.table-wrap .up { color: #c0392b; font-weight: 600; }
-.table-wrap .down { color: #16855b; font-weight: 600; }
+.table-wrap .up { color: var(--up); font-weight: 700; }
+.table-wrap .down { color: var(--down); font-weight: 700; }
 .etf-day-detail-row > td, .etf-shares-detail-row > td { padding: 0 12px 12px; background: #f7f9fd; text-align: left; white-space: normal; }
 .etf-day-detail-row[hidden], .etf-shares-detail-row[hidden] { display: none; }
 .extra-detail-card { grid-column: 1 / -1; }
@@ -233,7 +243,7 @@ body{background:var(--bg);font-family:-apple-system,"Segoe UI",Roboto,"Microsoft
   --navy-900:#061326; --navy-800:#0a1c34; --navy-700:#102a49; --navy-600:#173a63;
   --blue:#5b9bff; --blue-d:#80b4ff; --line:#243a59; --muted:#9bb0cc; --ink:#e8f0fb;
   --text:#e8f0fb; --bg:#071628; --card:#102742; --card-2:#132e4c; --card-3:#0d2138;
-  --ok:#35c98b; --warn:#f5b85c; --err:#ff6b6b;
+  --ok:#35c98b; --warn:#f5b85c; --err:#ff6b6b; --up:#ff3b30; --down:#00d47e;
 }
 *{scrollbar-color:#2b4467 #0b1d33}
 body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--ink)!important}
@@ -298,8 +308,8 @@ body,.app-shell,.layout,.main,#views{background:var(--bg)!important;color:var(--
 .toast-box{min-width:260px}
 .toast{display:flex!important;visibility:visible!important;opacity:1!important}
 .etf-day-detail-row>td,.etf-shares-detail-row>td{background:rgba(91,155,255,.07)!important}
-.up,.etf-day-detail-table .up,.etf-daily-total-card .up,.table-wrap .up{color:#ff6b6b!important}
-.down,.etf-day-detail-table .down,.etf-daily-total-card .down,.table-wrap .down{color:#35c98b!important}
+.up,.etf-day-detail-table .up,.etf-daily-total-card .up,.table-wrap .up{color:var(--up)!important;font-weight:700}
+.down,.etf-day-detail-table .down,.etf-daily-total-card .down,.table-wrap .down{color:var(--down)!important;font-weight:700}
 .placeholder{color:var(--muted)!important;border-color:var(--line)!important}
 /* 表头日期排序按钮 */
 .th-sort{background:none;border:0;color:inherit;cursor:pointer;font:inherit;padding:0;display:inline-flex;align-items:center;gap:4px}

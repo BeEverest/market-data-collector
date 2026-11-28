@@ -3,8 +3,8 @@
  * 生产静态资源：Tabler 风格 UI，数据层与动作层均对接后端接口。
  * ========================================================================== */
 const CLR = ['#2563eb','#16a36a','#ea8c28','#8056d8','#e0484b','#0d9a9a','#db2777','#64748b'];
-// 宏观增量类柱状图：正值红、负值绿（与表格 .up/.down 同色）
-const SIGN_UP = '#ff6b6b', SIGN_DOWN = '#35c98b';
+// 宏观增量类柱状图：正值红、负值绿，使用高对比色确保深浅主题下都容易区分（与表格 .up/.down 同色）
+const SIGN_UP = '#ff3b30', SIGN_DOWN = '#00d47e';
 const CHART_INK = '#d7e3f4';
 const CHART_GRID = '#223852';
 function darkenChartOption(opt){
@@ -1316,17 +1316,37 @@ const VIEWS = {
 /* ==========================================================================
  * 渲染 / 导航
  * ========================================================================== */
+const SIDEBAR_STATE_KEY = 'mdc_sidebar_collapsed';
+let sidebarCollapsed = localStorage.getItem(SIDEBAR_STATE_KEY) === '1';
+function applySidebarCollapsed(){
+  const layout = document.querySelector('.layout');
+  if(layout) layout.classList.toggle('sidebar-collapsed', sidebarCollapsed);
+  const btn = document.querySelector('#sidebar [data-act="sidebar-toggle"]');
+  if(btn){
+    const title = sidebarCollapsed ? '展开导航' : '收起导航';
+    btn.title = title;
+    btn.setAttribute('aria-label', title);
+    btn.innerHTML = `<i class="ti ti-${sidebarCollapsed?'chevron-right':'chevron-left'}"></i>`;
+  }
+}
+function toggleSidebarCollapsed(){
+  sidebarCollapsed = !sidebarCollapsed;
+  localStorage.setItem(SIDEBAR_STATE_KEY, sidebarCollapsed ? '1' : '0');
+  applySidebarCollapsed();
+  // 侧栏宽度变化后同步重排已渲染的 ECharts，避免图表仍按旧宽度绘制
+  setTimeout(()=>{ $$('.chart-box').forEach(dom=>window.echarts?.getInstanceByDom(dom)?.resize()); }, 200);
+}
 function buildSidebar(){
-  const v = $('.view.active');
-  let h = '';
+  let h = `<button type="button" class="sidebar-toggle" data-act="sidebar-toggle" title="${sidebarCollapsed?'展开导航':'收起导航'}"><i class="ti ti-${sidebarCollapsed?'chevron-right':'chevron-left'}"></i></button>`;
   NAV[curMod].groups.forEach(g=>{
-    h += `<div class="cap">${g.cap}</div>`;
+    h += `<div class="cap" title="${esc(g.cap)}">${g.cap}</div>`;
     g.items.forEach(it=>{
-      h += `<div class="fn ${it.id===curView?'active':''}" data-view="${it.id}"><i class="ti ti-${it.icon}"></i><span>${it.name}</span>${it.badge?`<span class="badge badge-sm ${it.badge==='TODO'?'bg-secondary':'bg-red'}">${it.badge}</span>`:''}</div>`;
+      h += `<div class="fn ${it.id===curView?'active':''}" data-view="${it.id}" title="${esc(it.name)}"><i class="ti ti-${it.icon}"></i><span>${it.name}</span>${it.badge?`<span class="badge badge-sm ${it.badge==='TODO'?'bg-secondary':'bg-red'}">${it.badge}</span>`:''}</div>`;
     });
   });
   h += `<div class="sidebar-foot">投研大盘数据平台 · 生产系统<br>© 2026 投研数据团队</div>`;
   $('#sidebar').innerHTML = h;
+  applySidebarCollapsed();
 }
 function renderViews(){
   $('#views').innerHTML = Object.entries(VIEWS).map(([k,v])=>`<section class="view ${k===curView?'active':''}" id="v-${k}">${v()}</section>`).join('');
@@ -2217,6 +2237,7 @@ function handleTableAction(act, btn){
 function handleAction(act, btn, e){
   const view = activeView();
   switch(act){
+    case 'sidebar-toggle': { toggleSidebarCollapsed(); break; }
     /* 采集控制台 */
     case 'collect-full': {
       const row = btn.closest('.ctl-row');

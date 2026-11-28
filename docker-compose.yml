@@ -1,0 +1,34 @@
+# 投研大盘数据采集系统 —— Docker Compose 部署
+#
+# 快速开始：
+#   mkdir -p data
+#   # 把迁移包中的 market_data.db 放到 data/market_data.db（可选，不放则新建空库）
+#   MCP_URL=https://你的MCP网关/mcp docker compose up -d --build
+#   curl http://localhost:8000/api/health
+#
+# 数据持久化：宿主机 ./data 挂载为容器内 /app/output。
+# 升级/重建容器不会丢失采集原数据；详见 README「Docker 部署」章节。
+services:
+  market-data:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: market-data-collector:local
+    container_name: market-data-collector
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    volumes:
+      - ./data:/app/output
+    environment:
+      TZ: Asia/Shanghai
+      PORT: "8000"
+      # 东方财富 MCP 网关。新环境若无法解析内网地址，请改为可达地址；
+      # 未配置或不可达时，涨跌家数采集自动降级为新浪全A快照派生，不影响系统启动。
+      MCP_URL: ${MCP_URL:-http://mx-ds-mcp.agent-gateway.auth-proxy.local/mxds/v2/mcp}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3

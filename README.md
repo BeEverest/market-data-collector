@@ -55,6 +55,10 @@ market_data_collector/
 ├── exporter.py              # 宏观/ETF/指数/接口监控分类导出 + 全量 ZIP（均含口径说明）
 ├── monitor.py               # 接口运维监控：状态记录、失败追踪、重跑任务、报告
 ├── requirements.txt
+├── Dockerfile               # 生产镜像（Python 3.11 slim + 时区 + 健康检查）
+├── docker-compose.yml       # 一键部署：./data 挂载为 /app/output 持久化数据
+├── docker/entrypoint.sh     # 容器入口：仅准备目录并启动，绝不清理数据
+├── tools/export_db.py       # 一致性导出 SQLite（含 WAL）+ SQL dump + manifest
 └── output/                  # 运行结果
     ├── market_data.db                # SQLite 主库（业务数据/监控/ETF与指数配置）
     ├── exports/                      # 按需导出：宏观/ETF/指数/接口监控 + 全量 ZIP
@@ -341,3 +345,63 @@ playwright install chromium        # 或使用系统已有 Chromium
 | `tests/test_webui.py` | 真实浏览器 Web 页面测试：23 视图渲染与 JS 异常、图1季度/月度多序列 X 轴并集（2026-10 回归）、看板日期区间联动、数据预览筛选、运维监控失败筛选 |
 
 测试过程中发现并修复了 `exporter._notes_for()` 的表头过滤缺陷：此前表头行被分类条件误过滤，导致导出口径说明的 CSV/Excel 首行数据被当作列名且丢失第一条说明；现已固定使用 `_NOTES[0]` 作为列名。
+
+## 十一、Docker 部署与数据库迁移
+
+### 为什么需要导出数据库
+
+`output/market_data.db` 是系统唯一实时主存储，且已被 `.gitignore` 排除（采集原数据不入库）。迁移到新环境时必须显式导出，不能只 clone 代码。生产库运行在 WAL 模式，直接 `cp` 会漏掉未 checkpoint 的数据，因此必须使用 SQLite 官方 backup API 导出一致性快照。
+
+```bash
+# 在原环境导出（只读源库，不修改任何采集数据）
+python3.11 tools/export_db.py --out /tmp/market_data_export
+
+# 产物：market_data.db（单文件）、market_data.sql（可移植 dump）、manifest.json（行数/SHA256）
+```
+
+### 新环境部署步骤
+
+```bash
+# 1. 拉取代码（含 Dockerfile / docker-compose.yml）
+git clone https://github.com/BeEverest/market-data-collector.git
+cd market-data-collector
+
+# 2. 创建持久化数据目录，导入迁移包中的数据库
+mkdir -p data
+cp /path/to/market_data_export/market_data.db data/market_data.db
+# 校验：sha256 应与 manifest.json 中 snapshot_sha256 一致
+
+# 3. 配置 MCP 网关（东方财富）。若新环境无法解析内网地址，可省略，
+#    涨跌家数会自动降级为新浪全A快照派生，不影响启动。
+export MCP_URL=https://你的MCP网关/mcp
+
+# 4. 构建并启动
+docker compose up -d --build
+
+# 5. 验证
+curl http://localhost:8000/api/health
+```
+
+### 关键约定
+
+| 项 | 说明 |
+| --- | --- |
+| **数据持久化** | 宿主机 `./data` 挂载为容器内 `/app/output`。数据库、日志、导出产物全部落在此目录；重建/升级容器不丢数据 |
+| **启动只读** | 服务启动/重启不清空数据、不触发采集；数据仅在看板手动采集或定时调度到点时更新 |
+| **原数据保护** | 采集原表（`*_raw`/`*_observation`/`new_row_log`）只追加/幂等 upsert，不做清理删除覆盖 |
+| **配置真相源** | 调度时刻、ETF/指数配置以 SQLite 为准，`config.json` 仅作镜像/种子；新环境无需重新配置 |
+| **端口** | 容器内固定 8000；宿主机端口用 `HOST_PORT=xxxx docker compose up -d` 覆盖 |
+| **时区** | 镜像内设为 `Asia/Shanghai`，确保定时调度按本地时间触发 |
+| **MCP** | `MCP_URL` 环境变量可覆盖内网默认地址；不可达时自动降级新浪，失败明细留痕 |
+
+### 常用运维命令
+
+```bash
+docker compose logs -f market-data              # 查看实时日志
+docker compose restart market-data              # 重启（只读，不丢数据）
+docker compose down                             # 停止（不会删除 ./data）
+docker compose up -d                            # 再次启动
+docker compose exec market-data python3.11 -c "import sqlite3;c=sqlite3.connect('/app/output/market_data.db');print(c.execute('SELECT COUNT(*) FROM etf_observation').fetchone()[0])"
+```
+
+> **注意**：`docker compose down -v` 会删除 volume，但本方案使用 bind mount（`./data`），即使误加 `-v` 也不会删除宿主机数据目录；真正删除数据需要手动 `rm -rf data/`，请谨慎。

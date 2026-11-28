@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import sys
 from datetime import datetime
@@ -25,7 +26,11 @@ import storage  # noqa: E402
 from processors.trade import recompute_trade  # noqa: E402
 
 logger = logging.getLogger("backfill_em")
-MCP_URL = "http://mx-ds-mcp.agent-gateway.auth-proxy.local/mxds/v2/mcp"
+# 新环境 / Docker 部署时可用 MCP_URL 环境变量指向本机可达的 MCP 网关；
+# 未设置时沿用内网默认地址（仅开发沙箱可解析）。
+MCP_URL = os.environ.get(
+    "MCP_URL", "http://mx-ds-mcp.agent-gateway.auth-proxy.local/mxds/v2/mcp"
+)
 HEADERS = {"Content-Type": "application/json", "Accept": "application/json, text/event-stream"}
 SOURCE_ADD = "东方财富MCP·上证指数成交额(历史补数)"
 

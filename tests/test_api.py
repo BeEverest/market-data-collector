@@ -96,7 +96,7 @@ class TestReadOnlyApis:
         cfg = client.get("/api/etf/config").json()
         # 标签枚举按 9 项配置，支持多选；「宽基」为看板维度标签，可显式配置
         assert cfg["tag_options"] == [
-            "汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金", "宽基",
+            "汇金", "上证50", "沪深300", "中证A500", "中证1000", "科创50", "创业板", "黄金", "宽基",
         ]
         assert "宽基" in cfg["tag_options"]
         code = cfg["codes"][0]

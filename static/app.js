@@ -162,7 +162,7 @@ function modal(title, body, onOk, okText='确认'){
 function closeModal(){ byId('modalRoot').innerHTML = ''; }
 
 /* ETF 分组标签：可多选枚举（与后端 /api/etf/config 的 tag_options 保持一致，作为回退） */
-const ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证A1000", "科创50", "创业板", "黄金", "宽基"];
+const ETF_TAG_OPTIONS = ["汇金", "上证50", "沪深300", "中证A500", "中证1000", "科创50", "创业板", "黄金", "宽基"];
 let ETF_TAG_EDIT_PICK = [];
 function openEtfTagEditor(idx){
   const item = (ETF_CFG.items||[])[idx]; if(!item) return;

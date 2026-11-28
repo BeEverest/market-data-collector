@@ -21,7 +21,7 @@ class TestIndexCollector:
         # 000905 中证500 为 Web 新增指数预设项，必须在目录内才能保存配置并采集。
         assert codes == {"000001", "000016", "000300", "000510", "000905", "000852", "000688", "399006"}
         names = {it["code"]: it["name"] for it in cat}
-        assert names["000852"] == "中证1000"  # 对应看板沿用的「中证A1000」ETF 标签
+        assert names["000852"] == "中证1000"  # 与看板 ETF 标签「中证1000」一致
         assert names["000905"] == "中证500"
         assert all(it["granularity"] == "交易日" for it in cat)
 

@@ -771,7 +771,11 @@ class TestDashboardNewViews:
         assert page._js_errors == []
 
     def test_macro_nav_country_split_and_us_charts(self, page):
-        """左侧导航宏观拆分为中国/美国；美国视图渲染 3 张 FRED 图。"""
+        """左侧导航宏观拆分为中国/美国；真实点击美国宏观后渲染 3 张 FRED 图。
+
+        回归：静态资源已更新但后端进程未重启时，导航会出现却没有 macro_us 数据。
+        必须从左侧导航真实点击进入，覆盖 switchView 程序化调用无法发现的部署时序问题。
+        """
         nav = page.evaluate("""() => NAV.dashboard.groups.flatMap(g => g.items)
           .filter(x => x.id === 'dashmacro' || x.id === 'dashmacro_us')
           .map(x => ({id:x.id, name:x.name}))""")
@@ -779,7 +783,15 @@ class TestDashboardNewViews:
             {"id": "dashmacro", "name": "中国宏观"},
             {"id": "dashmacro_us", "name": "美国宏观"},
         ]
-        _switch(page, "dashmacro_us")
+        page.locator('.mod[data-mod="dashboard"]').click()
+        with page.expect_response(lambda r: "/api/dashboard" in r.url, timeout=30000) as resp_info:
+            page.locator('.fn[data-view="dashmacro_us"]').click()
+        resp = resp_info.value
+        assert resp.status == 200
+        assert [c["id"] for c in resp.json().get("macro_us", {}).get("charts", [])] == [
+            "us_gdp", "us_prices", "us_rates"
+        ]
+        page.wait_for_timeout(500)
         view = page.locator("#v-dashmacro_us")
         assert view.locator("[data-chart-card]").count() == 3
         assert view.locator('[data-chart-card="us_gdp"]').count() == 1

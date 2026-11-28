@@ -724,15 +724,15 @@ class TestDashboardNewViews:
         assert view.locator('[data-chart-card="etf_huijin"]').count() == 1
         assert view.locator('[data-chart-card="etf_huijin_cumulative"]').count() == 0
         assert view.locator('[data-chart-card="etf_kc50_top5"]').count() == 0
-        # 切到宽基：显示主图 + Top5 与科创50合计两张图，后两者并作一排
+        # 切到宽基：主图 + 六大宽基各 2 图，六组图各自并作一排
         view.locator('[data-etf-dim="broad"]').click()
         page.wait_for_timeout(300)
         assert view.locator('[data-chart-card="etf_broad"]').count() == 1
         assert view.locator('[data-chart-card="etf_kc50_top5"]').count() == 1
         assert view.locator('[data-chart-card="etf_kc50_stock"]').count() == 1
         assert view.locator('[data-chart-card="etf_huijin"]').count() == 0
-        assert view.locator(".chart-row-pair").count() == 1
-        assert view.locator(".chart-row-pair [data-chart-card]").count() == 2
+        assert view.locator(".chart-row-pair").count() == 6
+        assert view.locator(".chart-row-pair [data-chart-card]").count() == 12
         # 切回黄金：主图 + 累计图（整行）
         view.locator('[data-etf-dim="gold"]').click()
         page.wait_for_timeout(300)

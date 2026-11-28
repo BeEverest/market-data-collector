@@ -15,11 +15,21 @@ from collectors import index as idx_mod
 
 # ---------------- 采集器 ----------------
 class TestIndexCollector:
-    def test_catalog_has_four_indices(self):
+    def test_catalog_has_six_broad_indices_plus_benchmark(self):
         cat = idx_mod.catalog()
         codes = {it["code"] for it in cat}
-        assert codes == {"000001", "000300", "000688", "399006"}
+        assert codes == {"000001", "000016", "000300", "000510", "000852", "000688", "399006"}
+        names = {it["code"]: it["name"] for it in cat}
+        assert names["000852"] == "中证1000"  # 对应看板沿用的「中证A1000」ETF 标签
         assert all(it["granularity"] == "交易日" for it in cat)
+
+    def test_broad_index_codes_are_cataloged(self):
+        """宽基看板使用的六个指数必须全部可采集，避免合计图退化为无指数叠加。"""
+        from processors.dashboard import BROAD_INDEX_SPECS
+        catalog_codes = {it["code"] for it in idx_mod.catalog()}
+        spec_codes = {code for _, _, code in BROAD_INDEX_SPECS}
+        assert spec_codes == {"000016", "000300", "000510", "000852", "000688", "399006"}
+        assert spec_codes <= catalog_codes
 
     def test_output_columns_include_pct_change(self):
         assert "涨跌幅(%)" in idx_mod.OUTPUT_COLUMNS

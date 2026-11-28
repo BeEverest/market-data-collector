@@ -164,12 +164,15 @@ class TestEtfDashboard:
             {"基金代码": "510050", "交易日期": "2026-11-20", "份额变化(亿份)": 7.0, "规模变化(亿元)": 8.0},
         ])
         tag_map = {"510050": ["宽基", "汇金"], "510300": ["汇金"], "518880": ["黄金"]}
-        # 汇金原图 + 汇金细分 + 黄金原图 + 黄金累计 + 宽基原图 + Top5科创50 + 科创50合计
+        # 汇金原图 + 汇金细分 + 黄金原图 + 黄金累计 + 宽基原图 + 六大宽基各 2 图 = 17
         # 近1月只保留 2026-11；510050 规模变化 = 2+6+8 = 16，510300 = 4，合计 20
         charts = build_etf_charts(df, tag_map, months=1)
         assert [c["id"] for c in charts] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
+            "etf_broad", "etf_sz50_top5", "etf_sz50_stock", "etf_hs300_top5",
+            "etf_hs300_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
+            "etf_a1000_stock", "etf_kc50_top5", "etf_kc50_stock",
+            "etf_cyb_top5", "etf_cyb_stock"]
         hj = charts[0]
         assert hj.get("layout") is None  # 汇金原图为默认时间序列
         assert hj["etf_count"] == 2
@@ -394,7 +397,10 @@ class TestEtfDashboard:
         charts = build_etf_charts(df, {}, months=12)
         assert [c["id"] for c in charts] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
+            "etf_broad", "etf_sz50_top5", "etf_sz50_stock", "etf_hs300_top5",
+            "etf_hs300_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
+            "etf_a1000_stock", "etf_kc50_top5", "etf_kc50_stock",
+            "etf_cyb_top5", "etf_cyb_stock"]
         assert all(c.get("etf_count", 0) == 0 for c in charts)
         assert all(not s["data"] for c in charts for s in c["series"])
 
@@ -413,7 +419,10 @@ class TestDashboardApi:
         assert data["macro"]["charts"][-1]["id"] == "loan_new_chart"
         assert [c["id"] for c in data["etf"]["charts"]] == [
             "etf_huijin", "etf_huijin_detail", "etf_gold", "etf_gold_cumulative",
-            "etf_broad", "etf_kc50_top5", "etf_kc50_stock"]
+            "etf_broad", "etf_sz50_top5", "etf_sz50_stock", "etf_hs300_top5",
+            "etf_hs300_stock", "etf_a500_top5", "etf_a500_stock", "etf_a1000_top5",
+            "etf_a1000_stock", "etf_kc50_top5", "etf_kc50_stock",
+            "etf_cyb_top5", "etf_cyb_stock"]
         assert data["etf"]["charts"][0]["etf_count"] == 1
         assert data["etf"]["charts"][0]["id"] == "etf_huijin"
         assert data["etf"]["charts"][1]["id"] == "etf_huijin_detail"
@@ -609,7 +618,7 @@ class TestValuationDashboard:
 
 
 class TestBroadEtfDashboard:
-    """宽基维度：Top5 科创50 ETF 份额/申赎净流入 + 合计流通份额/申赎净流入（叠科创50）。"""
+    """宽基维度：六大宽基指数各有 Top5 份额/申赎净流入 + 合计流通份额/申赎净流入（叠自身指数）。"""
 
     @staticmethod
     def _df():
@@ -651,6 +660,37 @@ class TestBroadEtfDashboard:
         assert stock["layout"] == "etf_overlay"
         assert stock["index_code"] == "000688"  # 固定科创50，不随用户选择变化
         assert stock["index_data"] == [["2026-11-20", 1000.0]]
+
+    def test_all_six_broad_indices_have_isomorphic_charts(self):
+        """六大宽基指数：每个都产出同构 Top5 + 合计图，pair 唯一且叠自身指数。"""
+        from processors.dashboard import BROAD_INDEX_SPECS
+        specs = BROAD_INDEX_SPECS
+        df = pd.DataFrame([
+            {"基金代码": f"9{i:05d}", "基金简称": f"{tag}ETF{i}", "交易日期": "2026-11-20",
+             "份额(亿份)": 10.0, "规模(亿元)": 20.0,
+             "份额变化(亿份)": 1.0, "规模变化(亿元)": 2.0, "净流入(亿元)": 2.0}
+            for i, (tag, _, _) in enumerate(specs)
+        ])
+        tags = {f"9{i:05d}": [tag, "宽基"] for i, (tag, _, _) in enumerate(specs)}
+        idx = pd.DataFrame([
+            {"指数代码": code, "指数名称": tag, "交易日期": "2026-11-20", "收盘价": 1000.0 + i}
+            for i, (tag, _, code) in enumerate(specs)
+        ])
+        charts = build_etf_charts(df, tags, months=1, index_df=idx, index_code="000001")
+        ids = [c["id"] for c in charts]
+        assert len(ids) == 17  # 汇金2 + 黄金2 + 宽基主图1 + 六大宽基×2
+        pairs = []
+        for tag, slug, code in specs:
+            top5 = next(c for c in charts if c["id"] == f"etf_{slug}_top5")
+            stock = next(c for c in charts if c["id"] == f"etf_{slug}_stock")
+            assert top5["dim"] == stock["dim"] == "broad"
+            assert top5["layout"] == "etf_rank" and top5["pair"] == stock["pair"] == slug
+            assert tag in top5["title"] and tag in stock["title"]
+            assert [m["code"] for m in top5["rank_meta"]] == [f"9{specs.index((tag, slug, code)):05d}"]
+            assert stock["layout"] == "etf_overlay" and stock["index_code"] == code
+            assert stock["etf_count"] == 1
+            pairs.append(slug)
+        assert len(set(pairs)) == 6  # 每组 pair 唯一，前端不会跨组并排
 
 
 class TestGoldCumulativeDashboard:

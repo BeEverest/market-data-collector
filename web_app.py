@@ -1189,7 +1189,8 @@ def api_dashboard(months: int = 12, etf_months: int = 12, days: int | None = Non
             code = str(code).strip().zfill(6)
             name = str(grp["指数名称"].iloc[0]) if "指数名称" in grp.columns else code
             index_options.append({"code": code, "name": name})
-        order = {"000001": 0, "000300": 1, "000688": 2, "399006": 3}
+        order = {"000001": 0, "000016": 1, "000300": 2, "000510": 3,
+                 "000852": 4, "000688": 5, "399006": 6}
         index_options.sort(key=lambda x: (order.get(x["code"], 99), x["code"]))
 
     return {

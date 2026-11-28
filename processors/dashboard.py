@@ -24,6 +24,19 @@ from processors.derived import _shift_month
 
 ETF_DASHBOARD_TAGS = ["汇金", "黄金", "宽基"]
 
+# 宽基维度：六大宽基标签 → (图表ID短码, 对应指数代码)。
+# 每类生成一组同构图：Top5 ETF 份额/申赎净流入排名 + 合计流通份额/申赎净流入
+# （上格固定叠加该宽基指数自身日线；库中暂无该指数数据时退化为普通双轴图）。
+# 注：000852 官方名称为「中证1000」，项目配置沿用历史 ETF 标签「中证A1000」。
+BROAD_INDEX_SPECS = [
+    ("上证50", "sz50", "000016"),
+    ("沪深300", "hs300", "000300"),
+    ("中证A500", "a500", "000510"),
+    ("中证A1000", "a1000", "000852"),
+    ("科创50", "kc50", "000688"),
+    ("创业板", "cyb", "399006"),
+]
+
 # 估值页：沪深300风险溢价率（FED 差值）曲线 + 历史均值 ±1σ/±2σ 通道 + 全历史百分位。
 VALUATION_CHART_SPECS = [
     {
@@ -163,7 +176,7 @@ def _index_daily_window(index_df, low: str, high: str, code: str = "000001") -> 
     """指数日频收盘 [[YYYY-MM-DD, 点位], ...]，按 ETF 图展示窗口截取。
 
     low/high 来自 _etf_window：精确模式为 YYYY-MM-DD，月份模式 low 为 YYYY-MM、high 为空。
-    code 为指数代码（000001/000300/000688/399006 等），无该指数数据时返回空列表。
+    code 为指数代码（000001/000016/000300/000510/000852/000688/399006 等），无该指数数据时返回空列表。
     """
     pairs = _pairs(index_df, "交易日期", "收盘价", code=str(code).strip().zfill(6),
                    code_col="指数代码")
@@ -330,8 +343,8 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
     维度口径：
     - 汇金：主图（可叠指数）+ 各 ETF 净流入细分；不再提供每日变化累计图。
     - 黄金：主图 + 累计份额变化 / 累计申赎净流入 / 总份额整行图。
-    - 宽基：主图（可叠指数）+ Top5 科创50 排名 + 科创50 合计流通份额 / 申赎净流入
-      （叠科创50指数），后两图由前端并作一排。
+    - 宽基：主图（可叠指数）+ 六大宽基指数各一组同构图（Top5 排名 + 合计流通份额 /
+      申赎净流入，叠自身指数），每组两图由前端并作一排。
     """
     tag_map = tag_map or {}
     months = max(0, int(months or 0))
@@ -487,86 +500,88 @@ def build_etf_charts(etf_df: pd.DataFrame, tag_map: dict | None,
         if tag == "宽基":
             # 宽基主图叠加所选指数日线（与汇金同口径，默认上证指数），上下双图联动。
             attach_overlay(charts[-1], index_code)
-            # 宽基维度：Top5 科创50 ETF（按标签「科创50」取数）份额变化 / 申赎净流入排名，
-            # 以及全部科创50 ETF 合计的流通份额存量 / 申赎净流入时间序列（叠科创50指数）。
-            kc_codes = {str(c).zfill(6) for c, tags in tag_map.items()
-                        if "科创50" in (tags or [])}
-            kc_sub = pd.DataFrame()
-            if (etf_df is not None and not etf_df.empty and kc_codes
-                    and required.issubset(etf_df.columns)):
-                kc_sub = etf_df[etf_df["基金代码"].isin(kc_codes)]
+            # 六大宽基指数各生成一组同构图（与科创50口径一致）：
+            #   Top5 ETF 份额变化/申赎净流入排名 + 合计流通份额/申赎净流入（叠自身指数）。
+            # 同组两图使用同一 pair 键，由前端并作一排；科创50 图表 ID 保持不变。
+            for idx_tag, slug, idx_code in BROAD_INDEX_SPECS:
+                codes_k = {str(c).zfill(6) for c, tags in tag_map.items()
+                           if idx_tag in (tags or [])}
+                kc_sub = pd.DataFrame()
+                if (etf_df is not None and not etf_df.empty and codes_k
+                        and required.issubset(etf_df.columns)):
+                    kc_sub = etf_df[etf_df["基金代码"].isin(codes_k)]
 
-            # 图：各科创50 ETF 区间净流入排名（Top5），含份额变化与申赎净流入
-            kc_rank: dict[str, dict] = {}
-            if not kc_sub.empty:
-                for code, grp in kc_sub.groupby("基金代码", sort=False):
-                    name = str(grp["基金简称"].iloc[0]) if "基金简称" in grp.columns else str(code)
-                    net = _net_inflow_sum(grp)
-                    share = _clean_number(grp["份额变化(亿份)"].sum())
-                    kc_rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
-            ordered = sorted(kc_rank.items(),
-                             key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
-            top5 = ordered[:5]
-            share_rank = [[v["name"], v["share"]] for _, v in top5 if v["share"] is not None]
-            net_rank = [[v["name"], v["net"]] for _, v in top5 if v["net"] is not None]
-            rank_meta = [{"code": code, "name": v["name"]} for code, v in top5]
-            charts.append({
-                "id": "etf_kc50_top5",
-                "dim": "broad",
-                "pair": "kc50",  # 与下一张科创50合计图并作一排
-                "title": "宽基 · Top5 科创50 ETF 份额变化 / 申赎净流入",
-                "note": f"按「科创50」标签取数，按区间申赎净流入降序取前 5 只；"
-                        f"份额变化=较上一交易日环比累加，净流入=份额变化×当日净值；{scope}",
-                "layout": "etf_rank",
-                "etf_count": len(kc_codes),
-                "codes": sorted(kc_codes),
-                "rank_meta": rank_meta,
-                "detail_start": low, "detail_end": high,
-                "range_label": scope,
-                "y_axes": [{"name": "份额变化 (亿份)", "position": "left"},
-                           {"name": "申赎净流入 (亿元)", "position": "right"}],
-                "series": [
-                    {"name": "份额变化(亿份)", "data": share_rank,
-                     "y_axis_index": 0, "type": "bar"},
-                    {"name": "申赎净流入(亿元)", "data": net_rank,
-                     "y_axis_index": 1, "type": "bar"},
-                ],
-            })
+                # 图：各宽基 ETF 区间净流入排名（Top5），含份额变化与申赎净流入
+                kc_rank: dict[str, dict] = {}
+                if not kc_sub.empty:
+                    for code, grp in kc_sub.groupby("基金代码", sort=False):
+                        name = str(grp["基金简称"].iloc[0]) if "基金简称" in grp.columns else str(code)
+                        net = _net_inflow_sum(grp)
+                        share = _clean_number(grp["份额变化(亿份)"].sum())
+                        kc_rank[str(code).zfill(6)] = {"name": name, "net": net, "share": share}
+                ordered = sorted(kc_rank.items(),
+                                 key=lambda kv: (kv[1]["net"] is None, -(kv[1]["net"] or 0)))
+                top5 = ordered[:5]
+                share_rank = [[v["name"], v["share"]] for _, v in top5 if v["share"] is not None]
+                net_rank = [[v["name"], v["net"]] for _, v in top5 if v["net"] is not None]
+                rank_meta = [{"code": code, "name": v["name"]} for code, v in top5]
+                charts.append({
+                    "id": f"etf_{slug}_top5",
+                    "dim": "broad",
+                    "pair": slug,  # 与本宽基合计图并作一排
+                    "title": f"宽基 · Top5 {idx_tag} ETF 份额变化 / 申赎净流入",
+                    "note": f"按「{idx_tag}」标签取数，按区间申赎净流入降序取前 5 只；"
+                            f"份额变化=较上一交易日环比累加，净流入=份额变化×当日净值；{scope}",
+                    "layout": "etf_rank",
+                    "etf_count": len(codes_k),
+                    "codes": sorted(codes_k),
+                    "rank_meta": rank_meta,
+                    "detail_start": low, "detail_end": high,
+                    "range_label": scope,
+                    "y_axes": [{"name": "份额变化 (亿份)", "position": "left"},
+                               {"name": "申赎净流入 (亿元)", "position": "right"}],
+                    "series": [
+                        {"name": "份额变化(亿份)", "data": share_rank,
+                         "y_axis_index": 0, "type": "bar"},
+                        {"name": "申赎净流入(亿元)", "data": net_rank,
+                         "y_axis_index": 1, "type": "bar"},
+                    ],
+                })
 
-            # 图：科创50 ETF 合计流通份额存量 / 申赎净流入（按交易日），双轴；
-            # 上格叠加科创50指数日线（固定 000688，不随用户选择的叠加指数变化）。
-            stock_share: dict[str, float] = {}
-            stock_flow: dict[str, float] = {}
-            if not kc_sub.empty and {"交易日期", "份额(亿份)"}.issubset(kc_sub.columns):
-                for d, grp in kc_sub.groupby("交易日期", sort=True):
-                    s = _clean_number(pd.to_numeric(grp["份额(亿份)"], errors="coerce").sum())
-                    f = _net_inflow_sum(grp)
-                    if s is not None:
-                        stock_share[str(d)[:10]] = s
-                    if f is not None:
-                        stock_flow[str(d)[:10]] = f
-            stock_chart = {
-                "id": "etf_kc50_stock",
-                "dim": "broad",
-                "pair": "kc50",  # 与 Top5 图并作一排
-                "title": "宽基 · 科创50 ETF 合计流通份额 / 申赎净流入",
-                "note": f"按「科创50」标签全部 ETF 逐交易日合计：流通份额存量(亿份) 与申赎净流入(亿元)；"
-                        f"{scope}",
-                "etf_count": len(kc_codes),
-                "codes": sorted(kc_codes),
-                "y_axes": [{"name": "流通份额 (亿份)", "position": "left"},
-                           {"name": "申赎净流入 (亿元)", "position": "right"}],
-                "series": [
-                    {"name": "合计流通份额(亿份)",
-                     "data": [[d, v] for d, v in sorted(stock_share.items())],
-                     "y_axis_index": 0, "type": "line"},
-                    {"name": "合计申赎净流入(亿元)",
-                     "data": [[d, v] for d, v in sorted(stock_flow.items())],
-                     "y_axis_index": 1, "type": "line"},
-                ],
-            }
-            attach_overlay(stock_chart, "000688")
-            charts.append(stock_chart)
+                # 图：该宽基 ETF 合计流通份额存量 / 申赎净流入（按交易日），双轴；
+                # 上格叠加该宽基指数日线（固定 idx_code，不随用户选择的叠加指数变化）。
+                stock_share: dict[str, float] = {}
+                stock_flow: dict[str, float] = {}
+                if not kc_sub.empty and {"交易日期", "份额(亿份)"}.issubset(kc_sub.columns):
+                    for d, grp in kc_sub.groupby("交易日期", sort=True):
+                        s = _clean_number(pd.to_numeric(grp["份额(亿份)"], errors="coerce").sum())
+                        f = _net_inflow_sum(grp)
+                        if s is not None:
+                            stock_share[str(d)[:10]] = s
+                        if f is not None:
+                            stock_flow[str(d)[:10]] = f
+                stock_chart = {
+                    "id": f"etf_{slug}_stock",
+                    "dim": "broad",
+                    "pair": slug,  # 与 Top5 图并作一排
+                    "title": f"宽基 · {idx_tag} ETF 合计流通份额 / 申赎净流入",
+                    "note": f"按「{idx_tag}」标签全部 ETF 逐交易日合计：流通份额存量(亿份) 与"
+                            f"申赎净流入(亿元)；{scope}",
+                    "etf_count": len(codes_k),
+                    "codes": sorted(codes_k),
+                    "y_axes": [{"name": "流通份额 (亿份)", "position": "left"},
+                               {"name": "申赎净流入 (亿元)", "position": "right"}],
+                    "series": [
+                        {"name": "合计流通份额(亿份)",
+                         "data": [[d, v] for d, v in sorted(stock_share.items())],
+                         "y_axis_index": 0, "type": "line"},
+                        {"name": "合计申赎净流入(亿元)",
+                         "data": [[d, v] for d, v in sorted(stock_flow.items())],
+                         "y_axis_index": 1, "type": "line"},
+                    ],
+                }
+                attach_overlay(stock_chart, idx_code)
+                charts.append(stock_chart)
     return charts
 
 

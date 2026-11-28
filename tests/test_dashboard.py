@@ -42,7 +42,7 @@ def _derived_rows(codes: list[str], dates: list[str], value: float = 1.0) -> pd.
 
 def _macro_rows() -> pd.DataFrame:
     rows = []
-    for date in ("2026-08", "2026-09", "2026-10"):
+    for i, date in enumerate(("2026-08", "2026-09", "2026-10")):
         rows.append({
             "指标代码": "CN_GDP", "指标名称": "GDP", "日期": date,
             "数值": 100.0, "单位": "亿元", "同比(%)": 4.5,
@@ -51,6 +51,11 @@ def _macro_rows() -> pd.DataFrame:
         rows.append({
             "指标代码": "M2", "指标名称": "M2", "日期": date,
             "数值": 3_000_000.0, "单位": "亿元", "同比(%)": 7.0,
+            "环比(%)": None, "数据源": "PBC", "采集时间": "test", "run_id": "test",
+        })
+        rows.append({
+            "指标代码": "RMB_DEPOSIT", "指标名称": "人民币存款余额", "日期": date,
+            "数值": 10_000.0 + (100.0 if i % 2 else 0.0), "单位": "亿元", "同比(%)": None,
             "环比(%)": None, "数据源": "PBC", "采集时间": "test", "run_id": "test",
         })
         rows.append({
@@ -91,12 +96,22 @@ class TestMacroDashboard:
         ]
         assert self.charts[0]["title"].startswith("图1")
         assert self.charts[-1]["title"].startswith("图8")
-        # 新增图8：人民币贷款当月新增，柱状单轴
-        loan = self.charts[-1]
-        assert loan["title"].endswith("人民币贷款当月新增")
-        assert loan["series"][0]["name"] == "人民币贷款当月新增"
-        assert loan["series"][0]["type"] == "bar"
-        assert len(loan["y_axes"]) == 1 and loan["y_axes"][0]["name"] == "当月新增 (亿元)"
+        # 图8：人民币存款当月新增（余额月度差分），柱状单轴
+        deposit = self.charts[-1]
+        assert deposit["title"].endswith("人民币存款当月新增")
+        assert deposit["series"][0]["name"] == "人民币存款当月新增"
+        assert deposit["series"][0]["type"] == "bar"
+        assert len(deposit["y_axes"]) == 1 and deposit["y_axes"][0]["name"] == "当月新增 (亿元)"
+        # 四组增量柱状图均带正负着色标记
+        by_id = {c["id"]: c for c in self.charts}
+        assert by_id["credit"]["series"][1]["color_by_sign"] is True
+        assert by_id["hh_deposit"]["series"][0]["color_by_sign"] is True
+        assert by_id["gold"]["series"][0]["color_by_sign"] is True
+        assert deposit["series"][0]["color_by_sign"] is True
+
+    def test_deposit_monthly_delta(self):
+        deposit = self.charts[-1]
+        assert deposit["series"][0]["data"] == [["2026-09", 100.0], ["2026-10", -100.0]]
 
     def test_chart_series_and_axes(self):
         by_id = {c["id"]: c for c in self.charts}

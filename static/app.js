@@ -3,6 +3,8 @@
  * 生产静态资源：Tabler 风格 UI，数据层与动作层均对接后端接口。
  * ========================================================================== */
 const CLR = ['#2563eb','#16a36a','#ea8c28','#8056d8','#e0484b','#0d9a9a','#db2777','#64748b'];
+// 宏观增量类柱状图：正值红、负值绿（与表格 .up/.down 同色）
+const SIGN_UP = '#ff6b6b', SIGN_DOWN = '#35c98b';
 const CHART_INK = '#d7e3f4';
 const CHART_GRID = '#223852';
 function darkenChartOption(opt){
@@ -751,8 +753,7 @@ const NAV = {
   ]},
   dashboard:{name:'数据看板',groups:[
     {cap:'可视化',items:[
-      {id:'dashmacro',name:'中国宏观',icon:'chart-area'},
-      {id:'dashmacro_us',name:'美国宏观',icon:'chart-area'},
+      {id:'dashmacro',name:'宏观指标',icon:'chart-area'},
       {id:'dashetf',name:'ETF 维度',icon:'chart-bar'},
       {id:'dashtrade',name:'日交易',icon:'chart-line'},
       {id:'dashval',name:'估值',icon:'gauge'},
@@ -1336,7 +1337,9 @@ function switchView(id){
   curView = id;
   $$('.view').forEach(x=>x.classList.remove('active'));
   const el = byId('v-'+id); if(el) el.classList.add('active');
-  $$('.fn').forEach(x=>x.classList.toggle('active',x.dataset.view===id));
+  // 宏观顶部中国/美国标签切换视图时，左侧导航仍统一高亮「宏观指标」
+  const navId = id==='dashmacro_us' ? 'dashmacro' : id;
+  $$('.fn').forEach(x=>x.classList.toggle('active',x.dataset.view===navId));
   if(id==='dashmacro'||id==='dashmacro_us') syncMacroDimTabs(byId('v-'+id));
   if(id.startsWith('dash')) setTimeout(()=>{ loadDashboard(); }, 30);
   if(id==='ovCollect') setTimeout(renderOverview, 60);
@@ -1446,11 +1449,18 @@ function renderChartNode(node, chart, months){
   const ins = initChart(node);
   const categories = filteredData(chart, months);
   const dataOf = s=>{ const m=new Map(s.data||[]); return categories.map(c=>m.has(c)?m.get(c):null); };
-  const series = (chart.series||[]).map((s,i)=>({
-    name:s.name, type:s.type||'line', data:dataOf(s), yAxisIndex:s.y_axis_index||0,
-    smooth:true, showSymbol:false, connectNulls:true,
-    lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
-  }));
+  const series = (chart.series||[]).map((s,i)=>{
+    const values = dataOf(s);
+    // 增量类柱状图按数值正负着色：正=红，负=绿；其他序列沿用调色板
+    const data = s.color_by_sign
+      ? values.map(v=>v==null ? null : ({value:v, itemStyle:{color:Number(v)>=0?SIGN_UP:SIGN_DOWN}}))
+      : values;
+    return {
+      name:s.name, type:s.type||'line', data, yAxisIndex:s.y_axis_index||0,
+      smooth:true, showSymbol:false, connectNulls:true,
+      lineStyle:{width:2,color:CLR[i%CLR.length]}, itemStyle:{color:CLR[i%CLR.length]},
+    };
+  });
   const maxIdx = Math.max(0,...series.map(s=>s.yAxisIndex));
   const ax = (chart.y_axes||[]).slice();
   while(ax.length<=maxIdx) ax.push({name:'占比 (%)',position:ax.length%2?'right':'left'});

@@ -1,13 +1,14 @@
 """数据看板数据装配（纯函数，不依赖 Web 框架）。
 
-宏观 7 张图：
+宏观 8 张图：
   1 GDP同比 + 进出口同比
   2 社零/CPI/PPI同比 + CPI-PPI剪刀差
-  3 社融存量同比 + 人民币贷款当月新增（双轴）
+  3 社融存量同比 + 人民币贷款当月新增（双轴，贷款柱按正负红/绿）
   4 M1/M2同比 + M1-M2剪刀差
   5 M2、A股总市值（万亿）+ A股总市值/M2（%）+ 上证指数（点，月末收盘，三轴）
-  6 居民存款同比多增
-  7 黄金当月新增/吨
+  6 居民存款同比多增（柱按正负红/绿）
+  7 黄金当月新增/吨（柱按正负红/绿）
+  8 人民币存款当月新增（人民币存款余额月度差分，柱按正负红/绿）
 
 ETF 图：按标签（汇金/黄金/宽基）汇总当日较上一交易日的流通份额变化与申赎净流入，
 并含黄金累计图、科创50 宽基排名与合计图（详见 build_etf_charts 文档）。
@@ -125,8 +126,8 @@ MACRO_CHART_SPECS = [
         "y_axes": [{"name": "吨", "position": "left"}],
     },
     {
-        "id": "loan_new_chart", "title": "图8：人民币贷款当月新增",
-        "note": "贷款余额当月差分(亿元)，正值为当月新增、负值为当月回落",
+        "id": "loan_new_chart", "title": "图8：人民币存款当月新增",
+        "note": "人民币存款余额当月差分(亿元)，正值为当月新增、负值为当月回落",
         "y_axes": [{"name": "当月新增 (亿元)", "position": "left"}],
     },
 ]
@@ -180,6 +181,18 @@ def _derived_pairs(df: pd.DataFrame, code: str) -> list[list]:
 
 def _macro_value(df: pd.DataFrame, code: str, transform=None) -> list[list]:
     return _pairs(df, "日期", "数值", code=code, code_col="指标代码", transform=transform)
+
+
+def _macro_delta(df: pd.DataFrame, code: str) -> list[list]:
+    """原始余额月度差分：正数=当月新增，负数=当月回落。图8人民币存款当月新增使用。"""
+    pairs = _macro_value(df, code)
+    out: list[list] = []
+    prev_date = prev_value = None
+    for date, value in pairs:
+        if prev_date is not None and prev_value is not None:
+            out.append([date, _clean_number(value - prev_value)])
+        prev_date, prev_value = date, value
+    return out
 
 
 def _macro_yoy(df: pd.DataFrame, code: str) -> list[list]:
@@ -324,28 +337,31 @@ def build_macro_charts(derived_df: pd.DataFrame, macro_df: pd.DataFrame,
         "sh_index": _index_monthly(index_df, "000001"),
         "hh_new_yoy": _derived_pairs(derived_df, "HH_DEPOSIT_NEW_YOY"),
         "gold_new": _derived_pairs(derived_df, "GOLD_NEW_TON"),
+        "deposit_new": _macro_delta(macro_df, "RMB_DEPOSIT"),
     }
     use_range = bool(start or end)
     cutoff = "" if use_range else _cutoff_date(list(raw.values()), months)
 
-    def s(name, key, axis=0, chart_type="line"):
+    def s(name, key, axis=0, chart_type="line", sign_color=False):
         data = _slice_range(raw[key], start, end) if use_range else _slice(raw[key], cutoff)
         return {
             "name": name, "data": data,
             "y_axis_index": axis, "type": chart_type,
+            **({"color_by_sign": True} if sign_color else {}),
         }
 
     grouped = {
         "gdp_trade": [s("GDP同比", "gdp_yoy", 1), s("进出口同比", "trade_yoy", 0)],
         "price": [s("社零同比", "retail"), s("CPI同比", "cpi"), s("PPI同比", "ppi"),
                   s("CPI-PPI剪刀差", "cpi_ppi")],
-        "credit": [s("社融存量同比", "sfr"), s("人民币贷款当月新增", "loan_new", 1, "bar")],
+        "credit": [s("社融存量同比", "sfr"),
+                   s("人民币贷款当月新增", "loan_new", 1, "bar", sign_color=True)],
         "money_gap": [s("M1同比增速", "m1"), s("M2同比增速", "m2"), s("M1-M2剪刀差", "m1_m2")],
         "m2_market": [s("M2", "m2_bal"), s("A股总市值", "mc_bal"),
                       s("A股总市值/M2", "mc_m2", 1), s("上证指数", "sh_index", 2)],
-        "hh_deposit": [s("居民存款同比多增", "hh_new_yoy", 0, "bar")],
-        "gold": [s("黄金当月新增", "gold_new", 0, "bar")],
-        "loan_new_chart": [s("人民币贷款当月新增", "loan_new", 0, "bar")],
+        "hh_deposit": [s("居民存款同比多增", "hh_new_yoy", 0, "bar", sign_color=True)],
+        "gold": [s("黄金当月新增", "gold_new", 0, "bar", sign_color=True)],
+        "loan_new_chart": [s("人民币存款当月新增", "deposit_new", 0, "bar", sign_color=True)],
     }
     return [_chart(specs[spec_id], grouped[spec_id])
             for spec_id in [x["id"] for x in MACRO_CHART_SPECS]]

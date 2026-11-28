@@ -60,6 +60,7 @@ def _seed_data(root: Path) -> tuple[Path, dict]:
             ("M2", "广义货币(M2)", "亿元", 3000000 + i * 10000),
             ("CPI", "居民消费价格指数CPI", "上年同月=100", 100.2),
             ("EXPORT", "出口额", "亿美元", 3000 + i * 100),
+            ("RMB_DEPOSIT", "人民币存款余额", "亿元", 100000 + (100 if i % 2 else 0)),
         ]:
             macro_rows.append({
                 "指标代码": code, "指标名称": name, "日期": month, "数值": value,
@@ -86,7 +87,12 @@ def _seed_data(root: Path) -> tuple[Path, dict]:
             "value": trade_yoy_values[i], "unit": "%", "formula": "累计进出口同比",
             "grp": "A", "source": "macro_observation", "computed_at": "2026-11-26 10:00:00",
         })
-        for code, value in [("M2_YOY", 8.0 + i * 0.1), ("CPI_YOY", 0.2)]:
+        for code, value in [
+            ("M2_YOY", 8.0 + i * 0.1), ("CPI_YOY", 0.2),
+            ("RMB_LOAN_NEW", 100.0 if i % 2 else -100.0),
+            ("HH_DEPOSIT_NEW_YOY", 50.0 if i % 2 else -50.0),
+            ("GOLD_NEW_TON", 2.0 if i % 2 else -2.0),
+        ]:
             derived_rows.append({
                 "code": code, "name": code, "date": month, "value": value, "unit": "%",
                 "formula": "test", "grp": "A", "source": "macro_observation",
@@ -771,27 +777,33 @@ class TestDashboardNewViews:
         assert page._js_errors == []
 
     def test_macro_nav_country_split_and_us_charts(self, page):
-        """左侧导航宏观拆分为中国/美国；真实点击美国宏观后渲染 3 张 FRED 图。
+        """左侧导航只保留「宏观指标」；顶部中国/美国标签切到美国渲染 3 张 FRED 图。
 
-        回归：静态资源已更新但后端进程未重启时，导航会出现却没有 macro_us 数据。
+        回归：静态资源已更新但后端进程未重启时，顶部标签会出现却没有 macro_us 数据。
         必须从左侧导航真实点击进入，覆盖 switchView 程序化调用无法发现的部署时序问题。
         """
         nav = page.evaluate("""() => NAV.dashboard.groups.flatMap(g => g.items)
-          .filter(x => x.id === 'dashmacro' || x.id === 'dashmacro_us')
           .map(x => ({id:x.id, name:x.name}))""")
         assert nav == [
-            {"id": "dashmacro", "name": "中国宏观"},
-            {"id": "dashmacro_us", "name": "美国宏观"},
+            {"id": "dashmacro", "name": "宏观指标"},
+            {"id": "dashetf", "name": "ETF 维度"},
+            {"id": "dashtrade", "name": "日交易"},
+            {"id": "dashval", "name": "估值"},
         ]
         page.locator('.mod[data-mod="dashboard"]').click()
         with page.expect_response(lambda r: "/api/dashboard" in r.url, timeout=30000) as resp_info:
-            page.locator('.fn[data-view="dashmacro_us"]').click()
-        resp = resp_info.value
-        assert resp.status == 200
-        assert [c["id"] for c in resp.json().get("macro_us", {}).get("charts", [])] == [
+            page.locator('.fn[data-view="dashmacro"]').click()
+        assert resp_info.value.status == 200
+        assert [c["id"] for c in resp_info.value.json().get("macro_us", {}).get("charts", [])] == [
             "us_gdp", "us_prices", "us_rates"
         ]
+        with page.expect_response(lambda r: "/api/dashboard" in r.url, timeout=30000) as us_resp:
+            page.locator('#v-dashmacro .macro-dim-tab[data-macro-dim="macro_us"]').click()
+        assert us_resp.value.status == 200
         page.wait_for_timeout(500)
+        assert page.evaluate("document.querySelector('.view.active')?.id") == "v-dashmacro_us"
+        # 切到美国后左侧导航仍统一高亮「宏观指标」
+        assert page.evaluate("document.querySelector('.fn.active')?.dataset.view") == "dashmacro"
         view = page.locator("#v-dashmacro_us")
         assert view.locator("[data-chart-card]").count() == 3
         assert view.locator('[data-chart-card="us_gdp"]').count() == 1
@@ -817,7 +829,7 @@ class TestDashboardNewViews:
         assert resp_info.value.status == 200
         page.wait_for_timeout(500)
         assert page.evaluate("document.querySelector('.view.active')?.id") == "v-dashmacro_us"
-        assert page.evaluate("document.querySelector('.fn.active')?.dataset.view") == "dashmacro_us"
+        assert page.evaluate("document.querySelector('.fn.active')?.dataset.view") == "dashmacro"
         assert us.locator("[data-chart-card]").count() == 3
         assert "active" in (us.locator('[data-macro-dim="macro_us"]').get_attribute("class") or "")
 
@@ -828,6 +840,27 @@ class TestDashboardNewViews:
         assert page.evaluate("document.querySelector('.view.active')?.id") == "v-dashmacro"
         assert cn.locator("[data-chart-card]").count() > 0
         assert "active" in (cn.locator('[data-macro-dim="macro"]').get_attribute("class") or "")
+        assert page._js_errors == []
+
+    def test_macro_signed_bars_and_deposit_chart(self, page):
+        """图3/图6/图7/图8 增量柱状图正值红、负值绿；图8 为人民币存款当月新增。"""
+        page.locator('.mod[data-mod="dashboard"]').click()
+        _switch(page, "dashmacro")
+        view = page.locator("#v-dashmacro")
+        assert "人民币存款当月新增" in view.inner_text()
+        assert "人民币贷款当月新增" not in view.locator('[data-chart-card="loan_new_chart"]').inner_text()
+        names = {
+            "credit": "人民币贷款当月新增", "hh_deposit": "居民存款同比多增",
+            "gold": "黄金当月新增", "loan_new_chart": "人民币存款当月新增",
+        }
+        for chart_id, series_name in names.items():
+            chart = _chart(page, chart_id)
+            series = next(s for s in chart["series"] if s["name"] == series_name)
+            colored = [p for p in series["data"] if isinstance(p, dict)]
+            colors = {p.get("itemStyle", {}).get("color") for p in colored}
+            assert "#ff6b6b" in colors and "#35c98b" in colors, chart_id
+            values = [p.get("value") for p in colored]
+            assert any(v > 0 for v in values) and any(v < 0 for v in values), chart_id
         assert page._js_errors == []
 
     def test_gold_primary_chart_wide(self, page):
